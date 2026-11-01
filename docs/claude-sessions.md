@@ -41,6 +41,12 @@ own parked sessions on its next request, so they do not wait out the park timer.
   the session was idle 60 minutes or more (`idle_expired`; see Context management
   below). The cache of the old session is gone or unusable either way, so the new
   process costs no more than the next one-shot request would.
+- **Messages after tools:** when every pending tool result is followed by new
+  user or developer messages, the gateway seeds the complete caller history once
+  (`messages_after_tools`). Subsequent tool steps continue that live session.
+  It does not attach those messages to a tool result, change their roles or hold
+  the chat on repeated replay. Missing, duplicate or interleaved tool results,
+  edited prefixes and appended assistant output keep their existing checks.
 - **Forced downgrade** (no reseed): an earlier message was edited
   (`prefix_diverged`), the history had an unexpected tail (`unexpected_tail`), a forced
   tool choice arrived (`forced_choice`), an effort change arrived while tools were
@@ -50,6 +56,7 @@ own parked sessions on its next request, so they do not wait out the park timer.
   could keep a cache again. A held request inside that window is served the same way and
   starts the window over, so a thread that keeps talking is never seeded a process it
   would have to reseed on its next turn. The old session closes at once.
+
 - **Capacity** (no eviction): see Admission below.
 - **Warmup** (no session): a thread must complete `warmup` ordinary requests before
   its first live CLI starts. Until then, it runs one-shot with the `warmup` miss
@@ -60,6 +67,33 @@ own parked sessions on its next request, so they do not wait out the park timer.
 - **One-shot fallback:** compaction, prewarm and memory requests; requests without a
   thread id; a second request for a thread that is still generating; and any failure
   before the first event, including a CLI that exits right after the seed.
+
+### Bounded cache rewrites
+
+The [shared cache guard](cache-safety.md) applies to every provider and ingress
+protocol. The Claude adapter also retains native input measurements on failures.
+
+Two consecutive measured requests that each write at least 65,536 cache tokens and
+write more than they read stop the next request before inference. This applies to
+live continuations as well as new seeds and one-shot replay. The client
+receives a final HTTP 400 explaining the cache problem, rather than a retryable
+stream disconnect. `context_cache_guard` records only a hashed key, mode and count
+and appears in recent diagnostics.
+
+A measured small write or majority cache read clears the streak. Missing cache counts
+do not count as recovery. Client compaction requests have a separate bounded budget; a replacement
+conversation input at most half the byte size of the failed history can recover on the same
+model. The gateway does not compact, truncate history, change models or execute tools.
+Reading at least 75% of the preceding request's cached prefix also clears the streak:
+a large new tool result must not be mistaken for repeatedly rewriting old history.
+Measured input-cache counts also survive a later stream failure, rejected tool or
+cancellation. Missing counts remain unknown and do not erase a previous failure.
+
+The bounded safety state is account-, model- and caller-scoped and survives client
+reconnects and in-place upgrades. It retains at most 4,096 entries in the inference
+process. Anonymous requests share their account/model budget. A full inference-process
+restart resets it. Repeated large inputs with unreported cache usage stop with a
+distinct explanation rather than being treated as measured zero cache reuse.
 
 ## Reasoning-summary replay
 

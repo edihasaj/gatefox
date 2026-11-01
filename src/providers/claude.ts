@@ -20,6 +20,7 @@ import { choiceBlock, leadingInstructions, markCustomCalls, renderConversation, 
 import { retireScope } from "./claude-session-registry.js";
 import { sessionKey, type ClaudeLiveModule, type ClaudeLiveOutcome } from "./claude-live-contract.js";
 import { telemetry } from "../telemetry.js";
+import { claudeReplayBudget, ClaudeReplayBlocked, type ClaudeReplayBudget } from "./claude-replay-budget.js";
 import { providerCommand } from "../provider-tool-runtime.js";
 
 export function claudeEffort(config: ProviderConfig | undefined, request: ResponsesRequest): string | undefined {
@@ -48,6 +49,7 @@ export function claudeFastMode(config: ProviderConfig | undefined, request: Resp
 }
 
 interface Run {
+  replayBudget?: ClaudeReplayBudget;
   /** The caller's model alias, for telemetry. */
   alias: string; model: string; effort?: string; fast: boolean; summaryVisible: boolean; requestedEffort?: unknown; format: ReplayFormat;
   tools: OpenAITool[]; choice?: ChatToolSelection; conversation: ClaudeConversation; images: ClaudeImages; retry?: boolean;
@@ -102,6 +104,16 @@ export class ClaudeSubscription implements Provider {
       format: settings.replayFormat, tools, choice, conversation, images, systemPrompt: claudeSystemPrompt(history.slice(0, leading).map(message => message.content ?? "")), leading,
       // The same key the live registry derives, so one thread's one-shot and live events line up.
       ...(context.threadId ? { threadKey: sessionKey(this.scope(), context.threadId).slice(0, 8) } : {}) };
+    {
+      const budget = claudeReplayBudget(this.scope(), context.threadId ?? context.sessionId, run.model, Buffer.byteLength(JSON.stringify(request.input)));
+      run.replayBudget = { beforeRequest: mode => { if (context.requestKind !== "compaction") budget.beforeRequest(mode); }, record: tokens => {
+        if (context.requestKind !== "compaction") budget.record(tokens);
+        const measured = tokens?.input !== undefined && tokens.cacheRead !== undefined && tokens.cacheWrite !== undefined;
+        context.observeCacheUsage?.({ ...(measured ? { inputTokens: tokens.input! + tokens.cacheRead! + tokens.cacheWrite! } : {}),
+          ...(!measured ? { inputTokensLowerBound: [tokens?.input, tokens?.cacheRead, tokens?.cacheWrite].reduce<number>((sum, value) => sum + (value ?? 0), 0) } : {}),
+          cachedTokens: tokens?.cacheRead, cacheWriteTokens: tokens?.cacheWrite });
+      } };
+    }
     // Switching to replay ends this provider's parked sessions now instead of when their park timers fire.
     if (settings.mode !== "live") retireScope(this.scope(), "mode_replay");
     let completed: (() => void) | undefined;
@@ -203,6 +215,7 @@ export class ClaudeSubscription implements Provider {
       const live = module.claudeLive({ max: settings.max, parkMinutes: settings.parkMinutes, warmup: settings.warmup });
       complete = () => live.complete?.(this.scope(), context.threadId!);
       outcome = await live.attach({
+        replayBudget: run.replayBudget,
         scope: this.scope(), threadId: context.threadId!, windowId: context.windowId, turnId: context.turnId,
         model, effort, fast, summaryVisible, instructionsDigest: digest(systemPrompt), leading,
         toolsDigest: digest(JSON.stringify(mcpCatalog)), tools, choice: run.choice, request, conversation, images,
@@ -217,8 +230,8 @@ export class ClaudeSubscription implements Provider {
       if (outcome.kind === "fallback") telemetry("claude_session", { outcome: "fallback", missReason: outcome.reason, threadKey: run.threadKey });
       return { outcome, complete };
     } catch (error) {
-      // Any failure before a stream exists falls back to one-shot; only cancellation propagates.
-      if (signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw signal.aborted ? cancelled() : error;
+      // Startup failures can fall back; cancellation and the replay safety stop remain final.
+      if (error instanceof ClaudeReplayBlocked || signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw signal.aborted ? cancelled() : error;
       outcome = { kind: "fallback", reason: "spawn_failed" };
     }
     telemetry("claude_session", { outcome: "fallback", missReason: outcome.reason, threadKey: run.threadKey });
@@ -227,6 +240,7 @@ export class ClaudeSubscription implements Provider {
 
   private async *oneShot(run: Run, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
     if (signal.aborted) throw cancelled();
+    run.replayBudget?.beforeRequest("oneshot");
     const directory = await mkdtemp(join(tmpdir(), "gateway-claude-"));
     const catalogPath = join(directory, "tools.json"); const mcpPath = join(directory, "mcp.json"); const systemPath = join(directory, "system.md");
     const catalog = claudeMcpCatalog(run.tools);
@@ -294,10 +308,12 @@ export class ClaudeSubscription implements Provider {
       signal.removeEventListener("abort", cancel); lines.close(); clearTimeout(settle);
       // After a result the CLI exits on its own; anything else is stopped now, including the post-turn summary after end_turn.
       if (resultSubtype && !signal.aborted) { const timer = setTimeout(kill, 500); timer.unref(); child.once("exit", () => clearTimeout(timer)); } else kill();
+      const observed = tokens ?? stream.observedTokens;
+      run.replayBudget?.record(observed);
       telemetry("claude_cli", { mode: "oneshot", model: run.alias, effort: run.effort, fast: run.fast ? fastState || "unknown" : undefined, durationMs: Date.now() - began,
         result: end?.kind === "tool_use" || end?.kind === "end_turn" ? end.kind : resultSubtype ?? "none", isError: resultError, exitCode, aborted: signal.aborted && end?.kind !== "end_turn", interrupted, spawnFailed: !!failure, retry: run.retry,
-        toolCalls: end?.kind === "tool_use" ? end.calls.length : 0, inputTokens: tokens?.input, cacheReadTokens: tokens?.cacheRead, cacheWriteTokens: tokens?.cacheWrite, outputTokens: tokens?.output,
-        threadKey: run.threadKey, systemPrefixOnly: systemPrefixOnly(tokens?.cacheRead, tokens?.cacheWrite) });
+        toolCalls: end?.kind === "tool_use" ? end.calls.length : 0, inputTokens: observed?.input, cacheReadTokens: observed?.cacheRead, cacheWriteTokens: observed?.cacheWrite, outputTokens: observed?.output,
+        threadKey: run.threadKey, systemPrefixOnly: systemPrefixOnly(observed?.cacheRead, observed?.cacheWrite) });
       await rm(directory, { recursive: true, force: true });
     }
   }

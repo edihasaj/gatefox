@@ -132,3 +132,12 @@ export function decide(ledger: LedgerState, entries: LedgerEntry[], messages: nu
   const from = tail[0].first;
   return tail.reduce((sum, entry) => sum + entry.count, 0) === messages - from ? { kind: "continue_user", from, items: tail.length } : unexpected;
 }
+
+/** An exact pending-output batch followed by new caller messages requires a full-history seed. */
+export function messagesAfterTools(entries: LedgerEntry[], from: number, pending: readonly string[]): boolean {
+  const waiting = new Set(pending);
+  const tail = entries.slice(from), outputs = tail.slice(0, waiting.size), messages = tail.slice(waiting.size);
+  return waiting.size > 0 && waiting.size === pending.length && outputs.length === waiting.size && messages.length > 0
+    && outputs.every(entry => entry.kind === "o" && waiting.delete(entry.callId!))
+    && messages.every(entry => entry.kind === "m" && !entry.assistant);
+}

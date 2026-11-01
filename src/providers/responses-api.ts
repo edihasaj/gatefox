@@ -68,9 +68,13 @@ export class ResponsesAPI implements Provider {
     // Retry-After, and it must not spend the connection budget or the single retry of other classes.
     let firstThrottleAt: number | undefined; let throttleRetries = 0;
     for (let attempt = 0; ; attempt++) {
-      let published = false;
+      let published = false; let measuredInput = false;
       try {
-        for await (const event of this.attempt(normalized, signal, context, turnState, bridgeName)) {
+        for await (const event of this.attempt(normalized, signal, { ...context, observeCacheUsage: value => {
+          measuredInput ||= [value.inputTokens, value.inputTokensLowerBound, value.cachedTokens, value.cacheWriteTokens]
+            .some(count => typeof count === "number" && Number.isFinite(count) && count > 0);
+          context.observeCacheUsage?.(value);
+        } }, turnState, bridgeName)) {
           // Response headers are not output, so they never prevent the retry. Only the first reaches the
           // caller, and a retry carries the turn-state it returned, as Codex does for the rest of a turn.
           if (event.type === "transport") { if (!transported) { transported = true; turnState ??= unwrapTurnState(event.turnState, this.scope); yield event; } continue; }
@@ -83,7 +87,7 @@ export class ResponsesAPI implements Provider {
         // Caller tools run outside this provider. Retry only a known transient
         // failure before publishing any output, keeping partial turns intact.
         let typed = false; try { typed = error instanceof ProviderError; } catch { /* Hostile errors are never retryable. */ }
-        if (published || signal.aborted || !typed) throw error;
+        if (published || measuredInput || signal.aborted || !typed) throw error;
         const failure = error as ProviderError;
         // A failed login refresh is never retried here: the refresh token is single-use, so a second
         // token request in the same turn could spend or reuse it. Codex reconnects on the 503 instead.
@@ -364,6 +368,9 @@ export class ResponsesAPI implements Provider {
       }
       const terminal = event.type === "response.completed" || event.type === "response.incomplete";
       const completed = event.response as { id?: unknown; status?: unknown; error?: unknown; incomplete_details?: { reason?: unknown }; output_text?: unknown; output?: unknown; usage?: Usage; service_tier?: unknown; end_turn?: unknown };
+      if (completed?.usage) context.observeCacheUsage?.({ inputTokens: completed.usage.input_tokens,
+        cachedTokens: completed.usage.input_tokens_details?.cached_tokens,
+        cacheWriteTokens: completed.usage.input_tokens_details?.cache_creation_tokens });
       const interrupted = event.type === "response.incomplete" && completed?.incomplete_details?.reason === "interrupted";
       const capped = context.clientProtocol === "messages" && event.type === "response.incomplete" && completed?.incomplete_details?.reason === "max_output_tokens";
       if (event.type === "error" || event.type === "response.failed" || (event.type === "response.incomplete" && !interrupted && !capped)) throw responsesStreamError(event, response.headers.get("x-request-id") || undefined);

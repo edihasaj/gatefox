@@ -48,6 +48,11 @@ recovery of missing error details.
 
 ## Local telemetry
 
+`context_cache_guard` reports `outcome: blocked`, `mode: seed|oneshot|continued|provider`, a hashed
+`threadKey` and a numeric `rewrites` count. It appears in recent problems when
+the shared guard stops another large uncached request before inference.
+See [cache safety](cache-safety.md).
+
 Each process appends one JSON line per event to
 `<state>/telemetry/events-YYYY-MM-DD.jsonl` (mode 0600, kept 14 days). Fields pass
 a strict filter: only strings, numbers and booleans; names that could carry

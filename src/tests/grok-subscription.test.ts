@@ -9,6 +9,7 @@ import { GrokSubscription } from "../providers/grok.js";
 import { mergeGrokConfig } from "../providers/grok-home.js";
 import { ProviderError } from "../providers/provider.js";
 import type { InferenceEvent } from "../protocol/types.js";
+import { cacheGuardedInference } from "../cache-guarded-inference.js";
 
 type Line = Record<string, unknown>;
 const ev = (event: Line): Line => ({ type: "stream_event", event });
@@ -63,6 +64,20 @@ async function collect(provider: GrokSubscription, request: Record<string, unkno
   return events;
 }
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+test("charged Grok tool failures retain cache measurements and stop the third CLI", async () => {
+  const f = await setup([init(), ev({ type: "message_start", message: { usage: { input_tokens: 200000, cache_read_input_tokens: 10000 } } }),
+    ev({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "bad", name: "run_terminal_command" } })], true);
+  const turn = async () => {
+    for await (const _ of cacheGuardedInference(f.provider, { model: "grok-4.7", input: "history" }, new AbortController().signal,
+      { threadId: "grok-failure" }, "grok-native-failure")) {}
+  };
+  try {
+    await assert.rejects(turn(), { code: "invalid_tool_call" }); await assert.rejects(turn(), { code: "invalid_tool_call" });
+    await assert.rejects(turn(), { code: "invalid_request", status: 400 });
+    assert.equal((await f.captured()).length, 2);
+  } finally { await f.restore(); }
+});
 async function gone(pid: number) { for (let i = 0; i < 300 && alive(pid); i++) await new Promise(resolve => setTimeout(resolve, 10)); return !alive(pid); }
 
 test("a text turn streams text and usage with a scrubbed environment and a managed Grok home", async () => {

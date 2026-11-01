@@ -17,8 +17,11 @@ export class ProviderError extends Error {
       contextTokens?: { used: number; maximum: number } }) { super(message); }
 }
 export type InferenceRequestKind = "turn" | "compaction" | "prewarm" | "memory";
+/** Internal count-only observation; never serialized into provider requests or client metadata. */
+export interface ProviderCacheUsage { inputTokens?: number; inputTokensLowerBound?: number; cachedTokens?: number; cacheWriteTokens?: number }
 /** Caller routing identifiers and the gateway-selected ingress protocol; never request content. */
 export interface InferenceContext {
+  observeCacheUsage?: (usage: ProviderCacheUsage) => void;
   sessionId?: string; threadId?: string; turnId?: string; windowId?: string; requestKind?: InferenceRequestKind;
   clientProtocol?: "responses" | "messages"; adaptiveThinking?: boolean;
   /** Opaque sticky-routing token that Codex echoes for the rest of a turn. */

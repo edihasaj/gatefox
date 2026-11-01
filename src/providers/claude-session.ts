@@ -47,7 +47,7 @@ export interface SessionTurn {
   onUsage(limit: ClaudeLimit): Promise<void>;
   onContextWindow(model: string, contextWindow: number): void;
   /** Called once: "ended" with the final message's tokens, or why it did not end. */
-  onEnd(outcome: "ended" | "interrupted" | "failed", tokens?: ClaudeTokens): void;
+  onEnd(outcome: "ended" | "interrupted" | "failed", tokens?: Partial<ClaudeTokens>): void;
 }
 
 type Block = { type?: unknown; name?: unknown };
@@ -262,7 +262,7 @@ export class ClaudeSession {
   private abort(attached: Attached): void {
     if (this.attached !== attached) return;
     this.detach(attached); attached.error = cancelled(); attached.wake?.();
-    attached.turn.onEnd("interrupted");
+    attached.turn.onEnd("interrupted", attached.turn.stream.observedTokens);
     if (this.messageTool) { void this.close("closed", "interrupted_tool", true); return; }
     this.pending = []; this.ledger = { items: attached.turn.prefix, partial: partialDigest(attached.text) };
     const rest = attached.queue.splice(0);
@@ -283,7 +283,7 @@ export class ClaudeSession {
   /** A stream failure closes the session at once: the CLI must not act on a foreign or failed turn. */
   private failed(attached: Attached, error: unknown): unknown {
     if (this.attached === attached) {
-      this.detach(attached); attached.turn.onEnd("failed");
+      this.detach(attached); attached.turn.onEnd("failed", attached.turn.stream.observedTokens);
       void this.close("crashed", error instanceof ProviderError ? error.upstream?.code ?? error.code : "failed", true);
     }
     return error;
@@ -304,6 +304,7 @@ export class ClaudeSession {
     if (message.type === "control_response") { for (const [id, done] of [...this.controls]) { const result = controlResult(message, id); if (result) done(result === "success"); } return; }
     // The gateway grants nothing: no permission prompt, hook or SDK request is ever approved.
     if (message.type === "control_request") { this.write(JSON.stringify({ type: "control_response", response: { subtype: "error", request_id: message.request_id, error: "Not supported by the gateway" } }) + "\n"); return; }
+    this.attached?.turn.stream.observeUsage(message);
     if (typeof message.fast_mode_state === "string") this.fastState = message.fast_mode_state;
     if (message.type === "system" && message.subtype === "init" && typeof message.per_turn_effort_active === "boolean") this.perTurnEffort = message.per_turn_effort_active;
     if (message.type === "system" && message.subtype === "per_turn_effort_changed") this.perTurnEffort = false;
@@ -370,7 +371,7 @@ export class ClaudeSession {
     this.state = "closed"; clearTimeout(this.parkTimer); clearTimeout(this.interruptTimer);
     const attached = this.attached;
     if (attached) {
-      this.detach(attached); attached.turn.onEnd("failed");
+      this.detach(attached); attached.turn.onEnd("failed", attached.turn.stream.observedTokens);
       attached.error ??= new ProviderError("cli_failed", "Claude CLI session ended; run gateway doctor", 502, { code: reason, event: "claude.session" });
       attached.wake?.();
     }

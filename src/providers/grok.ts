@@ -74,7 +74,7 @@ export function grokArgs(promptPath: string, system: string, model: string, effo
 export class GrokSubscription implements Provider {
   constructor(private readonly config: ProviderConfig, private readonly onContextWindow?: (model: string, contextWindow: number) => void) {}
 
-  async *infer(request: ResponsesRequest, signal: AbortSignal, _context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
+  async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
     if (signal.aborted) throw cancelled();
     const normalized = responsesToChatRequest(request);
     const choice = normalized.tool_choice;
@@ -158,6 +158,7 @@ export class GrokSubscription implements Provider {
       yield { type: "done", usage: grokUsage(stream.tokens) };
     } finally {
       signal.removeEventListener("abort", kill); kill(); lines.close();
+      context.observeCacheUsage?.({ inputTokens: stream.observedTokens?.input, cachedTokens: stream.observedTokens?.cacheRead });
       telemetry("grok_cli", { model: alias ?? request.model, effort, durationMs: Date.now() - began, result: end?.kind ?? "none", exitCode, spawnFailed,
         aborted: signal.aborted, toolCalls: stream.toolCalls, inputTokens: stream.tokens.input, cacheReadTokens: stream.tokens.cacheRead,
         outputTokens: stream.tokens.output, costUsd: stream.costUsd });

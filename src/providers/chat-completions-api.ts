@@ -12,6 +12,7 @@ import { boundedJson, chatContextFailure } from "./context-errors.js";
 import { chatRejection } from "./chat-rejections.js";
 import { imagesOf, imageUrlPart, toolImagesMessage, userContent, type ChatContentPart } from "./chat-images.js";
 import { telemetry } from "../telemetry.js";
+import { largeUncachedUsage } from "../cache-guarded-inference.js";
 
 const recoveryDeadlineMs = 90_000;
 const recoveryEofMs = 5_000;
@@ -195,6 +196,9 @@ export class ChatCompletionsAPI implements Provider {
           return;
         }
         if (!usageEmitted) yield { type: "usage", usage: cumulative };
+        if (largeUncachedUsage({ inputTokens: outcome.usage.input_tokens, cachedTokens: outcome.usage.input_tokens_details?.cached_tokens })) {
+          throw new ProviderError("incomplete", "Chat API returned an empty large-context completion; stopped before replaying measured uncached input", 502);
+        }
         if (attempt === 2) {
           reportRecovery(this.recovery, { outcome: "exhausted", model: request.model, attempt, durationMs: outcome.durationMs, usage: cumulative });
           throw new ProviderError("incomplete", "Chat API returned an empty completion", 502);
@@ -240,6 +244,9 @@ export class ChatCompletionsAPI implements Provider {
       }
       if (!response.body) throw incomplete("Chat API returned no stream");
       for await (const event of readEvents(response.body, "chat")) {
+        const observed = event.usage as { prompt_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } | undefined;
+        if (observed && typeof observed === "object") context.observeCacheUsage?.({ inputTokens: observed.prompt_tokens,
+          cachedTokens: observed.prompt_tokens_details?.cached_tokens });
         if (done) throw incomplete("Chat API returned data after completion");
         if (strictEmpty && (nullOnly(event, ["prompt_token_ids", "prompt_text"]) || unknownFields(event, chatEnvelopeFields))) refusedOrMalformed = true;
         if (event.type === "error") {
@@ -275,9 +282,11 @@ export class ChatCompletionsAPI implements Provider {
           }
           // vLLM and OpenAI report prefix-cache reuse as prompt_tokens_details.cached_tokens; carry it so cache hits are visible.
           const wireCached = wireUsage.prompt_tokens_details?.cached_tokens;
-          const cached = typeof wireCached === "number" && Number.isFinite(wireCached) && wireCached >= 0 ? Math.min(Math.floor(wireCached), wireUsage.prompt_tokens || 0) : undefined;
+          const cached = typeof wireCached === "number" && Number.isFinite(wireCached) && wireCached >= 0
+            && typeof wireUsage.prompt_tokens === "number" && wireCached <= wireUsage.prompt_tokens ? Math.floor(wireCached) : undefined;
           usage = { input_tokens: wireUsage.prompt_tokens || 0, output_tokens: wireUsage.completion_tokens || 0, total_tokens: wireUsage.total_tokens || 0,
             ...(cached === undefined ? {} : { input_tokens_details: { cached_tokens: cached } }) };
+          context.observeCacheUsage?.({ inputTokens: wireUsage.prompt_tokens, cachedTokens: cached });
           if (reportUsage) yield { type: "usage", usage };
         }
         const choices = event.choices as Array<{ index: number; delta?: { role?: unknown; content?: unknown; reasoning_content?: unknown; reasoning?: unknown; tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> }; finish_reason?: string | null }>;
