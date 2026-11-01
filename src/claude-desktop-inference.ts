@@ -11,6 +11,8 @@ import { ChatCompletionsAPI, type ChatCompletionRecoveryPolicy } from "./provide
 import type { ClaudeLimit } from "./providers/claude-usage.js";
 import { telemetry } from "./telemetry.js";
 import { requestPath } from "./server-upgrade.js";
+import { cacheGuardedNativeMessages } from "./claude-native-cache.js";
+import { ContextCacheBlocked } from "./context-cache-budget.js";
 
 const nativeRequestLimit = 256 * 1024;
 const defaultNativeRequestLimit = 192 * 1024;
@@ -30,6 +32,7 @@ export interface ClaudeDesktopNativeConfig {
 }
 
 export interface NativeMessagesOptions {
+  observeCacheUsage?: (usage: Record<string, unknown>) => void;
   command: string;
   authDirectory?: string;
   headers: Record<string, string>;
@@ -59,7 +62,7 @@ export interface ClaudeDesktopInference {
   close(): Promise<void>;
 }
 
-type NativeRoute = { alias: string; nativeModel: string; config: ClaudeDesktopNativeConfig };
+type NativeRoute = { alias: string; nativeModel: string; provider: ProviderConfig; config: ClaudeDesktopNativeConfig };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const safeStatus = (value: unknown) => typeof value === "number" && [400, 401, 403, 408, 413, 429, 500, 502, 503, 504].includes(value) ? value : 502;
@@ -149,7 +152,7 @@ function nativeRoutes(source: GatewayConfig, config: ClaudeDesktopNativeConfig):
     if (nativeModel !== "claude-sonnet-5" || !provider || provider.type !== "claude-subscription" || provider.models[alias] !== nativeModel || !sameAuthDirectory(provider, config)) {
       throw new Error("Native Claude model ownership does not match the gateway configuration");
     }
-    result.set(alias, { alias, nativeModel, config });
+    result.set(alias, { alias, nativeModel, provider, config });
   }
   return result;
 }
@@ -420,15 +423,17 @@ export async function startClaudeDesktopInference(gatewayConfigPath: string, nat
           nativeActive.add(controller);
           try {
             const nativePayload = { ...candidate.payload, model: candidate.route.nativeModel };
-            const reply = completedNativeMessage(await runner(nativePayload, candidate.route.nativeModel, {
+            const reply = completedNativeMessage(await cacheGuardedNativeMessages(candidate.route.provider, nativePayload, request.headers, controller.signal,
+              observeCacheUsage => runner(nativePayload, candidate.route.nativeModel, { observeCacheUsage,
               command: candidate.route.config.command, ...(candidate.route.config.authDirectory === undefined ? {} : { authDirectory: candidate.route.config.authDirectory }),
               headers: directHeaders!, signal: controller.signal, timeoutMs: candidate.route.config.timeoutMs ?? 60000, maxRequestBytes: limit,
-            }), candidate.route.nativeModel);
+            })), candidate.route.nativeModel);
             if (!reply) throw new Error("Native Claude runner returned an incomplete response");
             reply.model = candidate.route.alias;
             if (!response.destroyed && !controller.signal.aborted) { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(reply)); }
           } catch (error) {
             if (!response.destroyed && !response.writableEnded) {
+              if (error instanceof ContextCacheBlocked) { writeError(response, path, 400, "invalid_request", error.message); return; }
               const status = controller.signal.aborted && stopping ? 503 : safeStatus((error as { status?: unknown }).status);
               const code = status === 413 ? "request_too_large" : status === 429 ? "rate_limit_exceeded" : status === 400 ? "invalid_request" : "upstream_unavailable";
               const message = status === 413 ? "Native Claude request exceeds the allowed size" : status === 400 ? "Native Claude request is unsupported" : status === 429 ? "Native Claude request is rate limited" : "Native Claude request failed";

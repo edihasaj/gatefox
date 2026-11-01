@@ -144,6 +144,22 @@ test("rejects partial success, refusals, process failure, tool calls, and mismat
   }
 });
 
+test("reports count-only native usage before a later stream failure and isolates observer failures", async () => {
+  const observed = [];
+  const fake = fixture({ lines: [successfulLines()[1], line({ type: "unexpected" })] });
+  await rejects(runNativeMessages(base(), nativeModel, { command: "/absolute/claude", spawn: fake.spawn,
+    observeCacheUsage: value => observed.push(value) }), 502);
+  assert.ok(observed.length >= 1);
+  assert.deepEqual(observed[0], { input_tokens: 12, cache_read_input_tokens: 3, output_tokens: 0 });
+  assert.equal(Object.hasOwn(observed[0], "cache_creation_input_tokens"), false);
+  const mismatched = [];
+  await rejects(runNativeMessages(base(), nativeModel, { command: "/absolute/claude", spawn: fixture({ lines: successfulLines("claude-wrong") }).spawn,
+    observeCacheUsage: value => mismatched.push(value) }), 502);
+  assert.deepEqual(mismatched[0], observed[0]);
+  await runNativeMessages(base(), nativeModel, { command: "/absolute/claude", spawn: fixture().spawn,
+    observeCacheUsage: () => { throw Error("observer fixture"); } });
+});
+
 test("rejects oversized inputs before spawning and terminates only its owned child on timeout or cancellation", async () => {
   const oversized = fixture();
   await rejects(runNativeMessages({ ...base(), messages: [{ role: "user", content: "x".repeat(2048) }] }, nativeModel, {

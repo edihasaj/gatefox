@@ -13,6 +13,11 @@ OpenRouter or other API providers. Desktop, CLI, mobile and other clients using
 those APIs receive the same protection on every supported host OS. WebSocket
 inference upgrades remain unsupported and are refused before provider execution.
 SDK control WebSockets do not bypass the downstream inference guard.
+The separate Claude Desktop native auxiliary classifier also uses this guard,
+with its own account/model budget. Its runner reports count-only cache usage
+before a later stream failure as well as on success. Missing cache fields remain
+unknown; the helper cannot reset the ordinary chat budget or opt into its
+compaction recovery budget.
 
 Two consecutive requests that each have at least 65,536 uncached input tokens
 and more uncached than cached tokens stop the next request before provider

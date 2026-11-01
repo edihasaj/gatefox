@@ -127,6 +127,44 @@ test("selects only an owned native Claude alias after frontend authentication an
   } finally { await f.stop(); }
 });
 
+for (const scenario of ["cold", "unknown", "failed"] as const) test(`native auxiliary cache guard stops repeated ${scenario} input before another CLI`, async () => {
+  let calls = 0;
+  const inputUsage = { input_tokens: 70000, output_tokens: 1,
+    ...(scenario === "unknown" ? {} : { cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }) };
+  const f = await fixture(async (_payload, model, options) => {
+    calls++; options.observeCacheUsage?.(inputUsage);
+    if (scenario === "failed") throw Object.assign(new Error("fixture failed after usage"), { status: 502 });
+    return { ...nativeMessage(model), usage: inputUsage };
+  });
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const response = await fetch(`${f.url}/v1/messages`, { method: "POST", headers: headers(f.token), body: JSON.stringify(stageOne()) });
+      const value = await response.json() as { error?: { message?: string } };
+      assert.equal(response.status, attempt === 2 ? 400 : scenario === "failed" ? 502 : 200);
+      if (attempt === 2) assert.match(value.error!.message!, scenario === "unknown" ? /did not report cache reuse/ : /cache reuse failed/);
+    }
+    assert.equal(calls, 2);
+    assert.equal(f.backendRequests.length, 0);
+  } finally { await f.stop(); }
+});
+
+test("native auxiliary guard preserves reported warm reuse and does not rewrite the request", async () => {
+  let calls = 0;
+  const payload = stageOne();
+  const f = await fixture(async (received, model) => {
+    calls++; assert.deepEqual(received, { ...payload, model });
+    return { ...nativeMessage(model), usage: { input_tokens: 1000, output_tokens: 1,
+      cache_read_input_tokens: 100000, cache_creation_input_tokens: 0 } };
+  });
+  try {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const response = await fetch(`${f.url}/v1/messages`, { method: "POST", headers: headers(f.token), body: JSON.stringify(payload) });
+      assert.equal(response.status, 200); await response.text();
+    }
+    assert.equal(calls, 4);
+  } finally { await f.stop(); }
+});
+
 test("derives auxiliary routing only for a missing request class and an observed classifier profile", async () => {
   let nativeCalls = 0;
   const f = await fixture(async (_payload, model) => { nativeCalls++; return nativeMessage(model); });
