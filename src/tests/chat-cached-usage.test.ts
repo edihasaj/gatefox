@@ -38,6 +38,6 @@ test("chat usage carries vLLM prompt_tokens_details.cached_tokens as input_token
   for (const cached_tokens of [-5, "4800", Number.NaN, null]) {
     assert.equal((await done({ ...base, prompt_tokens_details: { cached_tokens } })).input_tokens_details, undefined, String(cached_tokens));
   }
-  assert.deepEqual((await done({ ...base, prompt_tokens_details: { cached_tokens: 99999 } })).input_tokens_details, { cached_tokens: 7556 },
-    "cached tokens never exceed the prompt");
+  assert.equal((await done({ ...base, prompt_tokens_details: { cached_tokens: 99999 } })).input_tokens_details, undefined,
+    "impossible cache coverage stays unknown instead of manufacturing a perfect cache hit");
 });
