@@ -25,16 +25,22 @@ for (const kind of kinds) test(`all-provider cache safety covers ${kind} through
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const token = await gatewayToken(state);
   try {
-    for (const protocol of ["responses", "messages"]) {
-      const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "thread-id": protocol };
-      const body = protocol === "responses" ? { model: "alias", input: "Repeated history" }
-        : { model: "alias", max_tokens: 10, messages: [{ role: "user", content: "Repeated history" }] };
+    for (const protocol of ["responses", "messages"]) for (const stream of [false, true]) {
+      const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "thread-id": `${protocol}-${stream}` };
+      const body = protocol === "responses" ? { model: "alias", input: "Repeated history", stream }
+        : { model: "alias", max_tokens: 10, messages: [{ role: "user", content: "Repeated history" }], stream };
       for (let attempt = 0; attempt < 3; attempt++) {
         const response = await fetch(base + "/v1/" + protocol, { method: "POST", headers, body: JSON.stringify(body) });
-        await response.text(); assert.equal(response.status, attempt < 2 ? 200 : 400);
+        const text = await response.text();
+        if (!stream) assert.equal(response.status, attempt < 2 ? 200 : 400);
+        else if (attempt === 2) {
+          const frames = text.split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
+          if (protocol === "responses") assert.equal(frames.at(-1).response.error.code, "invalid_prompt");
+          else assert.ok(frames.some(frame => frame.type === "error" && frame.error.type === "invalid_request_error"));
+        }
       }
     }
-    assert.equal(calls, 4, "neither ingress protocol spends on its third cold request");
+    assert.equal(calls, 8, "neither ingress protocol or streaming mode spends on its third cold request");
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 

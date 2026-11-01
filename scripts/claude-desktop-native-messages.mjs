@@ -396,7 +396,14 @@ export async function runNativeMessages(payload, nativeModel, options = {}) {
       if (!line) return;
       let value;
       try { value = JSON.parse(line); } catch { stop(failure("native Claude stream is malformed", 502)); return; }
+      if (value?.type === "stream_event" && value.event?.type === "message_start") {
+        const counts = usage(value.event.message?.usage);
+        if (counts) try { options.observeCacheUsage?.(counts); } catch { /* Preserve measured input even if validation fails. */ }
+      }
       try { message.accept(value); } catch (error) { stop(error); }
+      if (message.startUsage) {
+        try { options.observeCacheUsage?.({ ...message.startUsage, ...message.delta?.usage }); } catch { /* Count observation never changes the native verdict. */ }
+      }
     };
     child.stdout.on("data", (chunk) => {
       if (settled || terminalError) return;

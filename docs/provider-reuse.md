@@ -64,6 +64,11 @@ the inference Mac. `gateway diagnostics --since 1` also reports Claude and Copil
 session decisions. Blocked and preserved session decisions appear among diagnostic
 issues. Prompts and tool arguments are not added to logs.
 
+The final ingress audit also covers Claude Desktop's separate auxiliary native
+classifier. These are independent tool-free classification calls, rather than
+continued agent chats. They retain their native request controls and use a
+separate bounded cache budget, including usage reported before a later failure.
+
 Native Copilot 1.0.97 and 1.0.98 were qualified against a loopback synthetic API:
 three acknowledged immediate messages while a tool waited made no additional
 inference; delivering its result produced one continuation containing all three
