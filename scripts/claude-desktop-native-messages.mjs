@@ -397,7 +397,9 @@ export async function runNativeMessages(payload, nativeModel, options = {}) {
       let value;
       try { value = JSON.parse(line); } catch { stop(failure("native Claude stream is malformed", 502)); return; }
       if (value?.type === "stream_event" && value.event?.type === "message_start") {
-        const counts = usage(value.event.message?.usage);
+        const raw = value.event.message?.usage;
+        const counts = object(raw) ? Object.fromEntries(["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]
+          .filter(key => nonNegative(raw[key])).map(key => [key, raw[key]])) : undefined;
         if (counts) try { options.observeCacheUsage?.(counts); } catch { /* Preserve measured input even if validation fails. */ }
       }
       try { message.accept(value); } catch (error) { stop(error); }

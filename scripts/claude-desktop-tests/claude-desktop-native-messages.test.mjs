@@ -156,6 +156,12 @@ test("reports count-only native usage before a later stream failure and isolates
   await rejects(runNativeMessages(base(), nativeModel, { command: "/absolute/claude", spawn: fixture({ lines: successfulLines("claude-wrong") }).spawn,
     observeCacheUsage: value => mismatched.push(value) }), 502);
   assert.deepEqual(mismatched[0], observed[0]);
+  const malformed = [];
+  const start = JSON.parse(successfulLines()[1]);
+  start.event.message.usage = { input_tokens: 70000, cache_read_input_tokens: -1 };
+  await rejects(runNativeMessages(base(), nativeModel, { command: "/absolute/claude", spawn: fixture({ lines: [line(start)] }).spawn,
+    observeCacheUsage: value => malformed.push(value) }), 502);
+  assert.deepEqual(malformed[0], { input_tokens: 70000 });
   await runNativeMessages(base(), nativeModel, { command: "/absolute/claude", spawn: fixture().spawn,
     observeCacheUsage: () => { throw Error("observer fixture"); } });
 });
