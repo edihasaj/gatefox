@@ -87,3 +87,15 @@ credentials are never saved by the guard.
 Direct Claude/Codex subscriptions or other clients that bypass Gateway are
 outside this enforcement boundary. No native application or external runtime
 is patched by this feature.
+
+## Recovery verification
+
+Run `node scripts/e2e-cache-recovery.mjs --package INSTALLED_PACKAGE --code CHECKOUT
+--root TASK_DIRECTORY` after building the checkout. The isolated real SDK must
+allow two measured cold calls, stop the third before provider execution, then
+compact once and complete a reduced continuation in the same thread and model.
+The fixture uses synthetic inference and no account. `--sdk ABSOLUTE_CANDIDATE`
+qualifies a newly built Gateway SDK before packaging. An older SDK reproduces
+failure to compact when cumulative billing totals hide the active context size.
+The Gateway-only SDK patch preserves those cumulative totals while marking the
+active context full; unmarked native runtimes keep their original behavior.
