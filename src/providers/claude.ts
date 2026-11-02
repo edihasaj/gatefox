@@ -90,6 +90,12 @@ export class ClaudeSubscription implements Provider {
   constructor(private readonly config?: ProviderConfig, private readonly onUsage?: (limit: ClaudeLimit) => Promise<void>,
     private readonly onContextWindow?: (model: string, contextWindow: number) => void, private readonly liveModule = "./claude-live.js") {}
   async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
+    const budget = claudeReplayBudget(this.scope(), providerConversationId(context), claudeCliModel(request.model), Buffer.byteLength(JSON.stringify(request.input)));
+    const finishActivity = context.requestKind === "compaction" ? () => {} : budget.track();
+    try { yield* this.inferWithBudget(request, signal, context, budget); }
+    finally { finishActivity(); }
+  }
+  private async *inferWithBudget(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext, budget: ClaudeReplayBudget): AsyncGenerator<InferenceEvent> {
     const conversationId = providerConversationId(context);
     const normalized = responsesToChatRequest(request, { reasoningSummaryMetadata: true });
     const choice = normalized.tool_choice;
@@ -108,7 +114,6 @@ export class ClaudeSubscription implements Provider {
       // The same key the live registry derives, so one thread's one-shot and live events line up.
       ...(conversationId ? { threadKey: sessionKey(this.scope(), conversationId).slice(0, 8) } : {}) };
     {
-      const budget = claudeReplayBudget(this.scope(), conversationId, run.model, Buffer.byteLength(JSON.stringify(request.input)));
       run.replayBudget = { beforeRequest: mode => { if (context.requestKind !== "compaction") budget.beforeRequest(mode); }, record: tokens => {
         if (context.requestKind !== "compaction") budget.record(tokens);
         const measured = tokens?.input !== undefined && tokens.cacheRead !== undefined && tokens.cacheWrite !== undefined;

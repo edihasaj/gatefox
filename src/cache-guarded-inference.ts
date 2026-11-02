@@ -32,6 +32,7 @@ export async function* cacheGuardedInference(provider: Provider, request: Respon
   const guardIdentity = context.requestKind === "compaction" ? JSON.stringify([identity ?? null, "compaction"]) : identity;
   const budget = contextCacheBudget(scope, guardIdentity, request.model, Buffer.byteLength(JSON.stringify(request.input)));
   budget.beforeRequest("provider");
+  const finishActivity = budget.track();
   let observed: CacheCounts | undefined;
   const observeCacheUsage = (value: ProviderCacheUsage) => {
     const next = observedCacheCounts(value);
@@ -44,5 +45,7 @@ export async function* cacheGuardedInference(provider: Provider, request: Respon
       if (event.type === "usage" || event.type === "done") observeCacheUsage(reported(event.usage, event.accounting));
       yield event;
     }
-  } finally { budget.record(observed); }
+  } finally {
+    try { budget.record(observed); } finally { finishActivity(); }
+  }
 }
