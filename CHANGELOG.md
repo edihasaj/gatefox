@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.7 — 2026-11-02
+
+- Classify rejected Copilot tool names using fixed categories and counts, without
+  recording names or arguments. Distinguish malformed names, declared aliases
+  and undeclared names while preserving strict refusal and no automatic replay.
+
 ## 1.4.6 — 2026-11-02
 
 - Preserve warm Copilot sessions across documented title, warning and empty queue
