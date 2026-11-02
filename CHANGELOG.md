@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.6 — 2026-11-02
+
+- Preserve warm Copilot sessions across documented title, warning and empty queue
+  notifications. Adopt the updated event guard into existing sessions, while
+  refusing unattended model starts and retaining client-owned tool execution.
+- Stabilize equivalent OpenRouter Responses tool catalogs to avoid needless
+  cache-prefix changes. Add content-free diagnostics for large cold requests.
+- Recover a stale Claude reverse forward only with a private receipt proving
+  its exact process, start time and connection, after its source client exited.
+
 ## 1.4.5 — 2026-11-02
 
 - Grant inactive cache histories inherited from the old guard one bounded fresh
