@@ -31,6 +31,8 @@ const { associateAppRuntime, renderInstalledLauncher } = await import(pathToFile
   join(app, 'Contents/Resources/management/dist/app-runtime.js')));
 const evidence = realpathSync(mkdtempSync(join(tmpdir(), 'gateway-signed-runtime-')));
 chmodSync(evidence, 0o700);
+// The synthetic CLI below uses CommonJS; never inherit a package scope from /tmp.
+writeFileSync(join(evidence, "package.json"), '{"type":"commonjs"}\n', { mode: 0o600 });
 const home = join(evidence, 'home');
 const prefix = join(home, '.local');
 const root = join(prefix, 'share/subscription-gateway');

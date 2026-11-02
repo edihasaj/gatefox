@@ -42,6 +42,9 @@ It verifies the canonical backend archive and production source, builds, signs,
 notarizes, assesses Gatekeeper, extracts the final signed ZIP for the runtime
 check, validates the signed updater flow against the existing app and CLI release,
 then writes immutable release assets under `.state/app-release/VERSION`.
+The signed runtime fixture declares its own JavaScript module type so unrelated
+files in the temporary directory cannot change the synthetic CLI semantics.
+
 Publishing requires `origin/production` to resolve exactly to the current HEAD, creates
 `app-vVERSION` as a draft, uploads the ZIP, backend archive, `app-update.json`,
 and `SHA256SUMS`, verifies every GitHub-reported digest and size, then publishes
