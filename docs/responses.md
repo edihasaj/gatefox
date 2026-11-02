@@ -6,7 +6,7 @@ read_when:
 
 # Responses support
 
-Grok/xAI API connections use a function-only tool bridge for caller custom and
+Grok/xAI and official OpenRouter API connections use a function-only tool bridge for caller custom and
 namespaced tools, with original identities restored on the client side and
 encrypted reasoning preserved. See [API providers](api-providers.md) for this
 compatibility route and named connection presets.

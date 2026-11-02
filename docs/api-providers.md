@@ -96,6 +96,20 @@ the original tool identity for the caller. Custom input travels in a JSON
 remain associated with their original tool. Encrypted reasoning passes through
 unchanged. The client continues to execute every tool.
 
+OpenRouter Responses uses the same function-only transport on the official
+`https://openrouter.ai/api/v1` endpoint, including DeepSeek Flash. Custom tools
+receive an explicit `{input: string}` schema instead of a native custom-tool
+declaration that the upstream may convert without its required input envelope.
+Stable, namespace-safe wire names map back to the exact caller identity; forced
+choices, historical calls, results and grammar guidance follow the same mapping.
+Arbitrary Responses endpoints and Codex subscriptions keep their native wire.
+Malformed custom function arguments fail before tool dispatch as
+`invalid_tool_call`, without automatic inference replay. A writer-level custom
+output failure also reports a provider-output error, rather than blaming the
+caller's request. No tool arguments or provider output are logged.
+
+Source: [OpenRouter Responses tool calling](https://openrouter.ai/docs/api_reference/responses/tool-calling).
+
 ## OpenCode conversation routing
 
 For official OpenCode inference endpoints, all three transports identify the

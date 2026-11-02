@@ -68,7 +68,9 @@ export function classifyProviderFailure(error: unknown, cause: ProviderAbortCaus
   if (cause === "cancelled") return new ProviderError("cancelled", "Provider request was cancelled", 499);
   if (cause === "shutdown") return new ProviderError("upstream_unavailable", "Gateway is restarting; retry shortly", 503);
   try { if (error instanceof ProviderError) return error; } catch { /* A hostile Proxy is an unknown failure. */ }
-  try { if (error instanceof ResponsesTranslationError) return new ProviderError("invalid_request", "Responses request contains invalid or unsupported data", 400); } catch { /* fall through */ }
+  try { if (error instanceof ResponsesTranslationError) return error.reason === "invalid_provider_output"
+    ? new ProviderError("invalid_tool_call", "Provider returned invalid custom tool arguments")
+    : new ProviderError("invalid_request", "Responses request contains invalid or unsupported data", 400); } catch { /* fall through */ }
   // A bare Node fetch wrapper remains compatible. Detailed raw transport
   // normalization belongs only to ResponsesAPI's post-credential boundaries.
   const network = classifyNetworkFailure(error);
