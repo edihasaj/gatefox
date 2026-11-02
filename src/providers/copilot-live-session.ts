@@ -9,6 +9,7 @@ import { record } from "./copilot-rpc.js";
 import type { CopilotTurn } from "./copilot-turn.js";
 import { ProviderError } from "./provider.js";
 import { CliContinuityUnavailable } from "./cli-continuity.js";
+import { telemetry } from "../telemetry.js";
 
 export type SessionState = "starting" | "generating" | "awaiting_outputs" | "turn_done" | "closed";
 export type SessionEnd = "reaped" | "evicted" | "crashed" | "closed";
@@ -37,8 +38,12 @@ const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499)
 // Between requests the model must do nothing, so only these housekeeping events are accepted; anything else
 // (output, a model call, a finished tool call, compaction) means the runtime is acting on its own and may be billing.
 // CLI 1.0.97 sends `session.idle` right after `assistant.idle`, so it arrives once the finished request has detached.
-const housekeeping = new Set(["session.info", "session.usage_info", "session.usage_checkpoint", "session.idle"]);
-const acceptedBetweenRequests = (type: string) => housekeeping.has(type) || (type.startsWith("model.") && type !== "model.call_start");
+const housekeeping = new Set(["session.info", "session.usage_info", "session.usage_checkpoint", "session.idle",
+  "session.warning", "session.title_changed", "pending_messages.modified"]);
+const modelHousekeeping = new Set(["model.call_finished", "model.model_call_success", "model.message", "model.response",
+  "model.call_final_result", "model.turn_ended", "model.messages_snapshot", "model.log"]);
+const acceptedBetweenRequests = (type: string, data: Record<string, unknown>) =>
+  (housekeeping.has(type) || modelHousekeeping.has(type)) && (type !== "pending_messages.modified" || Object.keys(data).length === 0);
 // The CLI announces a new session right after `session.create` answers; these are accepted until the first request attaches.
 const lifecycle = new Set(["session.start", "session.managed_settings_resolved"]);
 const completions = new Set(["tool.execution_complete", "external_tool.completed"]);
@@ -91,6 +96,8 @@ interface Attached {
  * whenever the session ends, however it ends.
  */
 export class CopilotLiveSession {
+  /** Only the event router changes: its fields and helper methods retain the v1 instance ABI. */
+  static adoptEventPolicy(session: CopilotLiveSession): void { session.route = CopilotLiveSession.prototype.route; }
   readonly queuedInputVersion = 1;
   reasoningLedgerVersion = 1;
   state: SessionState = "starting";
@@ -408,7 +415,14 @@ export class CopilotLiveSession {
       return;
     }
     const event = record(params.event); const data = record(event.data); const type = typeof event.type === "string" ? event.type : "";
-    const reject = (reason: string, text = "Copilot did something beyond caller-dispatched inference") => this.violation(new ProviderError("invalid_tool_call", text), reason);
+    const reject = (reason: string, text = "Copilot did something beyond caller-dispatched inference") => {
+      const known = new Set([...housekeeping, ...modelHousekeeping, ...lifecycle, ...completions, "model.call_start", "model.model_call_started", "model.turn_started",
+        "assistant.turn_start", "assistant.turn_end", "assistant.message", "assistant.message_delta", "assistant.usage", "session.compaction_start", "session.truncation",
+        "session.error", "session.model_change", "session.tools_updated", "session.mcp_server_status_changed", "tool.execution_progress", "pending_messages.modified"]);
+      telemetry("copilot_session_violation", { reason, eventType: known.has(type) ? type : "unknown", state: this.state,
+        pendingCalls: this.pending.length, attached: !!this.attached });
+      this.violation(new ProviderError("invalid_tool_call", text), reason);
+    };
     if (event.agentId) return this.violation(new ProviderError("invalid_stream", "Copilot emitted an unexpected sub-agent event"), "sub_agent");
     if (type === "permission.requested") return reject("permission", "Copilot requested execution beyond caller-dispatched inference");
     if (type === "tool.execution_start" || type === "external_tool.requested") {
@@ -430,7 +444,7 @@ export class CopilotLiveSession {
     }
     const attached = this.attached;
     if (!attached) {
-      if (acceptedBetweenRequests(type) || type === "tool.execution_start") return;
+      if (acceptedBetweenRequests(type, data) || type === "tool.execution_start") return;
       if (!this.served && lifecycle.has(type)) return;
       // A finished tool call nobody answered is the 30-minute timeout (or a failure); the runtime's own model call follows within seconds.
       return reject(completions.has(type) ? "unattended_completion" : "unattended_output", "Copilot acted outside a request");

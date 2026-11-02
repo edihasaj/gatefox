@@ -14,7 +14,9 @@ import { telemetry } from "../telemetry.js";
 import { reasoningScope } from "../protocol/reasoning-state.js";
 import { unwrapTurnState, wrapTurnState } from "../protocol/turn-state.js";
 import { plaintextCollaborationTransport, subscriptionCollaborationTransport } from "../protocol/collaboration-transport.js";
-import { apiRoutingHeaders } from "./api-routing.js";
+import { apiRoutingHeaders, isOpenRouterApi } from "./api-routing.js";
+import { stableResponsesCatalog } from "./responses-catalog.js";
+import { apiCacheTrace } from "./api-cache-trace.js";
 import { grokToolBridge } from "./grok-tools.js";
 import { codexUsageFromEvent, codexUsageFromHeaders, credentialRevision, observeCodexUsage, type CodexUsageObserver } from "./codex-usage.js";
 import { networkCodesField } from "../provider-network.js";
@@ -218,11 +220,14 @@ export class ResponsesAPI implements Provider {
       ...(turnState ? { "x-codex-turn-state": turnState } : {}) } : {};
     const collaborationTransport = plan ? subscriptionCollaborationTransport(body) : { body: plaintextCollaborationTransport(body) };
     const grokTools = !plan ? grokToolBridge(this.config, request, collaborationTransport.body) : undefined;
-    const outgoing = grokTools?.body || collaborationTransport.body;
+    const translated = grokTools?.body || collaborationTransport.body;
+    const outgoing = !plan && isOpenRouterApi(this.config) ? stableResponsesCatalog(translated) : translated;
+    const apiHeaders = !plan ? apiRoutingHeaders(this.config, context, request) : {};
+    const cacheTrace = !plan && isOpenRouterApi(this.config) ? apiCacheTrace(this.scope, this.config.id, outgoing, context, apiHeaders["x-session-id"]) : undefined;
     let response: Response;
     try {
       response = await fetch(`${base}/responses`, { method: "POST", redirect: "error", signal,
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...(!plan ? apiRoutingHeaders(this.config, context, request) : {}), ...routing }, body: JSON.stringify(outgoing) });
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...apiHeaders, ...routing }, body: JSON.stringify(outgoing) });
     } catch (error) {
       throw networkProviderError(error, "connect") ?? error;
     }
@@ -365,6 +370,7 @@ export class ResponsesAPI implements Provider {
       if (completed?.usage) context.observeCacheUsage?.({ inputTokens: completed.usage.input_tokens,
         cachedTokens: completed.usage.input_tokens_details?.cached_tokens,
         cacheWriteTokens: completed.usage.input_tokens_details?.cache_creation_tokens });
+      if (completed?.usage && (terminal || event.type === "response.failed")) cacheTrace?.record(completed.usage);
       const interrupted = event.type === "response.incomplete" && completed?.incomplete_details?.reason === "interrupted";
       const capped = context.clientProtocol === "messages" && event.type === "response.incomplete" && completed?.incomplete_details?.reason === "max_output_tokens";
       if (event.type === "error" || event.type === "response.failed" || (event.type === "response.incomplete" && !interrupted && !capped)) throw responsesStreamError(event, response.headers.get("x-request-id") || undefined);

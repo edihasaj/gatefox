@@ -5,6 +5,7 @@ import { AnthropicAPI } from "../providers/anthropic-api.js";
 import type { ProviderConfig } from "../config.js";
 import { normalizeResponsesTools } from "../protocol/request.js";
 import { nativeCatalog, nativeTools } from "../providers/copilot-render.js";
+import { ResponsesAPI } from "../providers/responses-api.js";
 
 const schema = { type: "object", properties: { z: { enum: ["z", "a"] }, a: { type: "string" } } };
 const reordered = { properties: { a: { type: "string" }, z: { enum: ["z", "a"] } }, type: "object" };
@@ -48,4 +49,23 @@ test("Copilot schema object reordering preserves native catalog bytes and meanin
   const two = nativeTools(nativeCatalog(normalizeResponsesTools(changed)));
   assert.equal(JSON.stringify(one), JSON.stringify(two));
   assert.ok(JSON.stringify(two).includes('["z","a"]'));
+});
+
+test("OpenRouter Responses stabilizes equivalent tool catalogs without changing history or cache identity", async t => {
+  const key = "GATEWAY_RESPONSES_PREFIX_FIXTURE"; const before = process.env[key]; process.env[key] = "fixture";
+  t.after(() => { if (before === undefined) delete process.env[key]; else process.env[key] = before; });
+  const sent: { body: Record<string, unknown>; headers: Headers }[] = [];
+  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+    sent.push({ body: JSON.parse(String(init.body)), headers: new Headers(init.headers) });
+    return new Response('data: {"type":"response.completed","response":{"id":"fixture","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n', { headers: { "Content-Type": "text/event-stream" } });
+  });
+  const provider = new ResponsesAPI({ id: "fixture", type: "responses-api", baseUrl: "https://openrouter.ai/api/v1", apiKeyEnv: key, models: { alias: "fixture" } });
+  const original = JSON.stringify({ input, tools });
+  for (const catalog of [tools, changed]) {
+    for await (const _ of provider.infer({ model: "fixture", input, tools: catalog, prompt_cache_key: "caller", tool_choice: { type: "function", name: "read" } }, new AbortController().signal, { threadId: "thread" })) {}
+  }
+  assert.equal(JSON.stringify(sent[0].body), JSON.stringify(sent[1].body));
+  assert.deepEqual(sent[0].body.input, input); assert.equal(sent[0].headers.get("x-session-id"), "caller");
+  assert.equal(JSON.stringify({ input, tools }), original);
+  assert.ok(JSON.stringify(sent[0].body.tools).includes('["z","a"]'));
 });

@@ -119,6 +119,17 @@ endpoint, all API transports send `x-session-id` from the caller's explicit
 This preserves an explicit cache key's grouping, including shared fork keys.
 Missing or invalid identifiers do not create new identities or go into logs.
 The Responses transport also preserves the caller's body cache fields.
+For OpenRouter Responses, equivalent function/custom catalogs and namespace
+members use stable declaration order and schema object keys. Conversation items,
+tool arguments/results, schema arrays, explicit cache keys and instructions retain
+their values and order. Native Codex and other Responses origins keep their
+existing serialization.
+
+Large cold Responses requests produce count-only `api_cache_cold` diagnostics.
+They distinguish a first measured request from changes to tool declarations,
+instructions, opening text or affinity. Comparisons use bounded process-memory
+digests; no digests, identities or request content enter logs. Stable comparisons
+do not prove that an upstream provider retained its cache.
 
 OpenRouter documents this header for Chat and Responses. An explicit session
 activates provider stickiness on the first successful request, before a cache

@@ -156,8 +156,10 @@ whichever is smaller, before that happens: `session.abort`, then SIGKILL. The ne
 
 Between requests the gateway accepts only housekeeping: the pending calls' own
 `tool.execution_start` and `external_tool.requested` events, `session.info`,
+`session.warning`, `session.title_changed`, `pending_messages.modified`,
 `session.usage_info`, `session.usage_checkpoint`, `session.idle` (CLI 1.0.97 sends it
-right after `assistant.idle`), and `model.*` events other than `model.call_start`. It also
+right after `assistant.idle`), and known model-completion metadata. Model-call and
+model-turn start aliases, including `model.model_call_started`, remain refused. It also
 accepts the CLI's start-up announcements `session.start` and
 `session.managed_settings_resolved` until the session's first request, and a
 `session.model_change` that confirms the effort change the gateway asked for (the CLI
@@ -172,6 +174,11 @@ permission request, a sub-agent event, or a tool request for a call that is not 
 A session that misbehaves while it is starting is never handed to a request; the request
 receives a final refusal (`spawn_failed`). A timer cannot be trusted alone, because a sleeping
 Mac stops it while the CLI's clock goes on.
+
+Hot adoption replaces only the existing session's event router with the current
+v1-compatible policy. Its process, pump, history, timers and pending tools remain
+intact. Registry adoption and request placement both apply the router, so warm
+sessions receive the updated housekeeping and model-start guards too.
 
 ## Stopping a session
 
@@ -297,6 +304,12 @@ A session that never served a request (it failed while starting) has no end even
 request's `fallback` event says why. `request_completed` and `request_failed` carry the
 same `initiator`, `cacheWriteTokens`, `reasoningTokens` and `nanoAiu` for every Copilot
 request.
+
+`copilot_session_violation` records the fixed event type, reason, state and pending
+call count before an unsolicited event closes a session. Warning/title text, tool
+arguments and event bodies are excluded. Unknown event names are recorded as
+`unknown`; documented title, warning and queue-change notifications are metadata,
+so they do not destroy a warm session.
 
 ## Restarts and upgrades
 

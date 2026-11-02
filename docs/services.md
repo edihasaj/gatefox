@@ -502,6 +502,14 @@ LaunchAgent before loading it. This repairs a disabled registration without
 restarting an already loaded job. New tunnel jobs limit the initial SSH connection
 to one ten-second attempt; launchd or the unified supervisor retries after failure.
 Existing active tunnel arguments stay unchanged until a maintenance update.
+Adopted Claude reverse forwards record an owned child/start identity and its
+verified remote sshd listener, start stamp and TCP peer. A reconnect can clear
+only that exact former listener after the original client has exited. Missing
+proof, changed settings, foreign owners and unreadable state preserve the port.
+Controller adoption records already-running forwards without interrupting them.
+This recovery uses one bounded SSH probe at connection startup, no extra daemon,
+and currently records direct IPv4 SSH connections on port 22. Unsupported routes
+remain conservative. Generic same-user port cleanup stays disabled for Claude.
 The unified supervisor also adds these defaults when it starts a newly owned SSH
 child from an older plan. Explicit command-line timeout and attempt values,
 forwarding endpoints, and SSH profile paths remain unchanged. It does not rewrite
