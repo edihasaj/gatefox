@@ -3,6 +3,8 @@ import { nativeCatalog } from "./copilot-render.js";
 import { record } from "./copilot-rpc.js";
 import { copilotContextFailure } from "./context-errors.js";
 import { ProviderError } from "./provider.js";
+import { copilotUnknownNameClass } from "./copilot-tool-rejection.js";
+import { telemetry } from "../telemetry.js";
 
 type Message = Record<string, unknown>;
 const invalidCall = (code: string, message: string) => new ProviderError("invalid_tool_call", message, 502, { code, event: "copilot.tool_use" });
@@ -17,7 +19,11 @@ export function nativeCopilotCalls(value: unknown, tools: OpenAITool[] | Map<str
   return value.map(raw => {
     const call = record(raw);
     const definition = typeof call.name === "string" ? names.get(call.name)?.function : undefined;
-    if (!definition) throw invalidCall("unknown_tool", "Copilot returned an unknown tool call");
+    if (!definition) {
+      telemetry("copilot_tool_rejected", { reason: "unknown_tool", nameClass: copilotUnknownNameClass(call.name, names.values()),
+        catalogCount: names.size, callCount: value.length });
+      throw invalidCall("unknown_tool", "Copilot returned an unknown tool call");
+    }
     if (typeof call.toolCallId === "string" && ids.has(call.toolCallId)) throw invalidCall("duplicate_tool_id", "Copilot returned a duplicate tool call ID");
     // Copilot's protocol defaults an omitted type to "function". Every tool we declared is an external function.
     if ((call.type !== undefined && call.type !== "function") || typeof call.toolCallId !== "string" || !call.toolCallId) throw invalidCall("malformed_tool_call", "Copilot returned a malformed tool call");
