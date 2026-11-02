@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.8 — 2026-11-02
+
+- Give identified SDK turns one compaction recovery signal after the large-context
+  cache guard stops inference. Unchanged retries and cold compactions remain bounded.
+- Fix Gateway SDK full-context accounting so the next user turn compacts the same
+  chat on its selected model, without rewriting cumulative usage totals. Preserve
+  native behavior outside marked Gateway executors.
+
 ## 1.4.7 — 2026-11-02
 
 - Classify rejected Copilot tool names using fixed categories and counts, without
