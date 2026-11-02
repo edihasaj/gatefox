@@ -18,6 +18,7 @@ import { apiRoutingHeaders, isOpenRouterApi } from "./api-routing.js";
 import { stableResponsesCatalog } from "./responses-catalog.js";
 import { apiCacheTrace } from "./api-cache-trace.js";
 import { grokToolBridge } from "./grok-tools.js";
+import { responsesFunctionTools, validCustomFunctionEnvelope } from "./responses-function-tools.js";
 import { codexUsageFromEvent, codexUsageFromHeaders, credentialRevision, observeCodexUsage, type CodexUsageObserver } from "./codex-usage.js";
 import { networkCodesField } from "../provider-network.js";
 import { networkProviderError } from "./network-error.js";
@@ -219,8 +220,8 @@ export class ResponsesAPI implements Provider {
     const routing = plan ? { ...(context.sessionId ? { "session-id": context.sessionId } : {}), ...(context.threadId ? { "thread-id": context.threadId } : {}),
       ...(turnState ? { "x-codex-turn-state": turnState } : {}) } : {};
     const collaborationTransport = plan ? subscriptionCollaborationTransport(body) : { body: plaintextCollaborationTransport(body) };
-    const grokTools = !plan ? grokToolBridge(this.config, request, collaborationTransport.body) : undefined;
-    const translated = grokTools?.body || collaborationTransport.body;
+    const functionTools = !plan ? (isOpenRouterApi(this.config) ? responsesFunctionTools(collaborationTransport.body, "or") : grokToolBridge(this.config, request, collaborationTransport.body)) : undefined;
+    const translated = functionTools?.body || collaborationTransport.body;
     const outgoing = !plan && isOpenRouterApi(this.config) ? stableResponsesCatalog(translated) : translated;
     const apiHeaders = !plan ? apiRoutingHeaders(this.config, context, request) : {};
     const cacheTrace = !plan && isOpenRouterApi(this.config) ? apiCacheTrace(this.scope, this.config.id, outgoing, context, apiHeaders["x-session-id"]) : undefined;
@@ -290,7 +291,8 @@ export class ResponsesAPI implements Provider {
       const value = toolInput(item), arguments_ = value.input;
       if (item.status !== undefined && item.status !== "completed") throw invalid();
       if (item.type === "function_call") try { JSON.parse(arguments_); } catch { throw invalid(); }
-      if (grokTools && !grokTools.validCustomEnvelope(value.responseTool, arguments_)) throw invalid();
+      if (item.type === "function_call" && !validCustomFunctionEnvelope(value.responseTool, arguments_))
+        throw new ProviderError("invalid_tool_call", "Provider returned invalid custom tool arguments", 502, { code: "nontext_custom_input" });
       matchesPending(value);
       const signature = JSON.stringify([item.type, item.name, value.namespace, arguments_, value.encryptedArgs]);
       const previous = calls.get(value.id);
@@ -322,7 +324,7 @@ export class ResponsesAPI implements Provider {
       catch (error) { if (error instanceof BridgeCallError) throw new ProviderError("invalid_tool_call", "Provider returned an invalid or duplicate tool call"); throw error; }
     };
     const itemDone = (item: Record<string, unknown>, snapshot = false, interrupted = false): InferenceEvent[] => {
-      item = grokTools?.restoreItem(item) || item;
+      item = functionTools?.restoreItem(item) || item;
       if (plan && (item.type === "tool_search_call" || item.type === "tool_search_output" || item.type === "web_search_call")) {
         // An interrupted final snapshot can hold a search item that never finished; like an unfinished function call, it is withheld.
         if (interrupted && item.status !== "completed") return [];
@@ -349,7 +351,7 @@ export class ResponsesAPI implements Provider {
       if (plan && event.type === "codex.rate_limits") try { observeCodexUsage(this.onCodexUsage, codexUsageFromEvent(event), revision); } catch { /* Observation never fails inference. */ }
       if (!hideSummary && event.type === "response.reasoning_summary_text.delta" && typeof event.delta === "string") yield { type: "reasoning", text: event.delta, id: String(event.item_id), summaryIndex: Number(event.summary_index) || 0 };
       if (event.type === "response.output_item.added") {
-        const item = grokTools?.restoreItem(event.item as Record<string, unknown>) || event.item as Record<string, unknown>;
+        const item = functionTools?.restoreItem(event.item as Record<string, unknown>) || event.item as Record<string, unknown>;
         if (item?.type === "message") output.added(item);
         if (item?.type === "reasoning") yield { type: "reasoning-state", item: hideSummary ? { ...item, summary: [] } : item };
         // Encryption metadata is an explicit transport fact. Record it at the
