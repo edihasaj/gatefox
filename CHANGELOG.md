@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.5 — 2026-11-02
+
+- Grant inactive cache histories inherited from the old guard one bounded fresh
+  warm-up. Resuming an hour-old or days-old chat no longer combines its cold seed
+  with stale pre-upgrade strikes. Tracked active requests retain their history,
+  and later module upgrades cannot repeatedly clear a new safety stop.
+
 ## 1.4.4 — 2026-11-02
 
 - Copilot public reasoning summaries retain their type during live continuation.
