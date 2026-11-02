@@ -17,6 +17,7 @@ import { lockBusyCode, withPrivateFileLock } from "../private-file-lock.js";
 import type { AutoLatestDependencies } from "../model-auto-latest/types.js";
 import { effectivePlacement, setNativePickerPlacement } from "./native-picker.js";
 import { isApiKind, managedModels, managedProvider, providerPrerequisites, runSubscriptionLogin, validModelId } from "./providers.js";
+import { metadataLabel } from "../model-label.js";
 import type { CatalogEntry, DraftRecord, ManagementDependencies, ManagementRequest, ManagementResponse, ManagementResult, ProviderInput } from "./types.js";
 
 const operations = new Set(["inspect", "prepare", "authenticate", "discover", "commit", "models", "rename", "reorder", "native-picker", "remove", "discard", "auto-latest", "auto-latest-check", "activity", "diagnostics"]);
@@ -132,7 +133,7 @@ export class ManagementService {
     let fresh: CatalogEntry[] = []; let verified = false;
     try {
       const discovered = await this.deps.discoverModels!(target.provider, { refresh: true }); verified = true;
-      fresh = discovered.map(item => catalogEntry(item.model, item.metadata.displayName || item.model, item.metadata as Record<string, unknown>));
+      fresh = discovered.map(item => catalogEntry(item.model, metadataLabel(item.metadata.displayName) || item.model, item.metadata as Record<string, unknown>));
     } catch (error) {
       if (isManagementUnavailable(error)) throw error;
       if (!supplied.length) throw new ManagementError("discovery_failed");
