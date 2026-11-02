@@ -415,6 +415,12 @@ and six compaction cases: the four for `subscription_gateway` and native chats, 
 two for `openai` inside a marked gateway executor. It also runs two queue integration
 tests covering both gateway identities, writes during a pause, cold resume,
 explicit continuation, explicit queue start, and the native failure behavior.
+Three cache-recovery accounting tests cover cumulative usage below, at and above
+the context window, absent usage and unchanged unmarked behavior. Also run
+`scripts/e2e-cache-recovery.mjs` against the built SDK and current Gateway code
+before publishing. It must prove the actual recovery capability header, a stopped
+third cold call, one client compaction and a smaller continuation in the same chat
+and model. See [cache safety](cache-safety.md#recovery-verification).
 The compaction cases use the
 upstream compact suite with its original test aliases and constructor. The runner
 temporarily narrows the suite aggregator to that module, avoiding unrelated upstream
