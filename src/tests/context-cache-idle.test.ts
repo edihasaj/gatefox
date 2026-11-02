@@ -143,7 +143,7 @@ test("a backwards clock adjustment does not clear the active block", t => {
   assert.throws(() => budget.beforeRequest("provider"), { code: "invalid_request" });
 });
 
-test("a hot-adopted legacy block is preserved until the new guard observes real idle time", t => {
+test("a late legacy write after policy adoption waits for observed idle time", t => {
   let now = Date.now(); t.mock.method(Date, "now", () => now);
   const key = createHash("sha256").update(JSON.stringify(["legacy-idle", "thread", "model"])).digest("hex");
   const state = globalThis as unknown as Record<symbol, Map<string, unknown>>;

@@ -10,10 +10,20 @@ const histories = state[symbol] ??= new Map<string, Rewrite>();
 const activitySymbol = Symbol.for("harness-gateway/context-cache-inflight/v1");
 const activity = globalThis as unknown as Record<symbol, Map<string, number> | undefined>;
 const inFlight = activity[activitySymbol] ??= new Map<string, number>();
+// Earlier guards could combine misses from separate days and had no reliable
+// activity clock. Grant their inactive histories one bounded warm-up at this
+// policy handoff. The process-wide marker survives every later module adoption;
+// reloading a module cannot repeatedly clear an active safety stop.
+const adoptionSymbol = Symbol.for("harness-gateway/context-cache-idle-adoption/v1");
+const adoption = globalThis as unknown as Record<symbol, boolean | undefined>;
+if (!adoption[adoptionSymbol]) {
+  adoption[adoptionSymbol] = true;
+  for (const key of histories.keys()) if (!inFlight.has(key)) histories.delete(key);
+}
 const largeInputTokens = 65536;
 // A quiet conversation can legitimately lose its provider cache. Count request
 // attempts and completions, so neither long inference nor blocked retry loops
-// manufacture an idle interval. Older hot-adopted entries start conservatively.
+// manufacture an idle interval. Late legacy writes start conservatively.
 const idleResetMs = 5 * 60_000;
 const valid = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 
