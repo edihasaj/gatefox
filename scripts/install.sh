@@ -184,7 +184,9 @@ import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 const root=process.argv[2], releases=`${root}/releases/`, current=`${root}/current/package/dist/cli.js`;
-const options={encoding:"utf8",stdio:["ignore","pipe","ignore"],timeout:10000,maxBuffer:16*1024*1024};
+// Busy Macs can exceed 16 MiB of open-file records. Retain a fixed bound and
+// still refuse all pruning if either inventory is incomplete.
+const options={encoding:"utf8",stdio:["ignore","pipe","ignore"],timeout:10000,maxBuffer:64*1024*1024};
 const lsof=spawnSync("/usr/sbin/lsof",["-nP","-u",String(process.getuid()),"-Fpn"],options);
 const processes=spawnSync("/bin/ps",["-x","-o","pid=","-o","command="],options);
 if(lsof.error||lsof.status!==0||processes.error||processes.status!==0)process.exit(1);

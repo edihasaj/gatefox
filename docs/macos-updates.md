@@ -54,6 +54,10 @@ After confirming that no installer or updater remains, move only the stale
 `.gateway-installation-lock` directory in the installation root to Trash before
 retrying.
 
+The CLI installer bounds each process/open-file inventory at 64 MiB so busy Macs
+can complete the release-retention check. A timeout, overflow or incomplete scan
+still prevents pruning; it never establishes that an old release is unused.
+
 ## Release availability
 
 The updater sees an app release only after its draft assets have all uploaded,
