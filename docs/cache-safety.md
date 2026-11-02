@@ -37,9 +37,12 @@ retry loops cannot age their own block away. Actual cache reads still clear the
 consecutive-miss count. Intermittent misses separated by successful reuse do not
 constitute continuous uncached processing under this policy.
 
-Hot-adopted entries from an older release without activity timestamps keep their
-existing block until the new guard observes an idle interval; missing historical
-timestamps never manufacture a reset. Provider, model and caller identity remain
+The idle-aware policy's one-time adoption grants inactive inherited histories a
+fresh bounded warm-up, including old entries without trustworthy timestamps.
+In-flight conversations retain their history. A process-wide adoption marker
+prevents later module reloads from repeatedly clearing a safety stop. A late
+legacy write after that handoff stays conservative until real idle is observed.
+Provider, model and caller identity remain
 the scope. No new user turn, reconnect or provider reseed alone resets the guard.
 
 The client receives a final HTTP 400, or a terminal stream error, explaining the
