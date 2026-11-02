@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.4 — 2026-11-02
+
+- Copilot public reasoning summaries retain their type during live continuation.
+  Tool results and follow-up messages can continue the original session without
+  a false history mismatch, restart or full-history replay.
+
 ## 1.4.3 — 2026-11-02
 
 - Cache safety starts a fresh warm-up after five minutes without request activity,
