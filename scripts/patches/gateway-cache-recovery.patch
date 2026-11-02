@@ -74,3 +74,15 @@
 +        assert_eq!(info.last_token_usage.total_tokens, 500_000);
 +    }
 +}
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -872,6 +872,9 @@
+         responses_metadata: &CodexResponsesMetadata,
+     ) -> ApiHeaderMap {
+         let mut extra_headers = responses_metadata.compatibility_headers();
++        if codex_model_provider_info::gateway_executor_marker() {
++            extra_headers.insert("x-harness-cache-recovery", HeaderValue::from_static("1"));
++        }
+         if matches!(
+             self.state.session_source,
+             SessionSource::Internal(InternalSessionSource::MemoryConsolidation)

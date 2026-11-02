@@ -21,6 +21,8 @@ export type InferenceRequestKind = "turn" | "compaction" | "prewarm" | "memory";
 export interface ProviderCacheUsage { inputTokens?: number; inputTokensLowerBound?: number; cachedTokens?: number; cacheWriteTokens?: number }
 /** Caller routing identifiers and the gateway-selected ingress protocol; never request content. */
 export interface InferenceContext {
+  /** The Gateway SDK advertises its corrected active-context compaction accounting. */
+  cacheRecovery?: true;
   observeCacheUsage?: (usage: ProviderCacheUsage) => void;
   sessionId?: string; threadId?: string; turnId?: string; windowId?: string; requestKind?: InferenceRequestKind;
   clientProtocol?: "responses" | "messages"; adaptiveThinking?: boolean;
@@ -81,6 +83,7 @@ export function inferenceContext(headers: Headers, body?: unknown): InferenceCon
     const header = turnMetadata(headers["x-codex-turn-metadata"], 16 * 1024);
     const fromBody = header.turnId && header.requestKind ? {} : turnMetadata(metadata["x-codex-turn-metadata"], 1024 * 1024);
     const context: InferenceContext = {
+      ...(headers["x-harness-cache-recovery"] === "1" ? { cacheRecovery: true as const } : {}),
       sessionId: routingId(headers["session-id"]) ?? routingId(headers["session_id"]) ?? routingId(headers["x-opencode-session"]) ?? routingId(metadata.session_id),
       threadId: routingId(headers["thread-id"]) ?? routingId(headers["thread_id"]) ?? routingId(metadata.thread_id),
       turnId: header.turnId ?? routingId(metadata.turn_id) ?? fromBody.turnId,
