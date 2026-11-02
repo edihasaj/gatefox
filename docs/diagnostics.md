@@ -10,6 +10,17 @@ read_when:
 The gateway keeps a private event log on every Mac and sends only exceptions to
 the private GlitchTip project. Neither runs on a request path.
 
+## Responses tool identity failures
+
+`tool_identity_failure` separates Responses catalog/name matching failures from
+malformed arguments and other `invalid_tool_call` errors. Its `upstreamCode` is
+one of `missing_tool_name`, `unknown_wire_tool`, `unexpected_tool_namespace` or
+`undeclared_tool`; `upstreamLastEvent` and bounded stream counts identify the
+actual failure boundary. The client receives a fixed explanation and the same
+final refusal behavior as other invalid tool output. No tool is dispatched by
+this classification. Names, namespaces, arguments and response content remain
+private, and no automatic inference retry is added.
+
 ## Cache and failure screen
 
 `api_cache_cold` records large measured cold OpenRouter Responses requests, with

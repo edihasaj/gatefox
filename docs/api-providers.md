@@ -110,6 +110,13 @@ declaration that the upstream may convert without its required input envelope.
 Stable, namespace-safe wire names map back to the exact caller identity; forced
 choices, historical calls, results and grammar guidance follow the same mapping.
 Arbitrary Responses endpoints and Codex subscriptions keep their native wire.
+Responses tool-name/catalog mismatches report the separate `tool_identity_failure`
+category. Fixed diagnostic reasons distinguish `missing_tool_name`,
+`unknown_wire_tool`, `unexpected_tool_namespace` and `undeclared_tool`.
+The error also retains the actual stream boundary and event counts. It never
+records tool names, namespaces, arguments or request/response content. These
+failures remain final: the rejected tool is not dispatched and inference is not
+automatically replayed. This classification does not change tool matching.
 Malformed custom function arguments fail before tool dispatch as
 `invalid_tool_call`, without automatic inference replay. A writer-level custom
 output failure also reports a provider-output error, rather than blaming the
