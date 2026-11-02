@@ -9,6 +9,7 @@ test("old idle cache strikes get one warm-up on policy adoption while active req
   const old = { count: 2, bytes: 1000, cacheTokens: 200000, unknown: false };
   histories.set(key("legacy"), { ...old });
   histories.set(key("days-old"), { ...old, lastActivityAt: Date.now() - 3 * 24 * 60 * 60_000 });
+  histories.set(key("hour-old"), { ...old, lastActivityAt: Date.now() - 50 * 60_000 });
   histories.set(key("running"), { ...old, lastActivityAt: Date.now() - 20 * 60_000 });
   active.set(key("running"), 1);
   globals[Symbol.for("harness-gateway/context-cache-budget/v1")] = histories;
@@ -16,7 +17,7 @@ test("old idle cache strikes get one warm-up on policy adoption while active req
   Reflect.deleteProperty(globals, Symbol.for("harness-gateway/context-cache-idle-adoption/v1"));
   const fresh = await import(new URL("../context-cache-budget.js?adoption=first", import.meta.url).href);
   const budget = (identity: string) => fresh.contextCacheBudget("adoption", identity, "model", 1000);
-  for (const identity of ["legacy", "days-old"]) {
+  for (const identity of ["legacy", "days-old", "hour-old"]) {
     assert.doesNotThrow(() => budget(identity).beforeRequest("provider"));
     budget(identity).record({ input: 200000, read: 0, uncached: 200000 });
     assert.doesNotThrow(() => budget(identity).beforeRequest("provider"));
