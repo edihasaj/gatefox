@@ -1,8 +1,7 @@
 import { spawn } from "node:child_process";
-import { constants } from "node:fs";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { responsesToChatRequest } from "../protocol/request.js";
@@ -15,7 +14,7 @@ import { claudeToolBindings, claudeToolName } from "./claude-tool-names.js";
 import { claudeMcpCatalog, gatewaySystemPrompt } from "./claude-control.js";
 import { leadingInstructions, markCustomCalls, renderConversation } from "./claude-render.js";
 import { validateForcedChoice } from "./claude-calls.js";
-import { ensureGrokHome } from "./grok-home.js";
+import { ensureGrokHome, grokCommand } from "./grok-home.js";
 import { GrokMessageStream, grokUsage, type GrokStreamEnd } from "./grok-stream.js";
 import { createHash } from "node:crypto";
 import { CliContinuityUnavailable } from "./cli-continuity.js";
@@ -66,15 +65,6 @@ export function grokToolHistory(messages: OpenAIChatMessage[], tools: OpenAITool
     ...(message.name ? { name: translate(message.name) } : {}),
     ...(message.tool_calls ? { tool_calls: message.tool_calls.map(call => ({ ...call, function: { ...call.function, name: translate(call.function.name) } })) } : {}),
   }));
-}
-
-async function executable(path: string): Promise<boolean> { try { await access(path, constants.X_OK); return true; } catch { return false; } }
-/** PATH first, then the Grok Build installer's location, which a launchd PATH usually lacks. */
-export async function grokCommand(): Promise<string> {
-  for (const directory of (process.env.PATH || "").split(delimiter)) if (directory && await executable(join(directory, "grok"))) return join(directory, "grok");
-  const fallback = join(homedir(), ".local/bin/grok");
-  if (await executable(fallback)) return fallback;
-  throw new ProviderError("cli_failed", "The Grok CLI is not installed; install Grok Build and sign in for the gateway", 502);
 }
 
 /** The CLI keeps its subscription login: API keys and the caller's Grok settings never reach it. */

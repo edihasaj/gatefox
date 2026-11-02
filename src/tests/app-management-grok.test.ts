@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { handleManagement } from "../app-management.js";
 import { providerRoute } from "../app-management/aliases.js";
+import { firstSignInURL } from "../app-management/providers.js";
 import type { ManagementResult } from "../app-management/types.js";
 
 const dependencies = { lookupCli: async () => true };
@@ -25,16 +26,55 @@ async function select(path: string, selectedModels: string[]) {
   return handleManagement({ operation: "models", configPath: path, providerId: "grok", revision: current.revision, selectedModels }, dependencies);
 }
 
-test("a Grok connection is listed unchecked, with no discovery or reconnect, and nothing is written", async () => {
+test("a Grok connection reports its own sign-in state, offers reconnect but no discovery, and writes nothing", async () => {
   const f = await fixture(); const before = await readFile(f.path, "utf8");
   const result = await inspect(f.path); const provider = result.providers![0];
-  assert.equal(provider.authState, "unchecked"); assert.equal(provider.canDiscover, false); assert.equal(provider.canReconnect, false);
+  assert.equal(provider.authState, "needs-sign-in"); assert.equal(provider.canDiscover, false); assert.equal(provider.canReconnect, true);
   assert.deepEqual(provider.models.map(model => [model.id, model.label, model.enabled]), [["grok-one", "One", true], ["grok-two", "Two", true]]);
   assert.match(provider.authDetail, /private home/); assert.equal(await readFile(f.path, "utf8"), before);
-  for (const operation of ["discover", "authenticate"]) {
-    const refused = await handleManagement({ operation, configPath: f.path, providerId: "grok", revision: result.revision }, dependencies);
-    assert.deepEqual(refused.ok ? undefined : refused.error.code, "invalid_request"); assert.equal(await readFile(f.path, "utf8"), before);
-  }
+  const refused = await handleManagement({ operation: "discover", configPath: f.path, providerId: "grok", revision: result.revision }, dependencies);
+  assert.deepEqual(refused.ok ? undefined : refused.error.code, "invalid_request"); assert.equal(await readFile(f.path, "utf8"), before);
+});
+
+test("a Grok connection with a written credential is ready, and a missing CLI is reported instead", async () => {
+  const signed = await fixture();
+  await mkdir(join(signed.root, "home-a"), { mode: 0o700 });
+  await writeFile(join(signed.root, "home-a", "auth.json"), "{}", { mode: 0o600 });
+  const ready = (await inspect(signed.path)).providers![0];
+  assert.equal(ready.authState, "ready"); assert.equal(ready.canReconnect, true); assert.match(ready.authDetail, /Signed in/);
+
+  const absent = await fixture();
+  const missing = await handleManagement({ operation: "inspect", configPath: absent.path }, { lookupCli: async () => false });
+  assert.equal(missing.ok, true); if (!missing.ok) throw new Error("inspect");
+  assert.equal(missing.result.providers![0].authState, "missing-cli"); assert.equal(missing.result.providers![0].canReconnect, false);
+});
+
+test("Grok reconnect runs the CLI's device-code login in the gateway's private home", async () => {
+  const f = await fixture(); const snapshot = await inspect(f.path); const before = await readFile(f.path, "utf8");
+  const calls: Array<{ command: string; args: string[]; home?: string }> = [];
+  const signed = await handleManagement({ operation: "authenticate", configPath: f.path, providerId: "grok", revision: snapshot.revision }, { ...dependencies,
+    runLogin: async (command, args, env) => { calls.push({ command, args, home: env.GROK_HOME }); await writeFile(join(f.root, "home-a", "auth.json"), "{}", { mode: 0o600 }); } });
+  assert.equal(signed.ok, true); if (!signed.ok) throw new Error("authenticate");
+  assert.equal(signed.result.providers![0].authState, "ready");
+  assert.deepEqual(calls.map(call => call.args), [["login", "--device-auth"]]);
+  assert.equal(resolve(calls[0].home!), resolve(f.root, "home-a"), "the login writes only to the gateway's private home");
+  assert.equal(await readFile(f.path, "utf8"), before, "signing in never rewrites provider configuration");
+});
+
+test("Grok sign-in reports failure when the CLI exits without writing a credential", async () => {
+  const f = await fixture(); const snapshot = await inspect(f.path);
+  const failed = await handleManagement({ operation: "authenticate", configPath: f.path, providerId: "grok", revision: snapshot.revision },
+    { ...dependencies, runLogin: async () => {} });
+  assert.equal(failed.ok, false); if (failed.ok) throw new Error("expected failure");
+  assert.equal(failed.error.code, "authentication_failed");
+  assert.equal((await inspect(f.path)).providers![0].authState, "needs-sign-in", "a clean exit alone never marks the connection ready");
+});
+
+test("only a printed https sign-in URL is opened, never other CLI output", () => {
+  assert.equal(firstSignInURL("Waiting...\n  https://accounts.x.ai/oauth2/device?user_code=AB12-CD34\nDone"), "https://accounts.x.ai/oauth2/device?user_code=AB12-CD34");
+  assert.equal(firstSignInURL("Confirm (https://auth.x.ai/oauth2/authorize?x=1)."), "https://auth.x.ai/oauth2/authorize?x=1");
+  assert.equal(firstSignInURL("http://127.0.0.1:56517/callback"), undefined);
+  assert.equal(firstSignInURL("nothing to sign in"), undefined);
 });
 
 test("deselecting a Grok model and enabling it again restores its exact alias and metadata", async () => {

@@ -1,7 +1,18 @@
 import { randomBytes } from "node:crypto";
 import { access, chmod, lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
+import { constants } from "node:fs";
+import { homedir } from "node:os";
 import { ProviderError } from "./provider.js";
+
+async function executable(path: string): Promise<boolean> { try { await access(path, constants.X_OK); return true; } catch { return false; } }
+/** PATH first, then the Grok Build installer's location, which a launchd PATH usually lacks. */
+export async function grokCommand(): Promise<string> {
+  for (const directory of (process.env.PATH || "").split(delimiter)) if (directory && await executable(join(directory, "grok"))) return join(directory, "grok");
+  const fallback = join(homedir(), ".local/bin/grok");
+  if (await executable(fallback)) return fallback;
+  throw new ProviderError("cli_failed", "The Grok CLI is not installed; install Grok Build and sign in for the gateway", 502);
+}
 
 /**
  * The gateway owns a private Grok home (GROK_HOME). Its config.toml keeps the CLI an inference
@@ -60,8 +71,11 @@ export function mergeGrokConfig(existing: string): string {
   return rest ? `${rest}\n\n${grokManagedConfig}` : grokManagedConfig;
 }
 
-/** Creates or repairs the private home; writes config.toml atomically and only when it changed. */
-export async function ensureGrokHome(home: string): Promise<void> {
+/**
+ * Creates or repairs the private home; writes config.toml atomically and only when it changed.
+ * `requireLogin: false` prepares a home for `grok login` itself, which runs before `auth.json` exists.
+ */
+export async function ensureGrokHome(home: string, options: { requireLogin?: boolean } = {}): Promise<void> {
   await mkdir(home, { recursive: true, mode: 0o700 });
   const info = await lstat(home);
   if (!info.isDirectory() || info.isSymbolicLink() || (process.getuid && info.uid !== process.getuid())) {
@@ -77,9 +91,30 @@ export async function ensureGrokHome(home: string): Promise<void> {
     try { await file.writeFile(merged); await file.sync(); } finally { await file.close(); }
     try { await rename(temporary, path); } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
   }
+  if (options.requireLogin === false) return;
   try { await access(join(home, "auth.json")); }
   catch {
     throw new ProviderError("authentication", "Grok is not signed in for the gateway. Run `grok login --device-auth` with GROK_HOME set to the gateway's Grok home.", 401,
       { code: "authentication_failed", event: "grok.result" });
   }
+}
+
+/** Whether the gateway's private home holds a Grok credential file. Presence only; the CLI validates it. */
+export async function hasGrokLogin(home: string | undefined): Promise<boolean> {
+  if (!home) return false;
+  try { await access(join(home, "auth.json")); return true; } catch { return false; }
+}
+
+/**
+ * The Grok CLI keeps its own login in `GROK_HOME/auth.json`. Sign-in uses the device-code flow
+ * because it works without a browser round trip and can be read from a terminal or the desktop app.
+ * The child writes the credential itself; the gateway only prepares the home and checks the result.
+ */
+export async function grokLoginEnvironment(home: string): Promise<{ command: string; args: string[]; env: NodeJS.ProcessEnv }> {
+  const command = await grokCommand();
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const name of Object.keys(env)) if (name.startsWith("XAI_") || name.startsWith("GROK_")) delete env[name];
+  // The CLI writes its profile beside the credential; the parent must already exist and be private.
+  await ensureGrokHome(home, { requireLogin: false });
+  return { command, args: ["login", "--device-auth"], env: { ...env, GROK_HOME: home, GROK_DISABLE_AUTOUPDATER: "1", GROK_TELEMETRY_ENABLED: "false" } };
 }

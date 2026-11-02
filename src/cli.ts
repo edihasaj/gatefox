@@ -19,6 +19,7 @@ import { startServeRuntime } from "./serve-runtime.js";
 import { macService } from "./mac-service.js";
 import { openCopilot, copilotEnvironment } from "./providers/copilot-client.js";
 import { configPath } from "./paths.js";
+import { ensureGrokHome, grokLoginEnvironment } from "./providers/grok-home.js";
 import { setupGateway, setupClient } from "./setup.js";
 import { readClientToken as readPrivateClientToken } from "./config.js";
 import { launchDesktop } from "./desktop-launch.js";
@@ -307,6 +308,18 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           await promisify(execFile)(opener, args, { timeout: 10000 });
         }
       }, control.signal, values["account-email"]); } finally { process.off("SIGINT", interrupt); }
+    } else if (provider.type === "grok-subscription") {
+      // The CLI owns the credential file; the gateway only prepares the private home and inherits
+      // the terminal so the device code is visible and the user can confirm it.
+      if (!provider.grokHome) throw new Error(`${provider.id}: Grok provider has no private home to sign in`);
+      const { command: grok, args, env } = await grokLoginEnvironment(provider.grokHome);
+      const child = spawn(grok, args, { stdio: "inherit", env });
+      await new Promise<void>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("exit", code => code === 0 ? resolve() : reject(new Error("Grok login did not complete")));
+      });
+      // Only a written credential proves the flow finished; the CLI exit code alone is not enough.
+      await ensureGrokHome(provider.grokHome);
     } else throw new Error("Configure this API provider's credentialFile or apiKeyEnv instead of subscription login");
     process.stdout.write(`${provider.id}: signed in\n`); return;
   }

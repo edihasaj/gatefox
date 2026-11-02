@@ -106,10 +106,13 @@ every existing alias and its metadata for retained upstream models. A private
 alias ledger reserves retired route identities, so another model or account
 cannot silently take an alias referenced by saved chats.
 
-Existing Grok subscription connections are supported without a new login or
-catalog-discovery flow. Their configured models can be disabled and re-enabled
-without losing their aliases or metadata. Refresh and reconnect are unavailable;
-the app does not infer successful authentication from saved routes.
+Existing Grok subscription connections keep the sign-in state of the gateway's
+private Grok home: the connection reports whether `auth.json` exists and whether
+the `grok` CLI is installed. Reconnect runs that CLI's device-code login against
+the same home, and the app treats a clean exit as success only once the
+credential file exists. Their configured models can be disabled and re-enabled
+without losing their aliases or metadata. Grok has no catalog discovery, so
+Refresh stays unavailable.
 
 ## Shared-gateway clients
 
@@ -270,8 +273,8 @@ models on Studio, three providers and twenty-one models on MacBook. Discovery
 through the MacBook's registered Tailnet Qwen connection succeeded. Configuration
 digests and running gateway PIDs remained unchanged across the app updates.
 
-Browser login wrappers, cancellation, private authentication homes, and identity
-restrictions have isolated automated coverage. The live account checks reused
+Browser and device-code login wrappers, cancellation, private authentication
+homes, and identity restrictions have isolated automated coverage. The live account checks reused
 the existing registrations and did not perform fresh browser consent or paid
 provider inference. The MacBook screen locked after the GUI walkthrough;
 the final transport compatibility correction was checked through the installed

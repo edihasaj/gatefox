@@ -16,8 +16,10 @@ import { rawAutoLatest } from "../model-auto-latest/settings.js";
 import { lockBusyCode, withPrivateFileLock } from "../private-file-lock.js";
 import type { AutoLatestDependencies } from "../model-auto-latest/types.js";
 import { effectivePlacement, setNativePickerPlacement } from "./native-picker.js";
-import { isApiKind, managedModels, managedProvider, providerPrerequisites, runSubscriptionLogin, validModelId } from "./providers.js";
+import { cliAvailable, isApiKind, managedModels, managedProvider, providerPrerequisites, runSubscriptionLogin, validModelId } from "./providers.js";
 import { metadataLabel } from "../model-label.js";
+import { hasGrokLogin } from "../providers/grok-home.js";
+import type { ManagedProvider } from "./types.js";
 import type { CatalogEntry, DraftRecord, ManagementDependencies, ManagementRequest, ManagementResponse, ManagementResult, ProviderInput } from "./types.js";
 
 const operations = new Set(["inspect", "prepare", "authenticate", "discover", "commit", "models", "rename", "reorder", "native-picker", "remove", "discard", "auto-latest", "auto-latest-check", "activity", "diagnostics"]);
@@ -89,8 +91,8 @@ export class ManagementService {
     return snapshot.config.clientOnly ? { ...result, sharedGateway: await sharedGatewayCatalog(snapshot.config, this.deps.signal) } : result;
   }
   private async projectAt(configPath: string, snapshot: ConfigSnapshot): Promise<ManagementResult> {
-    const providers = await Promise.all(snapshot.config.providers.map(async provider => managedProvider(provider, this.deps.lookupCli,
-      withConfiguredCatalog(provider, await loadCachedCatalog(configPath, provider.id, provider)), false, snapshot.config.stateDirectory)));
+    const providers = await Promise.all(snapshot.config.providers.map(async provider => grokStatus(provider,
+      await managedProvider(provider, this.deps.lookupCli, withConfiguredCatalog(provider, await loadCachedCatalog(configPath, provider.id, provider)), false, snapshot.config.stateDirectory), this.deps.lookupCli)));
     return { configPath, revision: snapshot.revision, providers, nativeModelPickerPlacement: effectivePlacement(snapshot.raw), autoLatest: await autoLatestStatus(configPath, snapshot, this.deps.observeAutoLatestSchedule), prerequisites: await providerPrerequisites(this.deps.lookupCli, snapshot.config.providers.map(provider => provider.type)) };
   }
 
@@ -107,7 +109,8 @@ export class ManagementService {
     const providerId = id(value.providerId); const snapshot = await readSnapshot(value.configPath); if (!snapshot) throw new ManagementError("not_found");
     if (value.revision !== undefined && value.revision !== snapshot.revision) throw new ManagementError("configuration_changed");
     const provider = snapshot.config.providers.find(item => item.id === providerId); if (!provider) throw new ManagementError("not_found");
-    if (provider.type === "grok-subscription") throw new ManagementError("invalid_request");
+    // Grok signs in through its own CLI in the gateway's private home, so Reconnect runs that flow.
+    if (provider.type === "grok-subscription") { await this.login(provider); return this.projectAt(value.configPath, snapshot); }
     if (isApiKind(provider.type)) {
       const supplied = input(value.provider); const key = supplied.apiKey;
       if (typeof key !== "string" || !key.trim() || key.length > 4096 || /[\r\n]/.test(key)) throw new ManagementError("key_required");
@@ -246,4 +249,19 @@ function rawProvider(snapshot: ConfigSnapshot, id: string): Record<string, unkno
 }
 function markChecked(provider: { authState: string; authDetail: string }): void {
   provider.authState = "ready"; provider.authDetail = "Model catalog was checked.";
+}
+
+/**
+ * Grok signs in through its own CLI, so its state comes from the gateway's private home. The shared
+ * provider view never probes a removed home beyond a file check, and it keeps every other field.
+ */
+async function grokStatus(provider: ProviderConfig, view: ManagedProvider, lookup: ManagementDependencies["lookupCli"]): Promise<ManagedProvider> {
+  if (provider.type !== "grok-subscription") return view;
+  const available = await (lookup || cliAvailable)("grok");
+  const signedIn = await hasGrokLogin(provider.grokHome);
+  return { ...view,
+    authState: signedIn ? "ready" : available ? "needs-sign-in" : "missing-cli",
+    authDetail: signedIn ? "Signed in through the Grok CLI in this gateway's private home."
+      : available ? "Sign in with the Grok CLI's device code in this gateway's private home." : "The Grok CLI is not installed.",
+    canDiscover: false, canReconnect: available };
 }

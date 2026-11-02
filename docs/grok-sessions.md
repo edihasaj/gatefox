@@ -40,14 +40,20 @@ The gateway uses its own Grok home, `<stateDirectory>/grok-home` unless
 `grokHome` names another directory. Sign it in once per Mac:
 
 ```sh
-GROK_HOME="$HOME/Library/Application Support/Subscription Gateway/state/grok-home" grok login --device-auth
+gateway login grok
 ```
 
-`--device-code` is the CLI's alias for the same flow. A missing `auth.json`
-fails the request before the CLI starts, and a login the CLI rejects mid-run is
-reported the same way: HTTP 401 `authentication`, with a fixed message that
-names the gateway's Grok home. Neither case is reported as a temporary upstream
-failure, so a retry does not hide a sign-in problem.
+The gateway runs the Grok CLI's device-code login against its own private home,
+so the credential never lands in a personal `~/.grok`. The same flow is the
+connection's Reconnect action in the desktop app. To run it by hand, set
+`GROK_HOME` to that home and run `grok login --device-auth` (`--device-code` is
+the CLI's alias). A clean CLI exit is not treated as success; the credential file
+must exist afterwards.
+
+A missing `auth.json` fails the request before the CLI starts, and a login the
+CLI rejects mid-run is reported the same way: HTTP 401 `authentication`, with a
+fixed message that names the gateway's Grok home. Neither case is reported as a
+temporary upstream failure, so a retry does not hide a sign-in problem.
 
 The gateway keeps the home private (0700) and rewrites only its managed sections
 of `config.toml`: no auto-update, telemetry, memory, xAI-side tools (X search,
