@@ -19,11 +19,23 @@ export const grokUsage = (tokens: GrokTokens): Usage => ({ input_tokens: tokens.
   ...(tokens.cacheRead === undefined ? {} : { input_tokens_details: { cached_tokens: tokens.cacheRead } }) });
 
 const codes = new Set(["rate_limit", "authentication_failed", "billing_error", "server_error", "overloaded", "invalid_request", "max_output_tokens", "unknown"]);
+/**
+ * The CLI reports a missing or unreadable login as a plain `result` error with prose and no
+ * discriminant, so a signed-out home otherwise looked like an upstream transport failure. Only
+ * the CLI's fixed sign-in sentences are matched; no other prose is inspected or forwarded.
+ */
+const signedOut = /\bnot signed in\b|\bnot authenticated\b|\bgrok login --device-/i;
+const signInMessage = "Grok is not signed in for the gateway. Run `grok login --device-auth` with GROK_HOME set to the gateway's Grok home.";
 /** Maps only native error discriminants. Provider prose is never forwarded. */
 export function grokFailure(message: Record<string, unknown>, event: "grok.assistant" | "grok.result"): ProviderError {
   const raw = message.type === "assistant" ? message.error : message.error_code ?? message.error;
   const code = typeof raw === "string" && codes.has(raw) ? raw : "unknown";
   const upstream = { code, event };
+  if (code === "unknown" && [message.errors, message.result, message.error_message].some(value =>
+    (typeof value === "string" && signedOut.test(value)) ||
+    (Array.isArray(value) && value.some(part => typeof part === "string" && signedOut.test(part))))) {
+    return new ProviderError("authentication", signInMessage, 401, { code: "authentication_failed", event });
+  }
   if (code === "authentication_failed") return new ProviderError("authentication", "Grok could not authenticate this request. If it persists, run `grok login --device-auth` for the gateway's Grok home.", 401, upstream);
   if (code === "rate_limit") return new ProviderError("rate_limit_exceeded", "Grok is limiting requests or the Grok allowance is used up; retry later.", 429, upstream);
   if (code === "billing_error") return new ProviderError("insufficient_quota", "The Grok subscription allowance or billing is unavailable. Check your Grok plan, then retry.", 429, upstream);
