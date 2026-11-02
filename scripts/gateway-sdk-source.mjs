@@ -10,7 +10,7 @@ export const gatewaySdkCodexVersion = pin.version;
 export const gatewaySdkCapability = 'gateway-executor-v3';
 export const gatewaySdkPatch = 'scripts/patches/gateway-executor.patch';
 /** The dynamic-tools patch keeps declared-deferred client tools callable when the selected model cannot search. */
-export const gatewaySdkPatches = [gatewaySdkPatch, 'scripts/patches/gateway-queue.patch', 'scripts/patches/gateway-dynamic-tools.patch', 'scripts/patches/gateway-role-context.patch', 'scripts/patches/gateway-cache-recovery.patch'];
+export const gatewaySdkPatches = [gatewaySdkPatch, 'scripts/patches/gateway-queue.patch', 'scripts/patches/gateway-dynamic-tools.patch', 'scripts/patches/gateway-role-context.patch', 'scripts/patches/gateway-cache-recovery.patch', 'scripts/patches/gateway-background-completion.patch'];
 
 export function gatewaySdkPatchDigest() {
   const hash = createHash('sha256');

@@ -1,0 +1,224 @@
+{
+  "schemaVersion": 1,
+  "checkedAt": "2026-11-02T21:46:55.526Z",
+  "status": "development-verified",
+  "sdkRevision": "83086188ae0614bd882818ff1aa23f3194962012",
+  "patchSha256": "d0ec4d9e203470a87f1ada69c2582724a89ab62947e2124ed5f43f7442faf9ef",
+  "sourceSha256": "ffcf784bdd29c8d47299fe20f6094059f0dc3d7c6cd621984259609b8d8a3fef",
+  "fixtureSha256": "cdc374198afd388ff768aebc57f63e843b51e7f9923522bcb76dfe01755f3ca6",
+  "executorBinarySha256": "0b222ee1e0128ed4bc878d82f989ffc37af55dc73f9855c03bc9c46e8375d12d",
+  "validation": {
+    "build": "passed",
+    "typecheck": "passed",
+    "sdkBuild": "passed",
+    "sdkRegressions": {
+      "passed": true,
+      "tests": 33,
+      "results": [
+        {
+          "name": "core gateway regressions",
+          "passed": 21
+        },
+        {
+          "name": "executor identity",
+          "passed": 3
+        },
+        {
+          "name": "selected-model compaction",
+          "passed": 6
+        },
+        {
+          "name": "failed-turn queue",
+          "passed": 2
+        },
+        {
+          "name": "deferred filtering",
+          "passed": 1
+        }
+      ]
+    },
+    "coreTests": {
+      "passed": 3842,
+      "skipped": 1,
+      "failed": 0
+    },
+    "claudeDesktopTests": {
+      "passed": 147,
+      "skipped": 15,
+      "failed": 0
+    },
+    "providerMaintenanceTests": {
+      "passed": 37,
+      "failed": 0
+    },
+    "patchApplication": "passed",
+    "independentReview": "passed-after-central-interruption-fix"
+  },
+  "endToEnd": {
+    "passed": true,
+    "checkedAt": "2026-11-02T21:43:43.397Z",
+    "zeroPaidInference": true,
+    "goalsCreated": 0,
+    "gatewaySha256": "0b222ee1e0128ed4bc878d82f989ffc37af55dc73f9855c03bc9c46e8375d12d",
+    "results": [
+      {
+        "name": "notify-success",
+        "passed": true,
+        "requests": 4,
+        "turns": 2,
+        "schemaPresent": true,
+        "runtimeNotice": true,
+        "finalOutputRead": true,
+        "wireProtocol": "responses",
+        "selectedModelPreserved": true,
+        "nativeHomeIsolated": true,
+        "observedExitCode": 0
+      },
+      {
+        "name": "notify-failure",
+        "passed": true,
+        "requests": 4,
+        "turns": 2,
+        "schemaPresent": true,
+        "runtimeNotice": true,
+        "finalOutputRead": true,
+        "wireProtocol": "responses",
+        "selectedModelPreserved": true,
+        "nativeHomeIsolated": true,
+        "observedExitCode": 7
+      },
+      {
+        "name": "default-no-notify",
+        "passed": true,
+        "requests": 2,
+        "turns": 1,
+        "schemaPresent": true,
+        "runtimeNotice": false,
+        "finalOutputRead": false,
+        "wireProtocol": "responses",
+        "selectedModelPreserved": true,
+        "nativeHomeIsolated": true
+      },
+      {
+        "name": "quick-no-duplicate",
+        "passed": true,
+        "requests": 2,
+        "turns": 1,
+        "schemaPresent": true,
+        "runtimeNotice": false,
+        "finalOutputRead": false,
+        "wireProtocol": "responses",
+        "selectedModelPreserved": true,
+        "nativeHomeIsolated": true
+      },
+      {
+        "name": "interrupt-cancels",
+        "passed": true,
+        "requests": 2,
+        "turns": 1,
+        "schemaPresent": true,
+        "runtimeNotice": false,
+        "finalOutputRead": false,
+        "wireProtocol": "responses",
+        "selectedModelPreserved": true,
+        "nativeHomeIsolated": true
+      },
+      {
+        "name": "terminal-stop-cancels",
+        "passed": true,
+        "requests": 2,
+        "turns": 1,
+        "schemaPresent": true,
+        "runtimeNotice": false,
+        "finalOutputRead": false,
+        "wireProtocol": "responses",
+        "selectedModelPreserved": true,
+        "nativeHomeIsolated": true
+      },
+      {
+        "name": "single-terminal-stop-cancels",
+        "passed": true,
+        "requests": 2,
+        "turns": 1,
+        "schemaPresent": true,
+        "runtimeNotice": false,
+        "finalOutputRead": false,
+        "wireProtocol": "responses",
+        "selectedModelPreserved": true,
+        "nativeHomeIsolated": true
+      },
+      {
+        "name": "stop-resume-drops-old",
+        "passed": true,
+        "requests": 3,
+        "turns": 2,
+        "schemaPresent": true,
+        "runtimeNotice": false,
+        "finalOutputRead": false,
+        "wireProtocol": "responses",
+        "selectedModelPreserved": true,
+        "nativeHomeIsolated": true
+      },
+      {
+        "name": "current-model-after-switch",
+        "passed": true,
+        "requests": 4,
+        "turns": 2,
+        "schemaPresent": true,
+        "runtimeNotice": true,
+        "finalOutputRead": true,
+        "wireProtocol": "responses",
+        "selectedModelPreserved": true,
+        "nativeHomeIsolated": true,
+        "observedExitCode": 0
+      },
+      {
+        "name": "anthropic-notify-success",
+        "passed": true,
+        "requests": 4,
+        "turns": 2,
+        "schemaPresent": true,
+        "runtimeNotice": true,
+        "finalOutputRead": true,
+        "wireProtocol": "anthropic-messages",
+        "selectedModelPreserved": true,
+        "nativeHomeIsolated": true,
+        "observedExitCode": 0
+      },
+      {
+        "name": "anthropic-notify-failure",
+        "passed": true,
+        "requests": 4,
+        "turns": 2,
+        "schemaPresent": true,
+        "runtimeNotice": true,
+        "finalOutputRead": true,
+        "wireProtocol": "anthropic-messages",
+        "selectedModelPreserved": true,
+        "nativeHomeIsolated": true,
+        "observedExitCode": 7
+      },
+      {
+        "name": "unpatched-control",
+        "passed": true,
+        "requests": 2,
+        "turns": 1,
+        "schemaPresent": false,
+        "runtimeNotice": false,
+        "finalOutputRead": false,
+        "wireProtocol": "responses",
+        "selectedModelPreserved": true,
+        "nativeHomeIsolated": true
+      }
+    ]
+  },
+  "limits": {
+    "paidInferenceRequests": 0,
+    "goalsCreated": 0,
+    "liveProviderInferenceVerified": false,
+    "signedNativeEngineModified": false,
+    "releasePublished": false,
+    "installedOnManagedMachines": false,
+    "survivesExecutorRestart": false
+  }
+}
