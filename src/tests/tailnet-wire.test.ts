@@ -83,10 +83,13 @@ test("https verifies the certificate against the URL host, so a name mismatch is
     const send = tailnetFetch("qwen", { resolve: async () => ["100.108.115.57"], connect: toLoopback(port), ca: cert });
     const ok = await send("https://dgx.example/x", init); assert.equal(ok.status, 200); assert.equal(await ok.text(), "secure"); assert.equal(served, 1);
     // The same server presents a certificate for dgx.example; a URL naming another host must not accept it.
-    await assert.rejects(send("https://other.example/x", init), { code: "upstream_unavailable" });
+    await assert.rejects(send("https://other.example/x", init), (error: unknown) => error instanceof ProviderError
+      && error.code === "upstream_unavailable" && error.upstream?.code === "ERR_TLS_CERT_ALTNAME_INVALID" && !error.upstream.retryableNetwork);
     assert.equal(served, 1, "the request never reached the handler");
     // Without the extra authority the self-signed certificate is not trusted.
-    await assert.rejects(tailnetFetch("qwen", { resolve: async () => ["100.108.115.57"], connect: toLoopback(port) })("https://dgx.example/x", init), { code: "upstream_unavailable" });
+    await assert.rejects(tailnetFetch("qwen", { resolve: async () => ["100.108.115.57"], connect: toLoopback(port) })("https://dgx.example/x", init),
+      (error: unknown) => error instanceof ProviderError && error.code === "upstream_unavailable"
+        && error.upstream?.code === "DEPTH_ZERO_SELF_SIGNED_CERT" && !error.upstream.retryableNetwork);
   } finally { server.closeAllConnections(); server.close(); }
 });
 

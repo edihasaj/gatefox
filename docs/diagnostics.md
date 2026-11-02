@@ -54,6 +54,14 @@ recovery of missing error details.
 
 ## Local telemetry
 
+`provider_connection_recovered` records a Chat Completions connection that
+obtained an HTTP response after transient retries: `provider`, `attempts`,
+`elapsedMs` and `httpStatus` only. It proves restored transport reachability;
+`request_completed` remains the evidence that inference actually finished.
+Tailnet connection failures retain allowlisted network codes and the fixed
+`connect` stage, so temporary DNS and dial timeouts can be distinguished from
+certificate failures without recording addresses or exception prose.
+
 `context_cache_guard` reports `outcome: blocked`, `mode: seed|oneshot|continued|provider`, a hashed
 `threadKey` and a numeric `rewrites` count. It appears in recent problems when
 the shared guard stops another large uncached request before inference.
