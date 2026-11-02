@@ -18,8 +18,9 @@ const provider={async *infer(request,signal,context){
  const compact=context.requestKind==='compaction';if(compact)compactions++;
  requests.push({kind:context.requestKind,bytes:Buffer.byteLength(JSON.stringify(request.input)),model:request.model,thread:context.threadId,recoveryCapable:context.cacheRecovery===true,
    retainsProof:JSON.stringify(request.input).includes('PROOF_CACHE_RECOVERY')});
- yield {type:'text',text:compact?'Summary: retain PROOF_CACHE_RECOVERY. No pending tools.':'PROOF_CACHE_RECOVERY'};
- const input=compactions?1000:200000,cached=compactions?900:0;
+ const seed=requests.length===1;
+ yield {type:'text',text:compact?'Summary: retain PROOF_CACHE_RECOVERY. No pending tools.':seed?'PROOF_CACHE_RECOVERY '+ 'old assistant history '.repeat(8000):'PROOF_CACHE_RECOVERY'};
+ const input=compactions||seed?1000:200000,cached=compactions||seed?900:0;
  yield {type:'done',usage:{input_tokens:input,output_tokens:10,total_tokens:input+10,input_tokens_details:{cached_tokens:cached}}};
 }};
 const config=validateConfig({version:1,port:0,stateDirectory:state,providers:[{id:'fixture',type:'responses-api',baseUrl:'http://127.0.0.1:1',apiKeyEnv:'UNUSED_FIXTURE',models:{'fixture/sol':'mock-sol'}}]});
@@ -39,14 +40,14 @@ try{
  await client.request('initialize',{clientInfo:{name:'cache_recovery_fixture',version:'1'},capabilities:{experimentalApi:true}});
  client.send({method:'initialized'});
  const thread=await client.request('thread/start',{model:'fixture/sol',modelProvider:'fixture',cwd:work,approvalPolicy:'never',sandbox:'read-only'});
- const id=thread.thread.id;await turn(id,'PROOF_CACHE_RECOVERY '+ 'history '.repeat(8000),'completed');await turn(id,'Continue.','completed');
- assert.equal(requests.length,2);
- const blocked=await turn(id,'Continue.','failed');assert.equal(requests.length,2,'blocked call never reached inference');
+ const id=thread.thread.id;await turn(id,'Retain PROOF_CACHE_RECOVERY.','completed');await turn(id,'Continue.','completed');await turn(id,'Continue.','completed');
+ assert.equal(requests.length,3);
+ const blocked=await turn(id,'Continue.','failed');assert.equal(requests.length,3,'blocked call never reached inference');
  assert(blocked.some(e=>e.method==='error'&&e.params?.error?.codexErrorInfo==='contextWindowExceeded'),'SDK recognizes bounded recovery');
  const resumed=await turn(id,'Continue.','completed');
  assert.equal(compactions,1,'the real SDK compacted once');
  assert(resumed.some(e=>e.params?.item?.type==='contextCompaction'),'compaction belongs to the resumed SDK turn');
- assert.equal(requests.length,4,'two cold calls, one compaction and one reduced continuation');
+ assert.equal(requests.length,5,'one warm seed, two cold calls, one compaction and one reduced continuation');
  assert(requests.at(-1).bytes<=requests[1].bytes/2,'resumed input is genuinely smaller');
  assert(requests.at(-1).retainsProof,'the compacted summary remains in the resumed request');
  assert(requests.every(r=>r.model==='mock-sol'&&r.thread===id&&r.recoveryCapable),'same selected model, thread and actual SDK capability throughout');
