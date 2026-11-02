@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.3 — 2026-11-02
+
+- Cache safety starts a fresh warm-up after five minutes without request activity,
+  allowing chats to resume after provider cache or session expiry. Repeated large
+  uncached requests during active work still stop before another inference.
+- Overlapping requests and long inference preserve the active cache history;
+  blocked retries cannot reset their own safety stop.
+
 ## 1.4.2 — 2026-11-02
 
 - Chat Completions providers now recover known transient connection failures
