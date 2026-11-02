@@ -1,0 +1,54 @@
+// Real installed SDK + isolated Gateway + synthetic inference. No account or user chat is used.
+import assert from 'node:assert/strict';
+import {mkdir,writeFile} from 'node:fs/promises';
+import {resolve,join} from 'node:path';
+import {parseArgs} from 'node:util';
+import {pathToFileURL} from 'node:url';
+const {values:v}=parseArgs({options:{package:{type:'string'},code:{type:'string'},root:{type:'string'},sdk:{type:'string'}}});
+assert(v.package&&v.code&&v.root,'Pass --package, --code and --root');
+const root=resolve(v.root),dist=resolve(v.code,'dist');await mkdir(root,{recursive:true,mode:0o700});
+const load=name=>import(pathToFileURL(join(dist,name)).href);
+const {startGateway}=await load('server.js');const {gatewayToken,validateConfig}=await load('config.js');
+const {AppServerConnection}=await load('app-server-connection.js');
+const {configureTelemetry,flushTelemetry,readTelemetry}=await load('telemetry.js');
+const state=join(root,'state'),home=join(root,'home'),work=join(root,'work');
+await mkdir(home,{recursive:true});await mkdir(work,{recursive:true});configureTelemetry(state,'fixture');
+const requests=[],events=[];let compactions=0;
+const provider={async *infer(request,signal,context){
+ const compact=context.requestKind==='compaction';if(compact)compactions++;
+ requests.push({kind:context.requestKind,bytes:Buffer.byteLength(JSON.stringify(request.input)),model:request.model,thread:context.threadId});
+ yield {type:'text',text:compact?'Summary: retain PROOF_CACHE_RECOVERY. No pending tools.':'PROOF_CACHE_RECOVERY'};
+ const input=compactions?1000:200000,cached=compactions?900:0;
+ yield {type:'done',usage:{input_tokens:input,output_tokens:10,total_tokens:input+10,input_tokens_details:{cached_tokens:cached}}};
+}};
+const config=validateConfig({version:1,port:0,stateDirectory:state,providers:[{id:'fixture',type:'responses-api',baseUrl:'http://127.0.0.1:1',apiKeyEnv:'UNUSED_FIXTURE',models:{'fixture/sol':'mock-sol'}}]});
+const server=await startGateway(config,()=>provider,undefined,{onFailure(){}});
+const {modelCatalog}=await load('catalog.js');
+const row=modelCatalog(config).models[0];
+await writeFile(join(home,'models.json'),JSON.stringify({models:[{...row,context_window:1000000,max_context_window:1000000,auto_compact_token_limit:900000}]}),{mode:0o600});
+const token=await gatewayToken(state),base=`http://127.0.0.1:${server.address().port}/v1`;
+await writeFile(join(home,'config.toml'),`model = "fixture/sol"\nmodel_provider = "fixture"\nmodel_catalog_json = ${JSON.stringify(join(home,'models.json'))}\nmodel_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n[model_providers.fixture]\nname = "Isolated Gateway"\nbase_url = "${base}"\nenv_key = "GATEWAY_CACHE_FIXTURE_KEY"\nwire_api = "responses"\n`,{mode:0o600});
+const env=Object.fromEntries(Object.entries(process.env).filter(([k])=>!/^(CODEX|OPENAI|GATEWAY|SUBSCRIPTION_GATEWAY|ANTHROPIC|CLAUDE)/.test(k)));
+Object.assign(env,{HOME:root,CODEX_HOME:home,GATEWAY_CACHE_FIXTURE_KEY:token,CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED:'1',HARNESS_GATEWAY_EXECUTOR:'1'});
+const client=new AppServerConnection(v.sdk?resolve(v.sdk):resolve(v.package,'gateway-sdk/gateway-codex'),['app-server'],async m=>{events.push(m);},()=>{},env);
+const until=async(check)=>{const end=Date.now()+30000;while(Date.now()<end){const x=check();if(x)return x;await new Promise(r=>setTimeout(r,20));}throw Error('SDK event timed out');};
+const turn=async(id,text,status)=>{const at=events.length;const x=await client.request('turn/start',{threadId:id,model:'fixture/sol',input:[{type:'text',text}]});const done=await until(()=>events.slice(at).find(e=>e.method==='turn/completed'&&e.params.turn.id===x.turn.id));if(done.params.turn.status!==status)await writeFile(join(root,'failed-debug.json'),JSON.stringify({requests,events:events.slice(at).filter(e=>['error','turn/completed','thread/tokenUsage/updated'].includes(e.method))},null,2));assert.equal(done.params.turn.status,status);return events.slice(at);};
+let proof;
+try{
+ await client.request('initialize',{clientInfo:{name:'cache_recovery_fixture',version:'1'},capabilities:{experimentalApi:true}});
+ client.send({method:'initialized'});
+ const thread=await client.request('thread/start',{model:'fixture/sol',modelProvider:'fixture',cwd:work,approvalPolicy:'never',sandbox:'read-only'});
+ const id=thread.thread.id;await turn(id,'PROOF_CACHE_RECOVERY '+ 'history '.repeat(8000),'completed');await turn(id,'Continue.','completed');
+ assert.equal(requests.length,2);
+ const blocked=await turn(id,'Continue.','failed');assert.equal(requests.length,2,'blocked call never reached inference');
+ await writeFile(join(root,'blocked-debug.json'),JSON.stringify({requests,errors:blocked.filter(e=>['error','turn/completed','thread/tokenUsage/updated'].includes(e.method))},null,2));
+ const resumed=await turn(id,'Continue.','completed');
+ assert.equal(compactions,1,'the real SDK compacted once');
+ assert(resumed.some(e=>e.params?.item?.type==='contextCompaction'),'compaction belongs to the resumed SDK turn');
+ assert.equal(requests.length,4,'two cold calls, one compaction and one reduced continuation');
+ assert(requests.at(-1).bytes<=requests[1].bytes/2,'resumed input is genuinely smaller');
+ assert(requests.every(r=>r.model==='mock-sol'&&r.thread===id),'same selected model and thread throughout');
+ await flushTelemetry();const logs=await readTelemetry(state,0);assert.equal(logs.filter(e=>e.event==='context_cache_guard'&&e.outcome==='compaction_required').length,1);
+ proof={passed:true,providerCalls:requests.length,compactions,sameThread:true,sameModel:true,paidInference:0,thirdColdCallPrevented:true,reducedInput:true};
+ await writeFile(join(root,'result.json'),JSON.stringify(proof,null,2)+'\n');console.log(JSON.stringify(proof));
+}finally{client.stop();await client.exited;server.closeAllConnections();await new Promise(r=>server.close(r));}
