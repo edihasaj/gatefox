@@ -92,6 +92,7 @@ interface Attached {
  */
 export class CopilotLiveSession {
   readonly queuedInputVersion = 1;
+  reasoningLedgerVersion = 1;
   state: SessionState = "starting";
   readonly key: string; readonly fingerprint: string; readonly window: string; effort?: string;
   ledger: LedgerState = { items: [] }; pending: string[] = [];

@@ -10,6 +10,7 @@ import { choiceLine, copilotPrompts, copilotToolResult, fitsInline, imagesByItem
 import type { CopilotTurn } from "./copilot-turn.js";
 import { ProviderError } from "./provider.js";
 import { CliContinuityUnavailable, CopilotSessionPreserved } from "./cli-continuity.js";
+import { copilotContinuationLedger } from "./copilot-ledger-compat.js";
 
 /**
  * Live Copilot sessions: one long-lived CLI process per Codex thread. A request continues its thread's
@@ -156,7 +157,8 @@ async function place(reg: Registry, settings: CopilotLiveSettings, key: string, 
     await session.finished; session = undefined;
   } else if (session) {
     parkedMs = Date.now() - session.lastUse;
-    const decision = decide(session.ledger, entries, messages, session.state as LedgerPhase, session.pending);
+    const ledger = copilotContinuationLedger(session, input.request, input.catalog, input.leading, entries);
+    const decision = decide(ledger, entries, messages, session.state as LedgerPhase, session.pending);
     if (session.fingerprint !== input.fingerprint) reason = "fingerprint_changed";
     else if (session.window !== window) reason = "window_changed";
     else if (decision.kind === "reseed") {
@@ -247,6 +249,9 @@ function start(reg: Registry, settings: CopilotLiveSettings, session: CopilotLiv
     : { prompts: prompts(plan.kind === "continue_user" ? plan.from : 0) };
   session.timers(settings.parkMinutes * 60000, settings.toolWaitMinutes * 60000);
   const turn = input.newTurn();
+  // An accepted turn commits the corrected full prefix when it finishes. A
+  // refused request never edits the retained ledger or its compatibility mark.
+  session.reasoningLedgerVersion = 1;
   return session.run({
     begin, prefix, turn, signal,
     onEnd: end => {
