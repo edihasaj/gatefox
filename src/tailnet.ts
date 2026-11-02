@@ -6,6 +6,7 @@ import { Readable } from "node:stream";
 import { connect as tlsConnect } from "node:tls";
 import { ProviderError } from "./providers/provider.js";
 import { telemetry } from "./telemetry.js";
+import { networkProviderError } from "./providers/network-error.js";
 
 /**
  * Transport for a provider that may reach a plain-HTTP endpoint over Tailscale. The bearer must never leave for an address
@@ -41,7 +42,8 @@ const systemResolve = async (host: string): Promise<string[]> => (await dnsLooku
 /** No resolved address is on the tailnet. Fixed text; it never names the address or host. */
 const addressRefused = (): ProviderError => new ProviderError("provider_unreachable", "Provider address is not on the tailnet; the request was not sent", 502);
 /** Same class and text the gateway gives any connection failure, so a router that is down stays a retryable 503. */
-const connectionFailed = (): ProviderError => new ProviderError("upstream_unavailable", "Provider connection failed or disconnected; retry when its connection is available", 503);
+const connectionFailed = (error?: unknown): ProviderError => networkProviderError(error, "connect")
+  ?? new ProviderError("upstream_unavailable", "Provider connection failed or disconnected; retry when its connection is available", 503);
 const badResponse = (): ProviderError => new ProviderError("upstream_error", "Provider returned an invalid response", 502);
 const aborted = (signal: AbortSignal | undefined): unknown => signal?.reason ?? new DOMException("The operation was aborted", "AbortError");
 
@@ -54,7 +56,7 @@ function dialSocket(open: () => Socket, timeoutMs: number, signal: AbortSignal |
     };
     const onConnect = (): void => finish();
     const onAbort = (): void => finish(new Error("aborted"));
-    const timer = setTimeout(() => finish(new Error("connect timeout")), timeoutMs);
+    const timer = setTimeout(() => finish(Object.assign(new Error("connect timeout"), { code: "ETIMEDOUT" })), timeoutMs);
     socket.once("connect", onConnect); socket.once("error", finish);
     if (signal?.aborted) onAbort(); else signal?.addEventListener("abort", onAbort, { once: true });
   });
@@ -76,19 +78,22 @@ export function tailnetFetch(providerId: string, seams: TailnetSeams = {}): (url
     const url = new URL(location);
     if (url.protocol !== "http:" && url.protocol !== "https:") throw addressRefused();
     const host = url.hostname.replace(/^\[|\]$/g, "");
-    const answers = isIP(host) ? [host] : await resolve(host).catch(() => [] as string[]);
+    let answers: string[];
+    try { answers = isIP(host) ? [host] : await resolve(host); }
+    catch (error) { if (init.signal?.aborted) throw aborted(init.signal); throw connectionFailed(error); }
     const allowed = [...new Set(answers.filter(isTailnetAddress))];
     if (answers.some(address => !isTailnetAddress(address))) telemetry("provider_address_refused", { provider: providerId, reason: "not_tailnet" });
     // A name that does not resolve at all is an ordinary connection failure, not a refusal.
     if (!answers.length) throw connectionFailed();
     if (!allowed.length) throw addressRefused();
     const secure = url.protocol === "https:"; const port = Number(url.port) || (secure ? 443 : 80);
-    let socket: Socket | undefined;
+    let socket: Socket | undefined; const failures: unknown[] = [];
     for (const address of allowed) {
       const target = route(address, port);
-      try { socket = await dialSocket(() => open(target.host, target.port), timeoutMs, init.signal); break; } catch { if (init.signal?.aborted) throw aborted(init.signal); }
+      try { socket = await dialSocket(() => open(target.host, target.port), timeoutMs, init.signal); break; }
+      catch (error) { if (init.signal?.aborted) throw aborted(init.signal); if (failures.length < 9) failures.push(error); }
     }
-    if (!socket) throw connectionFailed();
+    if (!socket) throw connectionFailed(new AggregateError(failures));
     const body = init.body === undefined ? undefined : Buffer.from(init.body);
     const stream = secure ? tlsConnect({ socket, servername: isIP(host) ? undefined : host, ...(seams.ca ? { ca: seams.ca } : {}) }) : socket;
     return await new Promise<Response>((done, fail) => {
@@ -106,7 +111,7 @@ export function tailnetFetch(providerId: string, seams: TailnetSeams = {}): (url
           done(new Response([204, 205].includes(status) ? null : Readable.toWeb(incoming) as ReadableStream<Uint8Array>, { status, headers }));
         } catch (error) { incoming.destroy(); stream.destroy(); fail(error instanceof ProviderError ? error : badResponse()); }
       });
-      outgoing.once("error", error => { stream.destroy(); fail(init.signal?.aborted ? error : connectionFailed()); });
+      outgoing.once("error", error => { stream.destroy(); fail(init.signal?.aborted ? error : connectionFailed(error)); });
       // One end(body) call lets Node frame the request with an exact Content-Length instead of chunked encoding.
       outgoing.end(body);
     });
