@@ -99,6 +99,10 @@ their string input) remains rejected.
 - **Spawn:** the thread has no session. A new process starts and the history is sent once.
   Telemetry reports `spawned`.
 - **Continue:** the request carries the history the session already has plus new items.
+  Public reasoning summaries retain their reasoning type and rendered positions.
+  They do not become extra assistant answers in the live ledger, so summaries
+  replayed alongside tool calls do not block the pending results. Opaque reasoning
+  from another transport is never passed to the CLI.
   New user items are sent as user messages. Tool outputs are handed to the session's
   pending external tool requests with `session.tools.handlePendingToolCall`, each to the
   request of the call it answers, whatever order the outputs arrive in, at most 16 at a

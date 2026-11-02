@@ -59,7 +59,7 @@ export interface CopilotRun {
 /** Validates and translates one request for the one-shot and live paths. */
 export function copilotRun(config: ProviderConfig, request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): CopilotRun {
   validateCopilotServiceTier(request);
-  const normalized = responsesToChatRequest(request); const choice = normalized.tool_choice;
+  const normalized = responsesToChatRequest(request, { reasoningSummaryMetadata: true }); const choice = normalized.tool_choice;
   const tools = normalized.tools || []; const native = nativeCatalog(tools);
   const effort = copilotEffort(config, request);
   const summary = record(request.reasoning).summary;
