@@ -16,7 +16,8 @@ await mkdir(home,{recursive:true});await mkdir(work,{recursive:true});configureT
 const requests=[],events=[];let compactions=0;
 const provider={async *infer(request,signal,context){
  const compact=context.requestKind==='compaction';if(compact)compactions++;
- requests.push({kind:context.requestKind,bytes:Buffer.byteLength(JSON.stringify(request.input)),model:request.model,thread:context.threadId,recoveryCapable:context.cacheRecovery===true});
+ requests.push({kind:context.requestKind,bytes:Buffer.byteLength(JSON.stringify(request.input)),model:request.model,thread:context.threadId,recoveryCapable:context.cacheRecovery===true,
+   retainsProof:JSON.stringify(request.input).includes('PROOF_CACHE_RECOVERY')});
  yield {type:'text',text:compact?'Summary: retain PROOF_CACHE_RECOVERY. No pending tools.':'PROOF_CACHE_RECOVERY'};
  const input=compactions?1000:200000,cached=compactions?900:0;
  yield {type:'done',usage:{input_tokens:input,output_tokens:10,total_tokens:input+10,input_tokens_details:{cached_tokens:cached}}};
@@ -47,6 +48,7 @@ try{
  assert(resumed.some(e=>e.params?.item?.type==='contextCompaction'),'compaction belongs to the resumed SDK turn');
  assert.equal(requests.length,4,'two cold calls, one compaction and one reduced continuation');
  assert(requests.at(-1).bytes<=requests[1].bytes/2,'resumed input is genuinely smaller');
+ assert(requests.at(-1).retainsProof,'the compacted summary remains in the resumed request');
  assert(requests.every(r=>r.model==='mock-sol'&&r.thread===id&&r.recoveryCapable),'same selected model, thread and actual SDK capability throughout');
  await flushTelemetry();const logs=await readTelemetry(state,0);assert.equal(logs.filter(e=>e.event==='context_cache_guard'&&e.outcome==='compaction_required').length,1);
  proof={passed:true,providerCalls:requests.length,compactions,sameThread:true,sameModel:true,paidInference:0,thirdColdCallPrevented:true,reducedInput:true};
