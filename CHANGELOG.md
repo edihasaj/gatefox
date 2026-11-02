@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.2 — 2026-11-02
+
+- Chat Completions providers now recover known transient connection failures
+  within the existing two-minute outage budget. Retries preserve the selected
+  account, model and request, keep streaming heartbeats active, and stop when
+  cancelled. HTTP replies and partial streams are never replayed by this recovery.
+- Tailnet diagnostics retain fixed network error codes, distinguishing temporary
+  DNS and dial timeouts from certificate failures without recording addresses.
+
 ## 1.3.5 — 2026-11-01
 
 - Fix Claude live-session recovery when tool results arrive with new caller
