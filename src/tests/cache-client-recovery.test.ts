@@ -5,12 +5,19 @@ import type { InferenceContext, Provider } from "../providers/provider.js";
 import { streamFailureCode } from "../provider-failure.js";
 import { ContextCacheRecoveryRequired } from "../context-cache-budget.js";
 import { createHash } from "node:crypto";
+import { inferenceContext } from "../providers/provider.js";
+
+test("only the explicit single SDK capability header opts into cache recovery", () => {
+  assert.equal(inferenceContext({ "x-harness-cache-recovery": "1" }).cacheRecovery, true);
+  for (const value of [undefined, "true", "2", ["1", "1"]]) assert.equal(inferenceContext({ "x-harness-cache-recovery": value }).cacheRecovery, undefined);
+  assert.equal(inferenceContext({}, { client_metadata: { cacheRecovery: true } }).cacheRecovery, undefined);
+});
 
 test("a blocked SDK turn offers compaction once without another provider call; a compacted history recovers", async () => {
   let calls = 0;
   const provider: Provider = { async *infer() { calls++; yield { type: "done", usage: {
     input_tokens: 200000, output_tokens: 1, total_tokens: 200001, input_tokens_details: { cached_tokens: 0 } } }; } };
-  const context: InferenceContext = { threadId: "recover-once", turnId: "turn", requestKind: "turn" };
+  const context: InferenceContext = { threadId: "recover-once", turnId: "turn", requestKind: "turn", cacheRecovery: true };
   const run = async (input = "a".repeat(1000), extra: Partial<InferenceContext> = {}) => {
     for await (const _ of cacheGuardedInference(provider, { model: "same", input }, new AbortController().signal,
       { ...context, ...extra }, "sdk-cache-recovery")) {}
@@ -28,7 +35,8 @@ test("a blocked SDK turn offers compaction once without another provider call; a
 test("anonymous, unclassified, and native Messages clients retain the final refusal", async () => {
   const provider: Provider = { async *infer() { yield { type: "done", usage: {
     input_tokens: 200000, output_tokens: 1, total_tokens: 200001, input_tokens_details: { cached_tokens: 0 } } }; } };
-  for (const context of [{}, { threadId: "plain" }, { threadId: "messages", turnId: "t", requestKind: "turn", clientProtocol: "messages" }] as InferenceContext[]) {
+  for (const context of [{}, { threadId: "plain" }, { threadId: "old-sdk", turnId: "t", requestKind: "turn" },
+    { threadId: "messages", turnId: "t", requestKind: "turn", clientProtocol: "messages", cacheRecovery: true }] as InferenceContext[]) {
     const run = async () => { for await (const _ of cacheGuardedInference(provider, { model: "m", input: "large" },
       new AbortController().signal, context, "no-sdk-cache-recovery")) {} };
     await run(); await run(); await assert.rejects(run(), { code: "invalid_request" });
