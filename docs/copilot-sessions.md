@@ -308,6 +308,11 @@ symbol `harness-gateway/copilot-sessions/v1`, so the new runtime adopts the one 
 with its sessions, and the next request of a thread continues the running process unless
 something the session was created with changed. A registry with another interface version
 is replaced, not adopted; its sessions still close on their own timers or at shutdown.
+Sessions adopted from before typed reasoning support can match their exact former
+summary-to-assistant prefix. A bounded compatibility check accepts only a complete
+digest match before applying the ordinary pending-tool and settings checks. It
+never edits a refused session or resends its history. New sessions use only the
+typed ledger; an accepted continuation commits that format for an adopted one.
 The gateway counts as busy, so an idle restart or a self-update waits, while a session is
 starting or generating, or has waited for tool outputs for less than 10 minutes; a longer
 wait gains nothing from its cache. On shutdown, after the request drain, every session is

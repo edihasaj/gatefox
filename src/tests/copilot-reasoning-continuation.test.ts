@@ -6,7 +6,7 @@ import { readEvents } from "../protocol/sse.js";
 import type { ResponsesInputItem } from "../protocol/types.js";
 import { restoreReasoning } from "../protocol/reasoning-state.js";
 import { ProviderError } from "../providers/provider.js";
-import { adapter, harness, outputFor, providerId, thread, tools, turn, user } from "./copilot-live-harness.js";
+import { adapter, harness, live, outputFor, providerId, thread, tools, turn, user } from "./copilot-live-harness.js";
 
 for (const stream of [false, true]) test(`Copilot reasoning keeps the same live session through tools and follow-ups (stream=${stream})`, { timeout: 30000 }, async () => {
   const h = await harness();
@@ -61,5 +61,29 @@ test("a Copilot session preserved by the old summary conversion accepts correcte
     assert.equal(log.filter(entry => entry.op === "create").length, 1);
     assert.equal(log.filter(entry => entry.op === "deliver").length, 3);
     assert.deepEqual((await h.sessions()).filter(entry => ["spawned", "continued", "preserved"].includes(String(entry.outcome))).map(entry => entry.outcome), ["spawned", "preserved", "continued"]);
+  } finally { await h.restore(); }
+});
+
+test("an adopted old seed with historical reasoning migrates only its exact prefix and retains pending tools", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    const provider = adapter();
+    const first: ResponsesInputItem[] = [user("old task"), { type: "reasoning", summary: [{ type: "summary_text", text: "old public plan" }] },
+      { type: "message", role: "assistant", content: "prior answer" }, user("go [tools:3][reasoning]")];
+    const a = await turn(provider, first);
+    const session = live().sessions()[0];
+    Reflect.deleteProperty(session, "reasoningLedgerVersion"); // Object retained from the pre-fix module.
+    const input = [...first, ...a.output, ...outputFor(a.output, "result")];
+    const saved = structuredClone(session.ledger);
+    const fixed = (history: ResponsesInputItem[]) => restoreReasoning({ model: "fixture", input: history, tools }, "scope", { preserveSummaries: true });
+    const serve = async (history: ResponsesInputItem[]) => { for await (const _ of provider.infer(fixed(history), new AbortController().signal, thread)) { /* Drain the original native session. */ } };
+    await assert.rejects(serve([user("changed task"), ...input.slice(1)]), error => error instanceof ProviderError && error.upstream?.code === "copilot_session_preserved");
+    assert.deepEqual(session.ledger, saved); assert.equal(session.reasoningLedgerVersion, undefined);
+    assert.equal((await h.log()).filter(entry => entry.op === "deliver").length, 0);
+    await serve(input);
+    const log = await h.log();
+    assert.equal(log.filter(entry => entry.op === "create").length, 1);
+    assert.equal(log.filter(entry => entry.op === "deliver").length, 3);
+    assert.equal(session.reasoningLedgerVersion, 1);
   } finally { await h.restore(); }
 });
