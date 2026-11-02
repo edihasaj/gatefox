@@ -8,6 +8,7 @@ import { isManagementUnavailable } from "../app-management/runtime.js";
 import { foldBaseline, pickLatest, pickerEntries, visibleModels, withReleaseDates } from "./planner.js";
 import { strictUnion, validateAutoLatestSettings } from "./settings.js";
 import type { AutoLatestScope, AutoLatestSettings, CatalogRow } from "./types.js";
+import { modelLabel } from "../model-label.js";
 
 export interface ApplyOutput { raw: Record<string, unknown>; activated: number; nativeUpdated: boolean; folded: boolean; blocked: boolean; dirty: boolean; touched: Set<string> }
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -15,7 +16,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(v
 /** Metadata for a newly activated alias: the catalog's own, never a hidden flag a vendor row might carry. */
 function freshMetadata(row: CatalogRow, minimal: boolean): Record<string, unknown> {
   const { pickerHidden: _ignored, ...rest } = row.metadata ?? {};
-  const displayName = typeof rest.displayName === "string" && rest.displayName ? rest.displayName : row.label;
+  const displayName = typeof rest.displayName === "string" && rest.displayName ? modelLabel(rest.displayName) : row.label;
   if (!minimal) return { ...rest, displayName };
   return { displayName, ...(typeof rest.releasedAt === "number" ? { releasedAt: rest.releasedAt } : {}) };
 }

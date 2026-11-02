@@ -81,6 +81,15 @@ export class CompactionPolicy {
   /** A chat the engine no longer holds keeps no per-chat overrides. */
   forget(threadId: string): void { this.threads.delete(threadId); }
   goalsEnabled(threadId: string): boolean { return this.threads.get(threadId)?.goals ?? this.base.goals ?? true; }
+  /** The smallest usable window among this generation's models, for a turn that does not name its model. */
+  smallestWindow(threadId: string): number | undefined {
+    let smallest: number | undefined;
+    for (const model of this.models.keys()) {
+      const window = this.target(threadId, model)?.effectiveContextWindow;
+      if (window && (smallest === undefined || window < smallest)) smallest = window;
+    }
+    return smallest;
+  }
   sourceHash(model: string): string | null {
     const hash = this.models.get(model)?.comp_hash;
     return typeof hash === "string" && hash.length <= 1024 && !hash.includes("\0") ? hash : null;

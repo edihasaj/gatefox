@@ -136,8 +136,9 @@ if (values.test) {
   passed(run(['-p', 'codex-core', '--lib', 'specs_filter_deferred_dynamic_tools']), 1, 'deferred dynamic tool filtering');
   passed(run(['-p', 'codex-core', '--lib', 'gateway_role_context']), 3, 'managed and named Qwen role context');
   passed(run(['-p', 'codex-core', '--lib', 'gateway_cache_recovery']), 3, 'cache recovery active context');
+  passed(run(['-p', 'codex-core', '--lib', 'gateway_background_completion']), 8, 'opt-in background command completion');
   if (treeDigest(sdk) !== input.patchedSdkSha256) throw Error('SDK test gate changed the verified source tree');
-  console.log(JSON.stringify({ tests: 25, revision: gatewaySdkRevision, patchSha256, sourceSha256,
+  console.log(JSON.stringify({ tests: 33, revision: gatewaySdkRevision, patchSha256, sourceSha256,
     testRunnerSha256: gatewaySdkTestRunnerDigest() }));
 } else {
   const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--locked', '--format-version', '1', '--manifest-path', manifest],
@@ -189,6 +190,7 @@ if (values.test) {
   writeFileSync(join(artifact, 'NOTICE'), 'Harness Gateway uses a separately compiled OpenAI Codex SDK for gateway-provider execution.\n' +
     'Executor identity, selected-model compaction and failed-turn queue preservation apply inside marked gateway executors.\n' +
     'Its dynamic-tool registration also exposes declared-deferred tools directly when the selected model cannot search.\n' +
+    'Opt-in tracked background commands can deliver completion through the executor input loop without a goal.\n' +
     'The native signed Codex executable is unchanged.\n' +
     'The package also carries codex-code-mode-host, the Code Mode process Codex starts beside itself. It is built from the\n' +
     'same pinned Codex source and statically links V8 through Codex\'s code-mode runtime; dependencies.json lists the Cargo\n' +

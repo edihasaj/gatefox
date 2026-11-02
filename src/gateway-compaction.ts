@@ -3,8 +3,10 @@ import { homedir } from "node:os";
 import { object, type Message } from "./app-server-connection.js";
 import { CompactionRecovery, CompactionRecoveryError } from "./compaction-recovery.js";
 import { CompactionStateStore } from "./compaction-state.js";
-import { readCompactionUsage } from "./compaction-rollout.js";
+import { readCompactionUsage, readMeasuredUsage } from "./compaction-rollout.js";
 import { CompactionPolicy } from "./compaction-policy.js";
+import { largestSwitchFactor, switchOverflow, switchOverflowMessage } from "./compaction-switch-guard.js";
+import { telemetry } from "./telemetry.js";
 
 export interface GatewayCompactionOptions {
   models: readonly Message[];
@@ -71,13 +73,15 @@ export class GatewayCompactionSession {
 
   async before(method: string, params: Message): Promise<{ intercepted: boolean; result?: Message }> {
     // The patched core uses its own current token estimate and selected turn
-    // context. Sending a separate compact turn here breaks desktop association.
-    if (this.options.selectedModelCompaction) return { intercepted: false };
+    // context. Sending a separate compact turn here breaks desktop association,
+    // so that form only runs the switch check below and never starts recovery.
+    const selected = this.options.selectedModelCompaction === true;
     const threadId = typeof params.threadId === "string" ? params.threadId : undefined;
     if (!threadId) return { intercepted: false };
     if (method === "turn/interrupt") {
       const checks = this.checks.get(threadId);
       for (const check of checks || []) check.cancelled = true;
+      if (selected) return checks?.size && !this.options.isActive(threadId) ? { intercepted: true, result: {} } : { intercepted: false };
       const result = await this.recovery.interceptInterrupt(threadId, typeof params.turnId === "string" ? params.turnId : undefined);
       // Cancelling an unsent message needs no invented SDK turn or completion.
       if (result === undefined && checks?.size && !this.options.isActive(threadId)) return { intercepted: true, result: {} };
@@ -85,7 +89,7 @@ export class GatewayCompactionSession {
     }
     // Closing a chat is still available; uncertain SDK work requires reconnecting
     // its owning connection rather than pretending this guard has been cleared.
-    if (!isRead(method) && method !== "thread/unsubscribe") this.recovery.assertAvailable(threadId);
+    if (!selected && !isRead(method) && method !== "thread/unsubscribe") this.recovery.assertAvailable(threadId);
     // Preserve SDK steering and ordinary turns when no recovery is required.
     if (method !== "turn/start" || this.options.isActive(threadId)) return { intercepted: false };
     if (this.closed) throw new CompactionRecoveryError("closed");
@@ -93,6 +97,10 @@ export class GatewayCompactionSession {
     if (checks.size >= 32 || !this.checks.has(threadId) && this.checks.size >= 32) throw new CompactionRecoveryError("busy");
     const check = { cancelled: false }; checks.add(check); this.checks.set(threadId, checks);
     try {
+      // Both SDK forms decide compaction from the last model's counters, so a switch to another tokenizer is checked first.
+      await this.checkSwitch(threadId, params);
+      if (check.cancelled) throw new CompactionRecoveryError("interrupted");
+      if (selected) return { intercepted: false };
       const requested = object(object(params.collaborationMode).settings).model ?? params.model;
       const model = typeof requested === "string" ? requested
         : object((await this.options.request("thread/read", { threadId, includeTurns: false })).thread).model;
@@ -131,6 +139,33 @@ export class GatewayCompactionSession {
   }
   private async readState(threadId: string) {
     try { return await this.store.read(threadId); } catch { this.warn(); return undefined; }
+  }
+
+  /**
+   * Refuses, before anything is sent, a turn whose selected model would count this history past its window.
+   * The selected model cannot compact a history it cannot read, so the model that measured it has to.
+   * An unavailable fact never blocks a turn: only a confirmed overflow refuses one.
+   */
+  private async checkSwitch(threadId: string, params: Message): Promise<void> {
+    let overflow;
+    try {
+      const requested = object(object(params.collaborationMode).settings).model ?? params.model;
+      // Recorded counters that fit even after the largest recount need no thread read.
+      const known = (await this.readState(threadId))?.usage?.lastTokens;
+      const bound = typeof requested === "string" ? this.policy.target(threadId, requested)?.effectiveContextWindow : this.policy.smallestWindow(threadId);
+      if (known && bound && known * largestSwitchFactor < bound) return;
+      const thread = object((await this.options.request("thread/read", { threadId, includeTurns: false })).thread);
+      if (thread.id !== threadId || !this.recovery.isGatewayThread(thread) || typeof thread.path !== "string") return;
+      const model = typeof requested === "string" ? requested : thread.model;
+      if (typeof model !== "string" || !this.options.aliases.has(model)) return;
+      const limit = this.policy.target(threadId, model)?.effectiveContextWindow; if (!limit) return;
+      const measured = await readMeasuredUsage(this.nativeHome, threadId, thread.path); if (!measured) return;
+      overflow = switchOverflow(measured, model, limit);
+    } catch { return; }
+    if (!overflow) return;
+    telemetry("compaction_switch_refused", { sourceFamily: overflow.sourceFamily, targetFamily: overflow.targetFamily,
+      measuredTokens: overflow.measuredTokens, estimatedTokens: overflow.estimatedTokens, limitTokens: overflow.limitTokens });
+    throw new CompactionRecoveryError("switch", switchOverflowMessage(overflow));
   }
 }
 

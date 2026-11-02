@@ -1,6 +1,7 @@
 import { hostname } from "node:os";
 import type { GatewayConfig, ProviderConfig } from "./config.js";
 import { pickerHidden } from "./model-auto-latest/metadata.js";
+import { metadataLabel } from "./model-label.js";
 
 /** Read-only catalog disclosure served by `GET /v1/gateway-info`: provider labels, types, and model IDs only. */
 export interface GatewayInfoModel { id: string; label: string }
@@ -48,7 +49,8 @@ function gatewayProviderInfo(provider: ProviderConfig): GatewayInfoProvider | un
     // A model the picker hides stays routable but is not disclosed; the bound counts only what is listed.
     if (pickerHidden(provider.modelMetadata?.[alias])) continue;
     const displayName = provider.modelMetadata?.[alias]?.displayName;
-    models.push({ id: alias, label: text(displayName, 256) ? displayName : upstream });
+    const label = metadataLabel(displayName);
+    models.push({ id: alias, label: label && text(label, 256) ? label : upstream });
   }
   if (models.length > maximumGatewayInfoModels) return undefined;
   return { id: provider.id, label: text(provider.label, 96) ? provider.label : provider.id, type: provider.type, models };

@@ -1,7 +1,7 @@
 import { object, type Message } from "./app-server-connection.js";
 import { classifyThread } from "./gateway-chat-classifier.js";
 
-type Failure = "busy" | "failed" | "interrupted" | "timeout" | "closed" | "unconfirmed" | "shared" | "incompatible" | "goal" | "reconnect";
+type Failure = "busy" | "failed" | "interrupted" | "timeout" | "closed" | "unconfirmed" | "shared" | "incompatible" | "goal" | "reconnect" | "switch";
 const messages: Record<Failure, string> = {
   busy: "This chat is busy. Wait for its current work before retrying compaction recovery.",
   failed: "Compaction recovery failed on the selected model. Your chat is preserved; retry when that model is available.",
@@ -13,11 +13,13 @@ const messages: Record<Failure, string> = {
   incompatible: "These models use incompatible compaction settings. Start a new chat with the selected model.",
   goal: "Pause or finish the active goal before compaction recovery. Your goal and chat are preserved.",
   reconnect: "The SDK's compaction state could not be confirmed. Reconnect this chat's computer connection before continuing. Your saved history is preserved.",
+  switch: "This chat is likely too long for the selected model. Switch back to the previous model, run /compact, then switch again. Your chat is preserved.",
 };
 
 export class CompactionRecoveryError extends Error {
   readonly code = -32001;
-  constructor(readonly reason: Failure) { super(messages[reason]); this.name = "CompactionRecoveryError"; }
+  /** `detail` replaces the fixed text only with an adapter-built message that names models, never request content. */
+  constructor(readonly reason: Failure, detail?: string) { super(detail ?? messages[reason]); this.name = "CompactionRecoveryError"; }
 }
 
 export interface CompactionRecoveryOptions {

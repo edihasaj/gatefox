@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 const { values } = parseArgs({ options: { package: { type: 'string' }, code: { type: 'string' },
   root: { type: 'string' }, private: { type: 'boolean' }, openai: { type: 'boolean' }, baseline: { type: 'boolean' },
   cold: { type: 'boolean' }, 'mixed-identity': { type: 'boolean' }, 'config-override': { type: 'boolean' },
-  v2: { type: 'boolean' }, managed: { type: 'boolean' }, 'named-worker': { type: 'boolean' }, 'worker-stale-catalog': { type: 'boolean' }, 'worker-compact': { type: 'boolean' }, 'managed-stale-catalog': { type: 'boolean' }, 'managed-compact': { type: 'boolean' }, accounts: { type: 'boolean' }, 'role-fork': { type: 'boolean' }, 'expect-payload-loss': { type: 'boolean' } } });
+  v2: { type: 'boolean' }, managed: { type: 'boolean' }, 'named-worker': { type: 'boolean' }, 'worker-stale-catalog': { type: 'boolean' }, 'worker-compact': { type: 'boolean' }, 'managed-stale-catalog': { type: 'boolean' }, 'managed-compact': { type: 'boolean' }, 'child-status': { type: 'boolean' }, 'expect-status-unavailable': { type: 'boolean' }, accounts: { type: 'boolean' }, 'role-fork': { type: 'boolean' }, 'expect-payload-loss': { type: 'boolean' } } });
 assert.ok(values.package && values.root, 'Pass --package SDK_PACKAGE --root EVIDENCE_DIRECTORY');
 const roleContext = values.managed || values['named-worker'];
 const staleCatalog = values['managed-stale-catalog'] || values['worker-stale-catalog'];
@@ -20,6 +20,8 @@ assert.ok(!(values['worker-stale-catalog'] || values['worker-compact']) || value
 assert.ok(!values.managed || values.v2 && !values.accounts && !values.baseline && !values.private, '--managed requires shared --v2 and excludes private/accounts/baseline');
 assert.ok(!values['managed-stale-catalog'] || values.managed && values['role-fork'], '--managed-stale-catalog requires --managed --role-fork');
 assert.ok(!values['managed-compact'] || values.managed && values['role-fork'], '--managed-compact requires --managed --role-fork');
+assert.ok(!values['child-status'] || values.v2, '--child-status requires --v2');
+assert.ok(!values['expect-status-unavailable'] || values['child-status'], '--expect-status-unavailable requires --child-status');
 assert.ok(!values['role-fork'] || values.v2, '--role-fork requires --v2');
 if (values['role-fork']) assert.ok(!values.accounts && !values.baseline, '--role-fork is incompatible with --accounts and --baseline');
 const code = resolve(values.code ?? new URL('..', import.meta.url).pathname);
@@ -95,6 +97,7 @@ if (values['role-fork']) Object.assign(evidence, { mode: 'role-fork', fullHistor
   parentModel: alias, defaultSubagentModel: alias, roleConfigPath: rolePath, roleModel: childModel,
   roleReasoningEffort: workerEffort });
 const taskProof = 'TASK_' + randomUUID(), fileProof = 'FILE_' + randomUUID();
+const statusProof = 'STATUS_' + randomUUID(), statusCallId = 'fixture_child_status';
 // A marker written only into the parent's own turn text, so its presence in a child inference
 // proves the full-history fork actually carried the parent turn.
 const forkMarker = values['role-fork'] ? 'FORK_HISTORY_' + randomUUID() : undefined;
@@ -114,6 +117,7 @@ try {
   gateway = await startGateway(serverConfig, provider => ({
     async *infer(request, _signal, context) {
       calls++;
+      if (values['child-status'] && request.model === 'mock-parent' && JSON.stringify(request.input).includes(statusProof)) evidence.parentReceivedChildStatus = true;
       const childRequest = request.model === (values.accounts ? childModel : 'mock-child');
       if (childRequest && context?.requestKind === 'compaction') {
         evidence.compactionProviderCalls = (evidence.compactionProviderCalls ?? 0) + 1;
@@ -160,8 +164,19 @@ try {
         const delivered = messages.some(message => typeof message.content === 'string' && message.content.includes(requiredProof));
         evidence[requiredProof === taskProof ? 'taskPayloadDelivered' : 'followupPayloadDelivered'] = delivered;
         if (queuedProof) evidence.queuedMessagePayloadDelivered = messages.some(message => typeof message.content === 'string' && message.content.includes(queuedProof));
+        const statusResult = messages.find(message => message.role === 'tool' && message.tool_call_id === statusCallId);
+        if (values['child-status'] && statusResult) {
+          evidence.childStatusUnavailable = statusResult.content.includes('unsupported call:');
+          assert.equal(evidence.childStatusUnavailable, !!values['expect-status-unavailable']);
+        }
         if (!delivered) yield { type: 'text', text: 'EMPTY_TASK_PAYLOAD' };
-        else {
+        else if (values['child-status'] && requiredProof === taskProof && !statusResult) {
+          const tool = toolsFor(request).find(tool => tool.name === 'send_message');
+          evidence.childStatusAdvertised = !!tool;
+          assert.equal(!!tool, !values['expect-status-unavailable'], 'Child capability controls its actual collaboration registry');
+          // The baseline reproduces a historical call from inherited parent declarations.
+          yield callFor(tool ?? { name: 'send_message', namespace: 'collaboration' }, statusCallId, { target: '/root', message: statusProof });
+        } else {
           const output = messages.find(message => message.role === 'tool' && message.tool_call_id === childCallId);
           if (!output) {
             const tool = toolsFor(request).find(tool => tool.name === 'exec_command');
@@ -197,7 +212,7 @@ try {
     assert.ok(!visible.data.some(row => row.model === childModel));
     evidence.managedHiddenFromPicker = true;
   }
-  const nativeRow = { ...rows[0], slug: nativeModel, multi_agent_version: undefined, default_reasoning_level: 'low',
+  const nativeRow = { ...rows[0], slug: nativeModel, multi_agent_version: values['child-status'] && !values['expect-status-unavailable'] ? 'v2' : undefined, default_reasoning_level: 'low',
     supported_reasoning_levels: ['low', 'high'].map(effort => ({ effort, description: effort })) };
   await writePrivateJson(join(native, 'models.json'), { models: [nativeRow] });
   nativeConfig = `model = "${nativeModel}"\nmodel_catalog_json = ${JSON.stringify(join(native, 'models.json'))}\nweb_search = "disabled"\n[features]\nremote_control = false\n[analytics]\nenabled = false\n`;
@@ -267,6 +282,7 @@ try {
     const items = history.thread.turns.flatMap(turn => turn.items);
     const commands = items.filter(item => item.type === 'commandExecution');
     evidence.childHistoryItems = items.length;
+    if (values['child-status']) evidence.childStatusItems = items.filter(item => /collab|subagent/i.test(item.type)).map(({type,tool,status,kind,agentPath,agentThreadId}) => ({type,tool,status,kind,agentPath,agentThreadId}));
     evidence.childCommandItems = commands.length;
     if (!values['expect-payload-loss']) {
       assert.ok(commands.length > 0, 'The opened child history must contain its command execution');
@@ -375,6 +391,10 @@ try {
       evidence.childCompactions = compactionThreads.filter(threadId => threadId === id).length;
       assert.equal(evidence.childCompactions, compactWorker ? 1 : 0, 'Compact once above the configured threshold; avoid churn at 60K');
       if (compactWorker) assert.equal(evidence.compactionProviderCalls, 1, 'The configured threshold must trigger real provider compaction');
+    }
+    if (values['child-status']) {
+      assert.equal(evidence.childStatusUnavailable, !!values['expect-status-unavailable']);
+      assert.equal(evidence.parentReceivedChildStatus === true, !values['expect-status-unavailable'], 'The parent must receive the child status payload');
     }
     evidence.passed = true;
   } else assert.ok(evidence.baselineRejection, 'Baseline must reproduce the original rejection');

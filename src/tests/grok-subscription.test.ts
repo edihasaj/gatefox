@@ -7,6 +7,7 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GrokSubscription } from "../providers/grok.js";
 import { mergeGrokConfig } from "../providers/grok-home.js";
+import { grokFailure } from "../providers/grok-stream.js";
 import { ProviderError } from "../providers/provider.js";
 import type { InferenceEvent } from "../protocol/types.js";
 import { cacheGuardedInference } from "../cache-guarded-inference.js";
@@ -61,6 +62,11 @@ const gatewayName = async () => {
 async function collect(provider: GrokSubscription, request: Record<string, unknown>, signal = new AbortController().signal) {
   const events: InferenceEvent[] = [];
   for await (const event of provider.infer({ model: "grok-4.7", input: "hello", ...request }, signal)) events.push(event);
+  return events;
+}
+async function collectThread(provider: GrokSubscription, threadId: string) {
+  const events: InferenceEvent[] = [];
+  for await (const event of provider.infer({ model: "grok-4.7", input: "hello" }, new AbortController().signal, { threadId })) events.push(event);
   return events;
 }
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -164,6 +170,45 @@ test("native failures map to fixed classes without provider prose", async () => 
       await assert.rejects(collect(f.provider, {}), (error: unknown) => error instanceof ProviderError && error.code === expected && error.status === status && !error.message.includes("private-diagnostic"));
     } finally { await f.restore(); }
   }
+});
+
+test("a signed-out CLI result is reported as authentication, not as an upstream failure", () => {
+  const signedOut = { type: "result", subtype: "error_during_execution", is_error: true, result: "",
+    errors: ["Not signed in. To authenticate without a browser, run:\n  grok login --device-code\n  see https://x.ai/cli for details"] };
+  const error = grokFailure(signedOut, "grok.result");
+  assert.equal(error.code, "authentication"); assert.equal(error.status, 401);
+  assert.equal(error.upstream?.code, "authentication_failed");
+  assert.doesNotMatch(error.message, /device-code|https:/, "the provider's sentence is replaced, not forwarded");
+  // Unrelated prose keeps the generic class.
+  const unknown = grokFailure({ type: "result", is_error: true, errors: ["something else broke"] }, "grok.result");
+  assert.equal(unknown.code, "inference_failed"); assert.equal(unknown.upstream?.code, "unknown");
+});
+
+test("an unauthenticated result from the running CLI surfaces as authentication", async () => {
+  const f = await setup([init(), { type: "result", subtype: "error_during_execution", is_error: true, result: "",
+    errors: ["Not signed in. To authenticate without a browser, run:\n  grok login --device-code"] }]);
+  try { await assert.rejects(collect(f.provider, {}), { code: "authentication" }); }
+  finally { await f.restore(); }
+});
+
+test("a failed attempt without output does not turn the corrected retry into a replay refusal", async () => {
+  const f = await setup([init(), { type: "result", subtype: "error_during_execution", is_error: true, result: "",
+    errors: ["Not signed in. To authenticate without a browser, run:\n  grok login --device-code"] }]);
+  try {
+    // Same thread both times, the way a client retries after reading the 401.
+    await assert.rejects(collectThread(f.provider, "retry"), { code: "authentication" });
+    await assert.rejects(collectThread(f.provider, "retry"), { code: "authentication" }, "the retry runs again instead of being refused");
+    assert.equal((await f.captured()).length, 2, "each attempt started its own CLI");
+  } finally { await f.restore(); }
+});
+
+test("an answered turn still refuses a second request on the same conversation", async () => {
+  const f = await setup(textTurn("done"));
+  try {
+    await collectThread(f.provider, "once");
+    await assert.rejects(collectThread(f.provider, "once"), { code: "invalid_request", status: 400 });
+    assert.equal((await f.captured()).length, 1);
+  } finally { await f.restore(); }
 });
 
 test("images are refused before the CLI starts, and a missing login is reported", async () => {

@@ -9,6 +9,7 @@ import { loadAliases, providerRoute, rememberCurrentAliases, rememberProviderAli
 import { chooseLoopbackPort } from "./ports.js";
 import { pickerHidden } from "../model-auto-latest/metadata.js";
 import { dropRawProvider, reseedRawProvider } from "../model-auto-latest/scopes.js";
+import { modelLabel } from "../model-label.js";
 
 /** Only automatic upkeep may set pickerHidden, so it never travels through a catalog or a re-added alias. */
 function stripHidden<T extends object | undefined>(metadata: T): T {
@@ -42,8 +43,9 @@ export function mergeCatalog(configured: ProviderConfig, fresh: CatalogEntry[], 
   for (const [alias, id] of Object.entries(configured.models)) {
     const metadata = configured.modelMetadata?.[alias] as Record<string, unknown> | undefined; const current = result.get(id);
     if (current && (current.metadata || !metadata)) continue;
-    const named = (metadata as { displayName?: unknown } | undefined)?.displayName;
-    result.set(id, catalogEntry(id, typeof named === "string" && named ? named : current?.label ?? id, metadata));
+    const saved = (metadata as { displayName?: unknown } | undefined)?.displayName;
+    const named = typeof saved === "string" && saved ? modelLabel(saved) : undefined;
+    result.set(id, catalogEntry(id, named || (current?.label ?? id), metadata));
   }
   return [...result.values()].map(entry => entry.metadata ? { ...entry, metadata: stripHidden(entry.metadata) } : entry);
 }
@@ -58,8 +60,10 @@ export function withConfiguredCatalog(provider: ProviderConfig, cached: CatalogE
   for (const [alias, id] of Object.entries(provider.models)) {
     const metadata = provider.modelMetadata?.[alias] as Record<string, unknown> | undefined;
     if (done.has(id) || !validModelId(id)) continue;
-    done.add(id); const named = (metadata as { displayName?: unknown } | undefined)?.displayName;
-    result.set(id, catalogEntry(id, typeof named === "string" && named ? named : id, metadata));
+    done.add(id);
+    const saved = (metadata as { displayName?: unknown } | undefined)?.displayName;
+    const named = typeof saved === "string" && saved ? modelLabel(saved) : undefined;
+    result.set(id, catalogEntry(id, named || id, metadata));
   }
   return [...result.values()];
 }

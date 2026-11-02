@@ -42,6 +42,13 @@ Model discovery uses the configured API's `/models` endpoint when available.
 Discovery accepts the upstream `display_name` or `name` as the model's label,
 including OpenRouter's published names. Internal aliases remain stable for
 saved chats and routing; labels do not rename the upstream model.
+When a published name repeats the vendor and the provider row already shows it,
+the duplicated vendor is dropped once: `DeepSeek: DeepSeek V4.1 Flash 1017`
+becomes `DeepSeek V4.1 Flash 1017`, so the catalog row reads
+`OpenRouter · DeepSeek V4.1 Flash 1017`. A name that does not repeat its vendor,
+such as `Z.ai: GLM 5.3`, keeps its published form. The rule is applied when
+discovery stores a label and when a catalog or provider list renders one, so a
+saved long label from an earlier release also renders without the repetition.
 Some services expose one mixed catalog at another URL; enter explicit model IDs
 when that endpoint is unavailable. The wizard supports that fallback. Never
 assume an entire mixed catalog works through one protocol.

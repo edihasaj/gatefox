@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeEffort } from "../providers/claude.js";
 import { nativeClaudeModels, readClaudeModels } from "../providers/claude-models.js";
-import { discoverModels, loadDiscoveredModels, modelCatalog } from "../catalog.js";
+import { discoverModels, loadDiscoveredModels, modelCatalog, modelLabel } from "../catalog.js";
 import type { GatewayConfig, ProviderConfig } from "../config.js";
 import { validateConfig } from "../config.js";
 import { readServiceTierMetadata } from "../model-service-tiers.js";
@@ -64,7 +64,7 @@ function worker(mode: string) {
   `], { stdio: ["pipe", "pipe", "pipe"] });
 }
 
-test("API discovery retains published names and stable configured aliases", async () => {
+test("API discovery keeps one vendor name in labels and stable configured aliases", async () => {
   const original = globalThis.fetch, old = process.env.OPENROUTER_LABEL_FIXTURE_KEY;
   globalThis.fetch = async () => Response.json({ data: [{ id: "deepseek/deepseek-v4-flash", name: "DeepSeek: DeepSeek V4 Flash" }] });
   process.env.OPENROUTER_LABEL_FIXTURE_KEY = "fixture-only";
@@ -74,11 +74,31 @@ test("API discovery retains published names and stable configured aliases", asyn
       modelMetadata: { "or-deepseek": { displayName: "or-deepseek" } } };
     loadDiscoveredModels(provider, await discoverModels(provider));
     assert.deepEqual(provider.models, { "or-deepseek": "deepseek/deepseek-v4-flash" });
-    assert.equal(provider.modelMetadata?.["or-deepseek"]?.displayName, "DeepSeek: DeepSeek V4 Flash");
+    assert.equal(provider.modelMetadata?.["or-deepseek"]?.displayName, "DeepSeek V4 Flash");
   } finally {
     globalThis.fetch = original;
     if (old === undefined) delete process.env.OPENROUTER_LABEL_FIXTURE_KEY; else process.env.OPENROUTER_LABEL_FIXTURE_KEY = old;
   }
+});
+
+test("model labels drop a vendor prefix only when the name repeats that vendor", () => {
+  assert.equal(modelLabel("DeepSeek: DeepSeek V4.1 Flash 1017"), "DeepSeek V4.1 Flash 1017");
+  assert.equal(modelLabel("Z.ai: GLM 5.3"), "Z.ai: GLM 5.3");
+  assert.equal(modelLabel("DeepSeek V4 Flash"), "DeepSeek V4 Flash");
+  assert.equal(modelLabel("DeepSeek : DeepSeek V4 Flash"), "DeepSeek V4 Flash");
+  assert.equal(modelLabel("Qwen: Qwen3-Coder"), "Qwen3-Coder");
+  // Only one leading `vendor: ` segment is a candidate; later colons are part of the name.
+  assert.equal(modelLabel("Meta: Llama 4: Instruct"), "Meta: Llama 4: Instruct");
+  assert.equal(modelLabel("OpenAI: gpt-5.6"), "OpenAI: gpt-5.6");
+});
+
+test("catalog display names remove the repeated vendor already shown by the provider label", () => {
+  const catalog = modelCatalog({ version: 1, port: 0, stateDirectory: ".", providers: [
+    { id: "openrouter", type: "chat-completions-api", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", apiKeyEnv: "KEY",
+      models: { "or-deepseek": "deepseek/deepseek-v4.1-flash-1017" },
+      modelMetadata: { "or-deepseek": { displayName: "DeepSeek: DeepSeek V4.1 Flash 1017" } } },
+  ] });
+  assert.deepEqual(catalog.models.map(m => m.display_name), ["OpenRouter · DeepSeek V4.1 Flash 1017"]);
 });
 
 test("native discovery sends only metadata initialization and cleans up its worker", async () => {

@@ -172,3 +172,29 @@ own effort always wins over the restored one. A native chat receives nothing
 from the adapter: its requests reach the engine exactly as the desktop sent them,
 and the engine restores the chat's own model and effort
 ([native chats keep their model](app-server.md#native-chats-keep-their-model)).
+
+## Switching to another tokenizer
+
+Codex decides whether to compact with the counters the previous model reported.
+Models from different families count the same history differently: on 30 Oct 2026
+a chat that GPT-6.1-Terra measured at 591,583 tokens exceeded Claude Sonnet 5.5's
+1,000,000-token window once the gateway rendered it for the Claude CLI. Sonnet's
+advertised 900K limit let the switch through without compaction, and every retry
+failed with "Codex ran out of room". The selected model cannot compact a history it
+cannot read, so the SDK's own recovery does not help.
+
+Before each user turn on a gateway chat, in both SDK forms and on shared executors,
+the adapter reads the last non-zero measurement since the latest compaction or
+rollback and the model whose turn recorded it (`turn_context`; the SDK's repeated
+and zero overflow counters keep the earlier attribution). When that model's family
+differs from the selected one, the measurement is recounted: switches to Claude from
+another family by 1.7, other cross-family switches by 1.25, and switches away from
+Claude not at all, because Claude counts the larger number. When the recount reaches
+the selected model's usable window, the turn is refused before anything is sent:
+"Switch back to MODEL, run /compact, then switch to MODEL again." The chat and its
+history are unchanged. The refusal is recorded as `compaction_switch_refused`.
+
+Families come from the upstream model name: `claude-…` is Anthropic, and `gpt-…`,
+`o…`, `codex-…` and `chatgpt-…` are OpenAI. Any other name is its own family. A fact
+that cannot be read, such as a missing rollout, never refuses a turn. Recorded
+counters that fit even after a 1.7 recount skip the rollout read.

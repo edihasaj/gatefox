@@ -8,6 +8,7 @@ import type { CatalogEntry, ManagementDependencies, ManagedModel, ManagedProvide
 import { ManagementError } from "./errors.js";
 import { providerCommand, type ProviderTool } from "../provider-tool-runtime.js";
 import { pickerHidden } from "../model-auto-latest/metadata.js";
+import { grokLoginEnvironment, hasGrokLogin } from "../providers/grok-home.js";
 
 const apiKinds = new Set<ProviderKind>(["responses-api", "anthropic-api", "chat-completions-api"]);
 const cliFor: Partial<Record<ProviderKind, string>> = { "claude-subscription": "claude", "copilot-subscription": "copilot" };
@@ -135,6 +136,18 @@ function scrubAuthOverrides(env: NodeJS.ProcessEnv): void {
 
 export async function runSubscriptionLogin(provider: ProviderConfig, deps: ManagementDependencies, expectedEmail?: string): Promise<void> {
   if (deps.signal?.aborted) throw new ManagementError("authentication_failed");
+  if (provider.type === "grok-subscription") {
+    if (!provider.grokHome) throw new ManagementError("authentication_failed");
+    if (!await (deps.lookupCli || cliAvailable)("grok")) throw new ManagementError("missing_cli");
+    const { command, args, env } = await grokLoginEnvironment(provider.grokHome);
+    // The device flow prints its confirmation URL instead of opening one. The desktop app has no
+    // terminal to read it from, so open the first link the CLI prints; the terminal CLI inherits
+    // stdio and does not need this.
+    await (deps.runLogin || childLoginOpeningURL)(command, args, env, deps.signal);
+    // A clean exit is not proof of sign-in: the CLI must have written its credential file.
+    if (!await hasGrokLogin(provider.grokHome)) throw new ManagementError("authentication_failed");
+    return;
+  }
   if (provider.type === "codex-subscription") {
     if (!provider.credentialFile || !deps.signIn) throw new ManagementError("authentication_failed");
     await deps.signIn(provider.credentialFile, provider.agentName || "Harness Gateway", deps.openBrowser || openBrowser, deps.signal, expectedEmail); return;
@@ -149,6 +162,46 @@ export async function runSubscriptionLogin(provider: ProviderConfig, deps: Manag
   await (deps.runLogin || childLogin)(executable, args, env, deps.signal);
 }
 async function openBrowser(url: string): Promise<void> { await childLogin("/usr/bin/open", [url], process.env); }
+
+/** The first sign-in URL a CLI prints, limited to https and stripped of trailing punctuation. */
+export function firstSignInURL(output: string): string | undefined {
+  const match = /https:\/\/[^\s"'<>]+/u.exec(output);
+  return match?.[0].replace(/[.,;:)\]]+$/u, "");
+}
+
+/**
+ * Runs a sign-in command while opening the first sign-in URL it prints. Interactivity stays with the
+ * CLI: this only surfaces the link an interactive terminal user would read. Output is never logged,
+ * and only a single well-formed https URL is opened.
+ */
+export async function childLoginOpeningURL(command: string, args: string[], env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new Error("cancelled");
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"], detached: false, windowsHide: true });
+    let done = false; let timer: NodeJS.Timeout | undefined; let opened = false; let tail = "";
+    const cancel = () => {
+      if (done || child.exitCode !== null || child.signalCode !== null) return;
+      child.kill("SIGTERM");
+      timer = setTimeout(() => { if (!done && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }, 150);
+    };
+    const finish = (error?: Error) => { if (done) return; done = true; if (timer) clearTimeout(timer); signal?.removeEventListener("abort", cancel); error ? reject(error) : resolve(); };
+    // A sign-in URL is long but bounded; keep only a short moving tail so no other output is retained.
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      tail = (tail + chunk).slice(-2048);
+      if (opened) return;
+      const url = firstSignInURL(tail);
+      if (!url) return;
+      opened = true;
+      void openBrowser(url).catch(() => { /* the printed URL remains in the terminal when present */ });
+    });
+    child.stderr.resume();
+    signal?.addEventListener("abort", cancel, { once: true }); child.once("error", error => finish(error));
+    child.once("exit", code => finish(signal?.aborted ? new Error("cancelled") : code === 0 ? undefined : new Error("login failed")));
+    if (signal?.aborted) cancel();
+  });
+}
+
 export async function childLogin(command: string, args: string[], env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) throw new Error("cancelled");
   await new Promise<void>((resolve, reject) => {

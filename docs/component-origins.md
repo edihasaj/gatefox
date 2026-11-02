@@ -71,3 +71,4 @@ CLI executor, preserving CLI-only installations and release-skew behavior.
 This does not prove that Keychain will retain an existing grant: confirm an
 approval on the signed executor and check a later restart and app update on the
 unlocked Mac. macOS can ask again for other credentials or changed access rules.
+For unattended MCP OAuth operations, see [MCP credential storage](mcp-credentials.md).

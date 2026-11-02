@@ -7,6 +7,9 @@ import { publicServiceTierFields, readPublicServiceTierMetadata, readServiceTier
 import { upstreamSlugField } from "./codex-native-rows.js";
 import { pickerHidden, releasedAtMetadata } from "./model-auto-latest/metadata.js";
 import { managedCatalog } from "./managed-routing-catalog.js";
+import { modelLabel } from "./model-label.js";
+
+export { modelLabel };
 
 /** Honest startup metadata for Codex's native model picker and reasoning control. */
 export function modelCatalog(config: GatewayConfig): { models: Array<Record<string, unknown>> } {
@@ -20,7 +23,7 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
     // Codex 2 rows default to native Codex's truncation and usable window share.
     const codex = provider.type === "codex-subscription"; const truncation = metadata?.truncationPolicy;
     return {
-      slug: alias, display_name: `${provider.label || provider.id} · ${metadata?.displayName || provider.models[alias]}`,
+      slug: alias, display_name: `${provider.label || provider.id} · ${metadata?.displayName ? modelLabel(metadata.displayName) : provider.models[alias]}`,
       description: `${provider.type}; account route ${provider.id}`, priority: metadata?.priority ?? modelIndex,
       // The desktop adapter copies the native row for this slug; Codex ignores the extra key.
       ...(codex ? { [upstreamSlugField]: provider.models[alias] } : {}),
@@ -80,8 +83,8 @@ export async function discoverModels(provider: ProviderConfig, options: AccessTo
     const levels = model.supported_reasoning_levels as Array<{ effort: string }> | undefined;
     return { model: id, metadata: {
       ...readPublicServiceTierMetadata(model),
-      ...(typeof model.display_name === "string" ? { displayName: model.display_name }
-        : typeof model.name === "string" ? { displayName: model.name } : {}),
+      ...(typeof model.display_name === "string" ? { displayName: modelLabel(model.display_name) }
+        : typeof model.name === "string" ? { displayName: modelLabel(model.name) } : {}),
       ...releasedAtMetadata(model),
       ...(typeof (model.context_window ?? model.max_model_len) === "number" ? { contextWindow: (model.context_window ?? model.max_model_len) as number } : {}),
       ...(typeof model.priority === "number" ? { priority: model.priority } : {}),

@@ -17,6 +17,11 @@ automatically seeding full history again. The bounded admission record survives
 handler upgrades in the process; a full restart resets it, while historical input
 is still refused independently. Model choices are never changed automatically.
 
+An attempt that produced no content and spent no allowance releases its
+admission, so signing in and retrying the same turn works instead of failing as a
+replay. A turn that streamed content or was charged keeps its admission; repeating
+that conversation is refused.
+
 Persistent Grok ACP sessions remain unqualified. Isolated native 1.0.52 tests
 found that empty/invalid tool allowlists can restore native tools, resumed sessions
 can lose confinement, and the CLI initiates title/summary inference. Those must be
@@ -35,8 +40,20 @@ The gateway uses its own Grok home, `<stateDirectory>/grok-home` unless
 `grokHome` names another directory. Sign it in once per Mac:
 
 ```sh
-GROK_HOME="$HOME/Library/Application Support/Subscription Gateway/state/grok-home" grok login --device-auth
+gateway login grok
 ```
+
+The gateway runs the Grok CLI's device-code login against its own private home,
+so the credential never lands in a personal `~/.grok`. The same flow is the
+connection's Reconnect action in the desktop app. To run it by hand, set
+`GROK_HOME` to that home and run `grok login --device-auth` (`--device-code` is
+the CLI's alias). A clean CLI exit is not treated as success; the credential file
+must exist afterwards.
+
+A missing `auth.json` fails the request before the CLI starts, and a login the
+CLI rejects mid-run is reported the same way: HTTP 401 `authentication`, with a
+fixed message that names the gateway's Grok home. Neither case is reported as a
+temporary upstream failure, so a retry does not hide a sign-in problem.
 
 The gateway keeps the home private (0700) and rewrites only its managed sections
 of `config.toml`: no auto-update, telemetry, memory, xAI-side tools (X search,

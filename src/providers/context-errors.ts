@@ -65,12 +65,14 @@ export function claudeContextFailure(message: Record<string, unknown>): Provider
   const resultError = message.type === "result" && message.is_error === true;
   const assistantError = message.type === "assistant" && message.error === "invalid_request";
   if (!resultError && !assistantError) return;
-  if (resultError && (message.terminal_reason === "prompt_too_long" || contextCode(message.error_code) || contextCode(object(message.error).code))) return contextWindowFailure();
-  if (resultError && message.subtype !== "error_during_execution") return;
   const texts = resultError ? [message.result, ...(Array.isArray(message.errors) ? message.errors : [])]
     : (Array.isArray(object(message.message).content) ? object(message.message).content as unknown[] : []).flatMap(part => object(part).type === "text" ? [object(part).text] : []);
+  // The counts come only from the CLI's exact native overflow form; the error text itself is never kept.
+  const counted = () => texts.map(promptTokens).find(Boolean);
+  if (resultError && (message.terminal_reason === "prompt_too_long" || contextCode(message.error_code) || contextCode(object(message.error).code))) return contextWindowFailure(counted());
+  if (resultError && message.subtype !== "error_during_execution") return;
   const overflow = texts.find(cliPromptTooLong);
-  if (overflow !== undefined) return contextWindowFailure(promptTokens(overflow));
+  if (overflow !== undefined) return contextWindowFailure(promptTokens(overflow) ?? counted());
 }
 
 /** Copilot's session.error has structured categories; prose alone is insufficient. */

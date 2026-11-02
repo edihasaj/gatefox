@@ -114,6 +114,60 @@
   their bindings. Thanks to Edi Hasaj for requesting code-enforced routing and
   identifying the duplicated instruction policy.
 
+- Fix Claude live-session recovery when tool results arrive with new caller
+  messages. Apply a shared large-context cache safety stop across every provider,
+  including measured failures, cancellations and repeated missing cache metrics.
+
+- Routine worker policies can explicitly prefer paid DeepSeek V4 Flash after
+  local models and before subscriptions, while preserving existing policies and
+  worker pins. OpenRouter discovery retains published model names as labels.
+
+- Managed coding/test profiles can advertise an explicit compaction threshold.
+  Bounded 128K role settings avoid repeatedly compacting near a 32K window and
+  prevent a newly added worker alias from inheriting a generic SDK context size.
+
+- Managed worker policies are hidden from normal model pickers while configured
+  roles and existing chats retain their routes. Gateway Activity shows the pinned
+  model/account for locally served managed workers without changing their saved
+  model, permissions or execution state.
+
+- Internal worker policies can explicitly configure effort for one candidate,
+  allowing Qwen implementation at xhigh while subscription fallback keeps medium.
+  Existing policies and fixed model requests retain their reasoning behavior.
+
+- The remote relay no longer pauses itself after a gateway restart that coincides
+  with the native Codex database being recovered. Its registration read had no busy
+  timeout, failed at once with "database is locked" and exited three times in a row,
+  which set the relay aside for half an hour and cut the phone off from that Mac. The
+  read now waits for the lock and retries briefly, and every relay stop logs its fixed
+  reason instead of the same generic line.
+
+- Native engine sharing accepts the Codex app engine 0.166.0-alpha.5.1 after the
+  shared-native fixture passed against the signed engine over stdio and Unix.
+  Macs that share native work report `ready` again instead of
+  `native_owner_pending`.
+
+- The remote relay accepts the Codex app engine 0.166.0-alpha.5.1, which ChatGPT
+  shipped on 30 October. The relay refused it, paused itself after three exits, and
+  phones could no longer reach any Mac. The engine's remote-control contract was
+  reviewed against 0.165 and is unchanged.
+
+- A gateway chat that switches to a model with another tokenizer is checked before
+  its turn is sent. Codex decides compaction with the previous model's counters, so a
+  chat that GPT-6.1-Terra counted at 591K tokens exceeded Claude Sonnet 5.5's 1M
+  window and failed with "ran out of room" on every retry. The adapter now recounts
+  the last measurement for the selected model and, when it would not fit, refuses the
+  turn with the way out: switch back, run /compact, then switch again. Claude CLI
+  overflows also keep their used and maximum token counts in `request_failed`.
+
+- Opt-in managed worker aliases now enforce provider selection, fresh capacity
+  checks, subscription reserves, permitted DeepSeek V4 Flash fallback and durable
+  provider affinity in Gateway code. Ordinary requests retain a bounded context
+  budget; client compaction has a separate capped allowance on the same existing
+  provider. Explicit models, permissions and independent reviewer roles retain
+  their bindings. Thanks to Edi Hasaj for requesting code-enforced routing and
+  identifying the duplicated instruction policy.
+
 - The desktop adapter no longer refuses to start when the native model cache lacks
   a model the engine lists. This happens when another Codex version wrote the cache
   or the engine could not refresh its models. Gateway chats start without native

@@ -25,7 +25,13 @@ export async function prepareUnreadCandidate(app = '/Applications/ChatGPT.app') 
     await writeFile(join(root, 'patched', name), patched[key], { mode: 0o600 });
     assets.push({ asset, originalSha256: sha256(original[key]), candidateSha256: sha256(patched[key]) });
   }
-  const manifest = { version, source, sourceArchiveSha256: sha256(archive), assets,
+  const sources = {};
+  for (const name of ['patch.mjs', 'read-state-bridge.mjs', 'receipt-registry.mjs', 'receipt-checkpoints.mjs']) {
+    sources[name] = sha256(await readFile(new URL(name, import.meta.url)));
+  }
+  const manifest = { version, source, sourceArchiveSha256: sha256(archive), assets, sources,
+    checkpointMigration: 'Preserve native choices on first observation; reconcile later SDK revision changes. New start/fork responses establish a fresh baseline.',
+    checkpointScope: 'SHA-256 of native account identity and execution-host token. IndexedDB transactions fence cross-window responses.',
     installed: false, signed: false, nativeWindowVerified: false,
     rollback: 'Discard the authorized disposable app copy. Leave the original signed application unchanged.',
     boundary: 'Paired renderer assets only. Applying them requires separate authorization and native-window verification.' };

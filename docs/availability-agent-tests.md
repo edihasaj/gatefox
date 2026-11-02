@@ -52,6 +52,7 @@ Run each scenario separately:
 | Scenario | Availability source | Expected task execution |
 | --- | --- | --- |
 | `healthy` | Real gateway collectors | Named local worker completes the task. |
+| `held-worker` | Real gateway collectors | The same local worker acknowledges a hold, then resumes and completes the task without early proof access or subscription escalation. |
 | `local-unhealthy` | Injected fresh unhealthy local observation; other facts remain real | A subscription worker completes the task and the exhausted primary is avoided. |
 | `unknown-source` | Only the availability endpoint returns an injected failure | The local default remains usable and paid APIs are not selected. |
 | `worker-failure` | Real healthy facts, then an injected terminal authentication refusal before the local worker's upstream call | The parent observes the failed child, refreshes availability, and starts a new subscription worker that completes the task. |
@@ -69,7 +70,7 @@ request before child inference, the expected provider, a successful child comman
 that reads the unpredictable proof, and completed child and parent turns that
 report the proof. A parent that reads the file itself fails the check.
 
-The first three scenarios test one worker per task. `worker-failure` requires
+The healthy, held-worker and availability-outage scenarios test one worker per task. `worker-failure` requires
 two distinct children in order: failed local worker, then successful subscription
 worker. A second completed helper command and availability request must occur
 after the first child's terminal failure and before the replacement starts.
@@ -97,3 +98,44 @@ pin and HTTP suites instead: `src/tests/managed-routing.test.ts`,
 tests enforce; a change to those rules needs those suites, not an additional
 instruction-policy fixture.
 
+## Child-to-parent status and task holds
+
+A model selected as a V2 child must declare `multiAgentVersion: "v2"` in its
+Gateway metadata. The SDK's root and child admission checks differ: a root can
+expose collaboration while a child whose model lacks that field has no native
+collaboration handler. This can surface as `unsupported call` when the child
+uses a collaboration declaration inherited from its parent. Correct the model
+capability; do not classify failed status delivery as a model coding failure.
+
+The real-SDK fixture checks both the old failure and successful delivery to the
+parent without any provider inference:
+
+```sh
+node scripts/e2e-subagent-sidebar.mjs --package INSTALLED_PACKAGE \
+  --root /tmp/child-status-baseline --v2 --child-status --expect-status-unavailable
+node scripts/e2e-subagent-sidebar.mjs --package INSTALLED_PACKAGE \
+  --root /tmp/child-status-fixed --v2 --child-status
+```
+
+Repeat the fixed case with `--private`. The fixture also retains queued-message,
+follow-up, child history and saved identity checks. `--child-status` on the live
+availability check additionally requires the actual local worker to message its
+parent and then complete the bounded proof-reading task. Use
+`--scenario held-worker --child-status` to check explicit hold/resume on the same
+local child. The live fixture preserves each configured child capability rather
+than stripping `multi_agent_version`; preflight fails before inference if the
+local status scenario has no V2 capability.
+
+Client routing guidance treats held, research-only and authorized implementation
+assignments separately. A parent-issued hold suspends the implementation budget;
+resume explicitly with current ownership and the acceptance check before
+expecting edits. The held-worker check uses separate hold and authorized-resume
+user turns, verifies successful SDK delivery to the same child, rejects work
+tools before that delivery regardless of path spelling, and waits for natural
+child terminal completion. Status messages and earlier held results are not
+current-task completion; routine cleanup must not interrupt an active worker. Subscription escalation requires a task-specific capability
+requirement or observed blocker, and never follows merely from a broken status
+channel or extra desired parallelism. The Gateway continues to report provider
+facts and preserve an explicit fixed alias exactly; the instruction rules above
+stay in client policy, while a deliberately selected managed alias is resolved
+in Gateway code per [managed worker routing](managed-routing.md).

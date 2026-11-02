@@ -5,6 +5,7 @@ import { catalogEntry } from "../app-management/drafts.js";
 import { ManagementError } from "../app-management/errors.js";
 import { validModelId } from "../app-management/providers.js";
 import type { AutoLatestDiscover, CatalogRow } from "./types.js";
+import { modelLabel } from "../model-label.js";
 
 export { ChatGPTRefreshDeferred };
 
@@ -45,7 +46,7 @@ export async function discoverCatalog(provider: ProviderConfig, discover: AutoLa
   for (const item of found) {
     if (!item || !validModelId(item.model) || rows.has(item.model)) continue;
     const metadata = publicMetadata(item.metadata);
-    rows.set(item.model, catalogEntry(item.model, typeof metadata?.displayName === "string" && metadata.displayName ? metadata.displayName : item.model, metadata));
+    rows.set(item.model, catalogEntry(item.model, typeof metadata?.displayName === "string" && metadata.displayName ? modelLabel(metadata.displayName) : item.model, metadata));
   }
   return [...rows.values()];
 }

@@ -47,6 +47,11 @@ models retain their smaller initial catalog.
 
 ## Scheduling is a separate client boundary
 
+Finite command completion does not require scheduling or Goal mode. The gateway
+executor offers opt-in `exec_command` completion receipts through its ordinary
+input loop; see [background commands](background-commands.md). This capability is
+independent of the app scheduling boundaries below.
+
 Read-only inspection of the installed ChatGPT desktop bundle on 2026-10-24 found:
 
 | Path | Client behavior |
