@@ -275,6 +275,17 @@ wait. Quota, authentication, malformed streams, partial responses, and unclassif
 stream failures other than an `error` or `response.failed` event with an unknown code
 never retry automatically. EOF and `[DONE]` never substitute
 for a genuine Responses terminal.
+
+Chat Completions routes (including Qwen over the checked tailnet transport) use
+the same 120-second connection budget while acquiring an HTTP response. Each
+retry preserves the model, account, request and routing headers, and rechecks
+the tailnet destination. Only allowlisted transient connection failures qualify;
+HTTP replies, certificate errors, permanent DNS failures, address refusals,
+unknown faults and cancellation do not. Once any HTTP response arrives, its
+body is consumed exactly once: a disconnect after headers, buffered tool
+fragments, usage or partial output never enters this retry loop. The existing
+opt-in Messages empty-completion recovery remains separate.
+
 Private failure logs contain a UTC timestamp, bounded request/provider/model
 identifiers, elapsed time, error code, and status, excluding request bodies,
 exception messages, stacks, and credentials. Failed Responses streams retain

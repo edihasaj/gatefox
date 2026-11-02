@@ -17,20 +17,10 @@ import { plaintextCollaborationTransport, subscriptionCollaborationTransport } f
 import { apiRoutingHeaders } from "./api-routing.js";
 import { grokToolBridge } from "./grok-tools.js";
 import { codexUsageFromEvent, codexUsageFromHeaders, credentialRevision, observeCodexUsage, type CodexUsageObserver } from "./codex-usage.js";
-import { classifyNetworkFailure, networkCodesField, type ProviderNetworkStage } from "../provider-network.js";
+import { networkCodesField } from "../provider-network.js";
+import { networkProviderError } from "./network-error.js";
 import { networkRetryExpired, networkRetryNow, networkRetrySleep, networkRetryWaitMs } from "./network-retry.js";
 import { throttleRetryExpired, throttleRetryNow, throttleRetrySleep, throttleRetryWaitMs } from "./throttle-retry.js";
-
-/** Convert only a recognized raw transport error at a fetch/body boundary. */
-function networkProviderError(error: unknown, stage: ProviderNetworkStage): ProviderError | undefined {
-  try { if (error instanceof ProviderError) return; } catch { return; }
-  const failure = classifyNetworkFailure(error);
-  if (failure.kind === "unknown" || failure.kind === "abort") return;
-  return new ProviderError("upstream_unavailable", "Provider connection failed or disconnected; retry when its connection is available", 503, {
-    event: "network", stage, ...(failure.code ? { code: failure.code } : {}), ...(failure.codes ? { networkCodes: failure.codes } : {}),
-    ...(failure.kind === "transient" ? { retryableNetwork: true as const } : {}),
-  });
-}
 
 export class ResponsesAPI implements Provider {
   /** The subscription endpoint's sticky-routing token reaches the caller as a transport event. */

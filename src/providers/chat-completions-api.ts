@@ -14,6 +14,7 @@ import { imagesOf, imageUrlPart, toolImagesMessage, userContent, type ChatConten
 import { telemetry } from "../telemetry.js";
 import { largeUncachedUsage } from "../cache-guarded-inference.js";
 import { canonicalTools } from "./tool-catalog.js";
+import { connectChatProvider } from "./chat-connect.js";
 
 const recoveryDeadlineMs = 90_000;
 const recoveryEofMs = 5_000;
@@ -225,8 +226,9 @@ export class ChatCompletionsAPI implements Provider {
       let response: Response;
       try {
         const headers = { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...apiRoutingHeaders(this.config, context, request) };
-        response = this.tailnet ? await this.tailnet(url, { method: "POST", headers, body, signal })
-          : await fetch(url, { method: "POST", redirect: "error", headers, body, signal });
+        response = await connectChatProvider(this.config.id, signal, () => this.tailnet
+          ? this.tailnet(url, { method: "POST", headers, body, signal })
+          : fetch(url, { method: "POST", redirect: "error", headers, body, signal }));
       } catch (error) {
         if (deadline?.aborted && !caller.aborted) throw timeoutError();
         throw error;
