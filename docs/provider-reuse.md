@@ -45,6 +45,12 @@ replaying it. Claude forced-tool mismatches are final; Gateway does not retry wi
 a smaller catalog. A known pre-inference authentication rejection retains its
 separate bounded recovery behavior.
 
+Both live CLI routes preserve public reasoning as typed summaries. The live
+ledger skips those summaries while retaining their rendered positions; converting
+them into ordinary assistant messages would falsely refuse a valid continuation
+after tools. A previously preserved Copilot session can accept corrected typed
+history without a restart, a reseed or another full-history replay.
+
 Live CLI conversations require a stable caller identity. Anonymous first questions
 remain standalone, while anonymous historical conversations are refused. Gateway
 never merges chats by prompt similarity or arbitrary user identity. Native Claude

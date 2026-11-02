@@ -88,6 +88,7 @@ function respond(text: string): void {
   // An answer too large for a client that does not read to take at once, then the call's usage, then nothing.
   if (marker("bigusage")) { event("assistant.message_delta", { deltaContent: "x".repeat(7 * 1024 * 1024) }); usage(); log({ op: "bigusage_sent" }); return; }
   usage();
+  if (marker("reasoning")) event("assistant.reasoning_delta", { deltaContent: "A public plan", reasoningId: "fixture-reasoning" });
   // An answer that takes a while: its text arrives at once, the rest 400 ms later.
   if (marker("slow")) { event("assistant.message_delta", { deltaContent: `answer ${calls}` }); setTimeout(() => { message({ content: `answer ${calls}` }); idle(); }, 400); return; }
   if (marker("nativemsg")) { message({ toolRequests: [{ toolCallId: "call_native", name: "shell", arguments: {}, type: "function" }] }); return; }
