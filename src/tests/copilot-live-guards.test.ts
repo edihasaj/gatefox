@@ -28,6 +28,7 @@ const oneShots = async (h: Harness) => (await h.log()).filter(entry => entry.op 
 const killers: Array<[string, string]> = [
   ["tool.execution_complete", "unattended_completion"], ["external_tool.completed", "unattended_completion"],
   ["model.call_start", "unattended_output"], ["assistant.turn_start", "unattended_output"], ["assistant.message", "unattended_output"], ["assistant.message_delta", "unattended_output"],
+  ["model.model_call_started", "unattended_output"], ["model.turn_started", "unattended_output"], ["model.unknown_future_action", "unattended_output"],
   ["assistant.usage", "unattended_output"], ["session.compaction_start", "unattended_output"], ["session.truncation", "unattended_output"], ["session.error", "unattended_output"],
   ["tool.execution_progress", "unattended_output"],
   // An effort change nobody asked for, and a start-up announcement once the session has served a request.
@@ -61,6 +62,21 @@ test("housekeeping events between requests are accepted and the session lives on
     for (const { type, first, a } of firsts) await turn(provider, [...first, ...a.output, ...outputFor(a.output, "x")], { context: { threadId: type } });
     assert.equal((await h.pids()).length, types.length, "each thread kept its one process");
     assert.ok(!(await kinds(h)).some(value => value.startsWith("crashed")));
+  } finally { await h.restore(); }
+});
+
+test("late title, warning and empty queue-change notifications preserve a warm Copilot session", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    const provider = adapter();
+    for (const type of ["session.title_changed", "session.warning", "pending_messages.modified"]) {
+      const first = [user(`go [tool][late:${type}]`)];
+      const context = { threadId: type }; const a = await turn(provider, first, { context });
+      await sleep(450);
+      await turn(provider, [...first, ...a.output, ...outputFor(a.output, "result")], { context });
+    }
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 3);
+    assert.ok(!(await kinds(h)).some(value => value.startsWith("crashed") || value.startsWith("reseeded")));
   } finally { await h.restore(); }
 });
 
@@ -211,6 +227,43 @@ test("a second loaded copy of the module adopts the registry of the first", { ti
     const second = await import(new URL("../providers/copilot-live.js?second-copy", import.meta.url).href) as typeof import("../providers/copilot-live.js");
     assert.notEqual(second.copilotLive, (await import("../providers/copilot-live.js")).copilotLive, "a distinct module instance");
     assert.equal(second.copilotLive({ max: 4, parkMinutes: 30, toolWaitMinutes: 25 }).sessions().length, 1, "it sees the first copy's session instead of starting its own registry");
+  } finally { await h.restore(); }
+});
+
+test("adoption updates an old router without replacing its process, ledger or pending tools", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    await turn(adapter(), [user("go [tool][late:session.warning]")]);
+    const session = live().sessions()[0]; const pid = session.pid; const ledger = session.ledger; const pending = session.pending;
+    const internals = session as unknown as { sessionId: string; route(message: Record<string, unknown>): void };
+    const route = internals.route;
+    // Reproduce the old policy on a real pumping session.
+    internals.route = function(message) {
+      const type = ((message.params as { event?: { type?: string } })?.event?.type ?? "");
+      if (type === "session.warning") { void session.close("crashed", "old_policy"); return; }
+      if (type.startsWith("model.") && type !== "model.call_start") return;
+      route.call(this, message);
+    };
+    const second = await import(new URL("../providers/copilot-live.js?event-policy-adoption", import.meta.url).href) as typeof import("../providers/copilot-live.js");
+    const adopted = second.copilotLive({ max: 4, parkMinutes: 30, toolWaitMinutes: 25 }).sessions()[0];
+    assert.equal(adopted, session); assert.equal(adopted.pid, pid);
+    await sleep(450); // The original pump must use the new router for the late warning.
+    assert.equal(session.state, "awaiting_outputs"); assert.equal(session.ledger, ledger); assert.equal(session.pending, pending);
+    internals.route({ params: { sessionId: internals.sessionId, event: { type: "model.model_call_started", data: {} } } });
+    await closed(h, pid!);
+    assert.ok((await kinds(h)).includes("crashed:unattended_output"));
+  } finally { await h.restore(); }
+});
+
+test("a queue-change event with an undocumented nonempty payload is refused", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    await turn(adapter(), [user("go [tool]")]);
+    const session = live().sessions()[0]; const pid = session.pid!;
+    const internals = session as unknown as { sessionId: string; route(message: Record<string, unknown>): void };
+    internals.route({ params: { sessionId: internals.sessionId, event: { type: "pending_messages.modified", data: { messages: ["unexpected"] } } } });
+    await closed(h, pid);
+    assert.ok((await kinds(h)).includes("crashed:unattended_output"));
   } finally { await h.restore(); }
 });
 

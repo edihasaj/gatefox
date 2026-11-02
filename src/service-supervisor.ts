@@ -21,6 +21,7 @@ import { hostAutoLatestMaintenance } from "./model-auto-latest/hosting.js";
 import { installedSupervisorRuntime, supervisorRuntimeVersion } from "./service-supervisor-runtime.js";
 import { retainRunningRelease, type ReleaseLease } from "./release-retention.js";
 import { isClaudeComponent } from "./service-claude-activity.js";
+import { rememberOwnedForward, clearOwnedForward } from "./service-owned-forward.js";
 export type { SupervisorHealing } from "./service-heal.js";
 
 /** Why a quiet upgrade waited: the host's reason, inference that refused its idle guard, or Claude sockets that were still established. */
@@ -140,6 +141,10 @@ export class ServiceSupervisor {
   }
   private async startControl(): Promise<void> {
     if (this.inactive) return;
+    for (const slot of this.slots) {
+      const pid = slot.child?.pid;
+      if (pid) this.track(() => rememberOwnedForward(slot.definition, pid, this.state));
+    }
     this.heartbeat = setInterval(() => { void this.publish(); }, 5000);
     this.lastTick = Date.now(); this.wakeWatch = setInterval(() => this.checkWake(Date.now()), 5000);
     // The relay is optional, so a paused one is only tried again quietly, every five minutes.
@@ -300,6 +305,11 @@ export class ServiceSupervisor {
         if (freed) telemetry("tunnel_stale_listener_cleared", { component: component.id, processes: freed });
         if (this.inactive) return;
       }
+      if (component.kind === "tunnel" && isClaudeComponent(component)) {
+        const freed = await clearOwnedForward(component, this.state);
+        if (freed) telemetry("tunnel_stale_listener_cleared", { component: component.id, processes: freed });
+        if (this.inactive) return;
+      }
       const child = spawn(component.command, args, { stdio: ["ignore", log.fd, log.fd], env: { ...process.env, ...component.environment }, ...(component.workingDirectory ? { cwd: component.workingDirectory } : {}) });
       slot.child = child; slot.startedAt = Date.now();
       slot.exited = new Promise(resolve => child.once("close", () => resolve()));
@@ -310,7 +320,10 @@ export class ServiceSupervisor {
         ownership.current.childEnded(slot, component, code, signal);
       };
       child.once("error", () => ended(null)); child.once("close", (code, signal) => ended(code, signal));
-      child.once("spawn", () => { slot.state.state = "running"; slot.state.pid = child.pid; slot.state.startedAt = new Date().toISOString(); void ownership.current.publish(); });
+      child.once("spawn", () => {
+        slot.state.state = "running"; slot.state.pid = child.pid; slot.state.startedAt = new Date().toISOString(); void ownership.current.publish();
+        if (child.pid) ownership.current.track(() => rememberOwnedForward(component, child.pid!, this.state));
+      });
     } finally { await log.close(); }
   }
   private childEnded(slot: Slot, component: ServiceComponent, code: number | null, signal?: NodeJS.Signals | null): void {

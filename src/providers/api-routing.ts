@@ -8,6 +8,13 @@ type CacheIdentity = Record<string, unknown>;
 const openRouterSession = (value: unknown): string | undefined =>
   typeof value === "string" && /^[\x21-\x7e]{1,256}$/.test(value) ? value : undefined;
 
+export function isOpenRouterApi(provider: Pick<ProviderConfig, "baseUrl">): boolean {
+  try {
+    const url = new URL(provider.baseUrl || "");
+    return url.origin === "https://openrouter.ai" && !url.username && !url.password && !url.search && !url.hash && /^\/api\/v1\/?$/.test(url.pathname);
+  } catch { return false; }
+}
+
 /** Official API conversation affinity; never forward one service's identifiers to another origin. */
 export function apiRoutingHeaders(provider: Pick<ProviderConfig, "baseUrl" | "sessionAffinity">, context: InferenceContext, request: CacheIdentity = {}): Record<string, string> {
   // An opted-in self-hosted router (vllm-router consistent_hash) keeps each conversation on the worker holding its prefix cache.
@@ -17,7 +24,7 @@ export function apiRoutingHeaders(provider: Pick<ProviderConfig, "baseUrl" | "se
   }
   let url: URL;
   try { url = new URL(provider.baseUrl || ""); } catch { return {}; }
-  if (url.origin === "https://openrouter.ai" && !url.username && !url.password && !url.search && !url.hash && /^\/api\/v1\/?$/.test(url.pathname)) {
+  if (isOpenRouterApi(provider)) {
     // Reuse explicit caller choices before conversation metadata. Matching the
     // existing cache key enables first-success stickiness without regrouping forks.
     const explicit = request.session_id !== undefined ? request.session_id : request.prompt_cache_key;

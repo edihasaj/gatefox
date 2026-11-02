@@ -12,6 +12,15 @@ the private GlitchTip project. Neither runs on a request path.
 
 ## Cache and failure screen
 
+`api_cache_cold` records large measured cold OpenRouter Responses requests, with
+token counts and flags for changed catalogs, instructions, sampled opening history
+or affinity. Idle time runs from the previous measured completion to the next
+request. Content and digests never enter telemetry; unchanged sampled fields do
+not prove that the full prefix matched or that the provider retained its cache.
+`copilot_session_violation` records a fixed event type, guard reason, session
+state, pending-call count and whether a request was attached. Unknown event names
+become `unknown`; event payloads are never recorded.
+
 The native app's **Diagnostics** screen reads local telemetry over the last 1, 6
 or 24 hours. It shows input tokens, cache reads and writes, failed requests per
 model, Copilot session reuse/rebuild reasons, and the latest provider failures

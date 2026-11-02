@@ -73,7 +73,10 @@ const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499)
 function registry(): Registry {
   const scope = globalThis as unknown as Record<symbol, Registry | undefined>;
   const existing = scope[symbol];
-  if (existing?.interfaceVersion === 1) return existing;
+  if (existing?.interfaceVersion === 1) {
+    for (const session of existing.sessions.values()) CopilotLiveSession.adoptEventPolicy(session);
+    return existing;
+  }
   const created: Registry = { interfaceVersion: 1, sessions: new Map(), starting: new Set(), ended: new Map(), scopes: new Map() };
   scope[symbol] = created;
   // Busy while a session generates, or waits on tool outputs it got recently; a longer wait gains nothing from its cache.
@@ -145,6 +148,7 @@ function endReason(end: CopilotLiveSession["end"]): CopilotMissReason | undefine
 
 async function place(reg: Registry, settings: CopilotLiveSettings, key: string, input: CopilotLiveInput, signal: AbortSignal): Promise<CopilotLiveOutcome> {
   let session = reg.sessions.get(key);
+  if (session) CopilotLiveSession.adoptEventPolicy(session);
   if (session?.state === "generating") return { kind: "fallback", reason: "concurrent" };
   const { entries, messages } = ledgerEntries(input.request, input.catalog, input.leading);
   const window = input.windowId ?? "";

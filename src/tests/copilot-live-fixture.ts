@@ -67,7 +67,7 @@ function late(text: string, toolCallId: string): void {
   const [, kind, type] = match;
   setTimeout(() => {
     if (kind === "ghost") event(type, { toolCallId: "call_ghost", toolName: toolName(), requestId: "rq_ghost" });
-    else event(type, { toolCallId, success: false, error: "received no response within 1800 seconds" }, kind === "agent" ? { agentId: "sub" } : {});
+    else event(type, type === "pending_messages.modified" ? {} : { toolCallId, success: false, error: "received no response within 1800 seconds" }, kind === "agent" ? { agentId: "sub" } : {});
   }, 300);
 }
 
