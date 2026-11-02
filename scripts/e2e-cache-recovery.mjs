@@ -41,7 +41,7 @@ try{
  const id=thread.thread.id;await turn(id,'PROOF_CACHE_RECOVERY '+ 'history '.repeat(8000),'completed');await turn(id,'Continue.','completed');
  assert.equal(requests.length,2);
  const blocked=await turn(id,'Continue.','failed');assert.equal(requests.length,2,'blocked call never reached inference');
- await writeFile(join(root,'blocked-debug.json'),JSON.stringify({requests,errors:blocked.filter(e=>['error','turn/completed','thread/tokenUsage/updated'].includes(e.method))},null,2));
+ assert(blocked.some(e=>e.method==='error'&&e.params?.error?.codexErrorInfo==='contextWindowExceeded'),'SDK recognizes bounded recovery');
  const resumed=await turn(id,'Continue.','completed');
  assert.equal(compactions,1,'the real SDK compacted once');
  assert(resumed.some(e=>e.params?.item?.type==='contextCompaction'),'compaction belongs to the resumed SDK turn');
