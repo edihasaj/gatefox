@@ -51,7 +51,7 @@ test("Copilot schema object reordering preserves native catalog bytes and meanin
   assert.ok(JSON.stringify(two).includes('["z","a"]'));
 });
 
-test("OpenRouter Responses stabilizes equivalent tool catalogs without changing history or cache identity", async t => {
+test("OpenRouter Responses stabilizes equivalent tool catalogs and mapped history without changing cache identity", async t => {
   const key = "GATEWAY_RESPONSES_PREFIX_FIXTURE"; const before = process.env[key]; process.env[key] = "fixture";
   t.after(() => { if (before === undefined) delete process.env[key]; else process.env[key] = before; });
   const sent: { body: Record<string, unknown>; headers: Headers }[] = [];
@@ -65,7 +65,11 @@ test("OpenRouter Responses stabilizes equivalent tool catalogs without changing 
     for await (const _ of provider.infer({ model: "fixture", input, tools: catalog, prompt_cache_key: "caller", tool_choice: { type: "function", name: "read" } }, new AbortController().signal, { threadId: "thread" })) {}
   }
   assert.equal(JSON.stringify(sent[0].body), JSON.stringify(sent[1].body));
-  assert.deepEqual(sent[0].body.input, input); assert.equal(sent[0].headers.get("x-session-id"), "caller");
+  const wireTools = sent[0].body.tools as Array<{ name: string; description: string }>;
+  const readName = wireTools.find(tool => tool.description === "Caller tool identity: read")!.name;
+  assert.deepEqual(sent[0].body.input, input.map(item => item.type === "function_call" ? { ...item, name: readName } : item));
+  assert.deepEqual(sent[0].body.tool_choice, { type: "function", name: readName });
+  assert.equal(sent[0].headers.get("x-session-id"), "caller");
   assert.equal(JSON.stringify({ input, tools }), original);
   assert.ok(JSON.stringify(sent[0].body.tools).includes('["z","a"]'));
 });
