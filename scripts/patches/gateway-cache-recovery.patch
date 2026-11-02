@@ -1,0 +1,76 @@
+--- a/codex-rs/core/src/context_manager/history.rs
++++ b/codex-rs/core/src/context_manager/history.rs
+@@ -495,6 +495,25 @@
+     }
+ 
+     pub(crate) fn set_token_usage_full(&mut self, context_window: i64) {
++        self.set_token_usage_full_with_gateway_marker(
++            context_window,
++            codex_model_provider_info::gateway_executor_marker(),
++        );
++    }
++
++    fn set_token_usage_full_with_gateway_marker(&mut self, context_window: i64, gateway: bool) {
++        if gateway {
++            // Compaction reads the last active context, not cumulative billed usage.
++            // Preserve billing totals while marking this context full for recovery.
++            let info = self.token_info.get_or_insert_with(|| TokenUsageInfo {
++                total_token_usage: TokenUsage::default(),
++                last_token_usage: TokenUsage::default(),
++                model_context_window: Some(context_window),
++            });
++            info.model_context_window = Some(context_window);
++            info.last_token_usage.total_tokens = context_window;
++            return;
++        }
+         match &mut self.token_info {
+             Some(info) => info.fill_to_context_window(context_window),
+             None => {
+@@ -1401,3 +1420,47 @@
+ #[cfg(test)]
+ #[path = "history_tests.rs"]
+ mod tests;
++
++#[cfg(test)]
++mod gateway_cache_recovery_tests {
++    use super::*;
++
++    #[test]
++    fn gateway_cache_recovery_marks_active_context_full_without_rewriting_billing() {
++        for cumulative in [100, 900_000, 2_000_000] {
++            let mut history = HistoryManager::default();
++            history.token_info = Some(TokenUsageInfo {
++                total_token_usage: TokenUsage { total_tokens: cumulative, input_tokens: 110, output_tokens: 7, ..TokenUsage::default() },
++                last_token_usage: TokenUsage { total_tokens: 200_000, ..TokenUsage::default() },
++                model_context_window: Some(900_000),
++            });
++            history.set_token_usage_full_with_gateway_marker(900_000, true);
++            assert!(history.get_total_token_usage(true) >= 900_000);
++            let info = history.token_info.unwrap();
++            assert_eq!(info.total_token_usage.total_tokens, cumulative);
++            assert_eq!(info.total_token_usage.input_tokens, 110);
++            assert_eq!(info.total_token_usage.output_tokens, 7);
++        }
++    }
++
++    #[test]
++    fn gateway_cache_recovery_initializes_context_without_inventing_billing() {
++        let mut history = HistoryManager::default();
++        history.set_token_usage_full_with_gateway_marker(900_000, true);
++        assert!(history.get_total_token_usage(true) >= 900_000);
++        assert_eq!(history.token_info.unwrap().total_token_usage.total_tokens, 0);
++    }
++
++    #[test]
++    fn gateway_cache_recovery_keeps_unmarked_runtime_behavior() {
++        let mut history = HistoryManager::default();
++        history.token_info = Some(TokenUsageInfo {
++            total_token_usage: TokenUsage { total_tokens: 400_000, ..TokenUsage::default() },
++            last_token_usage: TokenUsage::default(), model_context_window: Some(900_000),
++        });
++        history.set_token_usage_full_with_gateway_marker(900_000, false);
++        let info = history.token_info.unwrap();
++        assert_eq!(info.total_token_usage.total_tokens, 900_000);
++        assert_eq!(info.last_token_usage.total_tokens, 500_000);
++    }
++}

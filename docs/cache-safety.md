@@ -50,6 +50,16 @@ cache problem and how to compact or start a fresh chat on the same model.
 It must not reconnect and repeat unchanged inference. Gateway never truncates,
 compacts, changes the model, changes permissions or executes caller tools.
 
+An identified SDK normal turn gets one bounded recovery notification per blocked
+episode: `context_length_exceeded`, with diagnostic `cache_recovery_required`.
+No provider call runs for that notification. The verified SDK marks its context
+full, so the next explicit user turn can compact and continue in the same chat
+using its selected model. An unchanged retry receives the ordinary final refusal;
+reconnecting or changing the turn ID cannot repeatedly offer recovery. Compaction
+requests keep their separate bounded budget and never receive this notification,
+because SDK compaction can otherwise trim and retry repeatedly. Unclassified
+clients and native Messages clients retain the existing explicit-compaction path.
+
 The guard is scoped to the provider binding, model and stable caller thread or
 session. Anonymous requests share their binding/model budget. Count-only state
 survives client reconnects and in-place upgrades. It retains at most 4,096 recent
