@@ -96,6 +96,13 @@ alias in its frozen model catalog and would otherwise use generic defaults.
 The real-SDK fixture exercises both known and missing catalog rows at 60K
 reported input tokens, requiring task progress without compaction churn.
 
+The verified SDK also honors paired overrides for the named
+`qwen/qwen3.8-flash-next` worker model. That fixed model keeps its normal route;
+context overrides do not opt it into managed selection. Earlier SDK builds only
+honored these fields for `managed/*`, so checking a named role's file alone did
+not establish its effective window. Run the named-worker fixture documented in
+[releasing](RELEASING.md) before activating a changed fixed-role limit.
+
 Use fresh internal policy aliases for widened profiles. Existing pins and
 their old limits remain intact; old workers are not moved, restarted or
 silently assigned a different account. A larger window is a ceiling, not a

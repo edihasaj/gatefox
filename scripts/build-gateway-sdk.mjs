@@ -134,9 +134,9 @@ if (values.test) {
   passed(run(['-p', 'codex-core', '--lib', 'gateway_dynamic_tool']), 7, 'dynamic client tool');
   // The existing router test this patch changes (search-capable model plus baseline namespaces) must keep passing.
   passed(run(['-p', 'codex-core', '--lib', 'specs_filter_deferred_dynamic_tools']), 1, 'deferred dynamic tool filtering');
-  passed(run(['-p', 'codex-core', '--lib', 'gateway_role_context']), 2, 'managed role context');
+  passed(run(['-p', 'codex-core', '--lib', 'gateway_role_context']), 3, 'managed and named Qwen role context');
   if (treeDigest(sdk) !== input.patchedSdkSha256) throw Error('SDK test gate changed the verified source tree');
-  console.log(JSON.stringify({ tests: 21, revision: gatewaySdkRevision, patchSha256, sourceSha256,
+  console.log(JSON.stringify({ tests: 22, revision: gatewaySdkRevision, patchSha256, sourceSha256,
     testRunnerSha256: gatewaySdkTestRunnerDigest() }));
 } else {
   const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--locked', '--format-version', '1', '--manifest-path', manifest],

@@ -29,6 +29,14 @@ gateway executor. A shared generation advertises selected-model compaction only
 after its host verifies the requested binary checksum. Its checksum participates
 in generation identity, so a newer executable cannot replace loaded work.
 
+The verified Gateway SDK applies paired role context and compaction overrides to
+legacy `managed/*` policies and the named `qwen/qwen3.8-flash-next` worker model.
+Earlier SDK builds applied these fields only to managed names: named Qwen roles
+could inherit the catalog's larger window despite smaller values in their files.
+The named-worker regression checks both catalog presence and absence, real tool
+execution, compaction and cold resume. Native SDK behavior and unrelated named
+roles remain unchanged. Existing workers retain their loaded configuration.
+
 Legacy packages without that artifact retain the adapter recovery below. For
 those per-connection gateway executors, the adapter checks public current-window
 usage against the selected model's frozen context metadata. It also records real

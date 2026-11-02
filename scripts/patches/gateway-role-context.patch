@@ -9,13 +9,13 @@
      model_reasoning_summary: Option<ReasoningSummary>,
      model_verbosity: Option<Verbosity>,
      personality: Option<Personality>,
-@@ -45,6 +47,32 @@
+@@ -45,6 +47,36 @@
      #[serde(skip_serializing_if = "BTreeMap::is_empty")]
      features: BTreeMap<String, bool>,
      skills: Option<SkillsConfig>,
 +}
 +
-+// Gateway-managed role limits must survive an SDK catalog miss without changing
++// Managed and named Qwen role limits survive SDK catalog misses without changing
 +// native roles, permissions, tool execution, model selection or reasoning effort.
 +fn gateway_role_context_limits(
 +    marked: bool,
@@ -23,7 +23,11 @@
 +    window: Option<i64>,
 +    compact: Option<i64>,
 +) -> anyhow::Result<(Option<i64>, Option<i64>)> {
-+    if !marked || !model.is_some_and(|value| value.starts_with("managed/")) {
++    if !marked
++        || !model.is_some_and(|value| {
++            value.starts_with("managed/") || value == "qwen/qwen3.8-flash-next"
++        })
++    {
 +        return Ok((None, None));
 +    }
 +    match (window, compact) {
@@ -42,7 +46,7 @@
  }
  
  /// Applies typed role overrides to the existing parent-derived configuration.
-@@ -77,10 +105,18 @@
+@@ -77,10 +109,18 @@
      };
      let role_layer_toml = load_role_layer_toml(config, config_file, is_built_in, role_name).await?;
      let role_config = deserialize_config_toml_with_base(role_layer_toml, &config.codex_home)?;
@@ -61,7 +65,7 @@
          model_reasoning_summary: role_config.model_reasoning_summary,
          model_verbosity: role_config.model_verbosity,
          personality: role_config.personality,
-@@ -189,6 +225,12 @@
+@@ -189,6 +229,12 @@
          }
          if let Some(effort) = overrides.model_reasoning_effort.clone() {
              next_config.model_reasoning_effort = Some(effort);
@@ -76,7 +80,7 @@
              next_config.model_reasoning_summary = Some(summary);
 --- a/codex-rs/core/src/agent/role_tests.rs
 +++ b/codex-rs/core/src/agent/role_tests.rs
-@@ -798,3 +798,52 @@
+@@ -798,3 +798,71 @@
          None
      );
  }
@@ -128,4 +132,23 @@
 +    expected.model_context_window = Some(131072);
 +    expected.model_auto_compact_token_limit = Some(104857);
 +    assert_eq!(next, expected);
++}
++
++#[test]
++fn gateway_role_context_named_qwen_requires_marker_and_bounded_pair() {
++    let model = Some("qwen/qwen3.8-flash-next");
++    assert_eq!(
++        gateway_role_context_limits(true, model, Some(100000), Some(90000)).unwrap(),
++        (Some(100000), Some(90000))
++    );
++    assert_eq!(
++        gateway_role_context_limits(false, model, Some(100000), Some(90000)).unwrap(),
++        (None, None)
++    );
++    assert_eq!(
++        gateway_role_context_limits(true, Some("codex/gpt-6.1-sol"), Some(100000), Some(90000)).unwrap(),
++        (None, None)
++    );
++    assert!(gateway_role_context_limits(true, model, Some(100000), None).is_err());
++    assert!(gateway_role_context_limits(true, model, Some(100000), Some(90001)).is_err());
 +}
