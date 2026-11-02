@@ -20,6 +20,11 @@ not prove that the full prefix matched or that the provider retained its cache.
 `copilot_session_violation` records a fixed event type, guard reason, session
 state, pending-call count and whether a request was attached. Unknown event names
 become `unknown`; event payloads are never recorded.
+`copilot_tool_rejected` distinguishes missing, non-string and empty names,
+declared or ambiguous caller aliases, names shaped like retired native tools,
+and other undeclared names. It records only that fixed category and catalog/call
+counts. The unknown name and arguments remain private. All unknown calls still
+fail without execution or an automatic conversation replay.
 
 The native app's **Diagnostics** screen reads local telemetry over the last 1, 6
 or 24 hours. It shows input tokens, cache reads and writes, failed requests per
