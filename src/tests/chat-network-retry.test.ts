@@ -121,6 +121,26 @@ test("the real checked tailnet transport recovers a timed-out dial without sendi
   } finally { delete process.env[env]; resetNetworkRetryTiming(); upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve())); }
 });
 
+test("a reset after request acceptance but before headers can repeat unreported inference", async () => {
+  clock(); const accepted: string[] = [];
+  const upstream = createServer(async (request, response) => {
+    const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    accepted.push(Buffer.concat(chunks).toString());
+    if (accepted.length === 1) request.socket.destroy(); else response.end(complete);
+  });
+  await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  const port = (upstream.address() as { port: number }).port;
+  process.env[env] = "fixture";
+  try {
+    const provider = new ChatCompletionsAPI({ ...config, tailnet: true }, {
+      resolve: async () => ["100.64.0.1"], connect: () => connect({ host: "127.0.0.1", port }),
+    });
+    assert.equal((await drain(provider)).at(-1)?.type, "done");
+    assert.equal(accepted.length, 2, "response-head recovery cannot prove the first request was not processed");
+    assert.equal(accepted[0], accepted[1], "recovery preserves the original request");
+  } finally { delete process.env[env]; resetNetworkRetryTiming(); upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve())); }
+});
+
 test("tailnet DNS failures retry only a temporary resolver error and recheck the destination each time", async () => {
   for (const code of ["EAI_AGAIN", "ENOTFOUND", "PRIVATE_CODE"]) {
     clock(); let resolves = 0;

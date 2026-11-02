@@ -285,6 +285,10 @@ unknown faults and cancellation do not. Once any HTTP response arrives, its
 body is consumed exactly once: a disconnect after headers, buffered tool
 fragments, usage or partial output never enters this retry loop. The existing
 opt-in Messages empty-completion recovery remains separate.
+As with Responses connection retries, a failure before HTTP headers does not
+prove the upstream never accepted the request. A retry can repeat computation
+whose usage was never reported; this is transport recovery, not an exactly-once
+inference guarantee.
 
 Private failure logs contain a UTC timestamp, bounded request/provider/model
 identifiers, elapsed time, error code, and status, excluding request bodies,
