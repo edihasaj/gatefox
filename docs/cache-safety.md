@@ -19,12 +19,28 @@ before a later stream failure as well as on success. Missing cache fields remain
 unknown; the helper cannot reset the ordinary chat budget or opt into its
 compaction recovery budget.
 
-Two consecutive requests that each have at least 65,536 uncached input tokens
+During active work, two consecutive requests that each have at least 65,536 uncached input tokens
 and more uncached than cached tokens stop the next request before provider
 execution. A read covering at least 75% of the preceding cached prefix is treated
 as reuse, so genuinely large new tool results do not cause a false rewrite alarm.
 Two large inputs whose cache usage is unreported also stop, with a distinct
 explanation: unknown cache usage is never presented as a measured zero.
+
+Five minutes without request activity starts a fresh warm-up period. An idle
+chat can legitimately lose its provider cache or live session, so a cold seed
+after that gap does not combine with an old miss to block its first continuation.
+Request attempts (including blocked retries) and completions refresh activity.
+A per-conversation in-flight count prevents overlapping long requests from
+expiring each other's history; it is released even on error or cancellation.
+A long-running inference is therefore not mistaken for idle time, and continuous
+retry loops cannot age their own block away. Actual cache reads still clear the
+consecutive-miss count. Intermittent misses separated by successful reuse do not
+constitute continuous uncached processing under this policy.
+
+Hot-adopted entries from an older release without activity timestamps keep their
+existing block until the new guard observes an idle interval; missing historical
+timestamps never manufacture a reset. Provider, model and caller identity remain
+the scope. No new user turn, reconnect or provider reseed alone resets the guard.
 
 The client receives a final HTTP 400, or a terminal stream error, explaining the
 cache problem and how to compact or start a fresh chat on the same model.
