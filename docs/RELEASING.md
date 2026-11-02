@@ -153,6 +153,13 @@ JavaScript. Installing a CLI update preserves the registration. See
    It proves requested and returned tiers, settings changes, saved-history resume,
    and native isolation; it sends no subscription inference and does not prove
    rendered desktop controls or the built-in cloud transport.
+   For named Qwen role context changes, run `scripts/e2e-subagent-sidebar.mjs
+   --package INSTALLED_PACKAGE --code CHECKOUT --root TASK_DIRECTORY --v2
+   --role-fork --named-worker --cold`. Repeat in a fresh directory with
+   `--worker-stale-catalog --worker-compact`. Require the actual named Qwen child
+   to report its bounded context, retain its model and effort, execute tools,
+   resume after the cold host restart and compact exactly once in the second
+   run. These checks use synthetic inference and do not spend provider credit.
    For Chat Completions translation changes (local Qwen or another
    `chat-completions-api` provider), run `scripts/e2e-chat-compaction.mjs --package
    INSTALLED_PACKAGE --config PRIVATE_GATEWAY_CONFIG [--provider qwen]`. It sends the
@@ -422,7 +429,8 @@ Seven additional Rust cases preserve search, schemas, policy and namespace rules
 the existing deferred-filtering regression also runs explicitly in the gate.
 The managed role context patch also carries paired context and compaction limits
 through the SDK's typed role projection, only inside marked Gateway executors
-for explicitly selected managed aliases. Two Rust cases check its bounds and
+for explicitly selected managed aliases and the named Qwen worker alias.
+Three Rust cases check its bounds, marker and alias isolation, and
 preservation of other runtime settings. All four patches contribute to the patch
 and source digests. A changed patch
 requires a new SDK build even when the capability name stays the same; it cannot
