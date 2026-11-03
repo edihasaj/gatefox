@@ -11,6 +11,25 @@ export const rpcLimits = {
 };
 export const record = (value: unknown): Message => value && typeof value === "object" && !Array.isArray(value) ? value as Message : {};
 
+/** Copilot 1.0.103 retired `--no-remote` (it now exits with an error); remote hosting there needs explicit `--host-*` flags. */
+const retiredNoRemote = [1, 0, 103];
+const atLeast = (version: string, minimum: number[]): boolean => {
+  const parts = version.split(".").map(Number);
+  for (let i = 0; i < minimum.length; i++) if (parts[i] !== minimum[i]) return parts[i] > minimum[i];
+  return true;
+};
+
+/**
+ * Arguments for a headless gateway CLI. `version` is the exact version of a verified managed installation. Without one (a CLI
+ * from PATH) the gateway keeps `--no-remote`: an older CLI stays without incoming remote control, and a newer one refuses to
+ * start rather than starting without that guarantee.
+ */
+export function copilotCliArgs(logDirectory: string, version?: string): string[] {
+  const known = version !== undefined && /^\d+\.\d+\.\d+$/.test(version);
+  const remote = known && atLeast(version, retiredNoRemote) ? [] : ["--no-remote"];
+  return ["--headless", "--stdio", "--no-auto-update", "--disable-builtin-mcps", "--no-custom-instructions", ...remote, "--no-remote-export", "--log-dir", logDirectory];
+}
+
 /** SDK stdio framing. Bound headers and payload before parsing JSON. */
 export async function* copilotFrames(input: Readable, onChunk?: () => void): AsyncGenerator<Message> {
   let buffer = Buffer.alloc(0);
@@ -48,8 +67,8 @@ export class CopilotRPC {
   /** Whether the CLI's output is still being read: its event stream ends only once everything it wrote was read. */
   private reading = true;
   readonly exited: Promise<void>;
-  constructor(env: NodeJS.ProcessEnv, cwd: string, child?: ChildProcessWithoutNullStreams, executable = "copilot") {
-    this.child = child || spawn(executable, ["--headless", "--stdio", "--no-auto-update", "--disable-builtin-mcps", "--no-custom-instructions", "--no-remote", "--no-remote-export", "--log-dir", cwd], { env, cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
+  constructor(env: NodeJS.ProcessEnv, cwd: string, child?: ChildProcessWithoutNullStreams, executable = "copilot", version?: string) {
+    this.child = child || spawn(executable, copilotCliArgs(cwd, version), { env, cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.child.stderr.resume(); this.events.on("error", () => {});
     this.exited = new Promise(resolve => this.child.once("close", () => { this.fail(new ProviderError("cli_failed", "Copilot CLI closed before completion")); resolve(); }));
     // Node reports `close` only once every stdio pipe has closed. A process outside the CLI's group can hold the CLI's output open

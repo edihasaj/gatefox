@@ -57,6 +57,8 @@ export interface ProviderConfig {
   claudeSessions?: ClaudeSessionConfig;
   /** Copilot subscription only: one-shot requests or a live CLI session per Codex thread. */
   copilotSessions?: CopilotSessionConfig;
+  /** Grok subscription only: one-shot requests or a live ACP session per conversation (the default). */
+  grokSessions?: GrokSessionConfig;
 }
 export interface ClaudeSessionConfig { mode?: "replay" | "live"; max?: number; parkMinutes?: number; warmup?: number; replayFormat?: "text" | "json" }
 export type ClaudeSessionSettings = Required<ClaudeSessionConfig>;
@@ -79,6 +81,13 @@ export interface CopilotSessionSettings { mode: "oneshot" | "live"; max: number;
 export function copilotSessionSettings(provider: Pick<ProviderConfig, "copilotSessions">): CopilotSessionSettings {
   const value = provider.copilotSessions || {};
   return { mode: value.mode === "oneshot" || value.mode === "replay" ? "oneshot" : "live", max: value.max ?? 4, parkMinutes: value.parkMinutes ?? 30, toolWaitMinutes: value.toolWaitMinutes ?? 25 };
+}
+/** Live Grok sessions: `live` is the default; `oneshot` runs one CLI per request and refuses continued conversations. */
+export interface GrokSessionConfig { mode?: "oneshot" | "live"; max?: number; parkMinutes?: number; toolWaitMinutes?: number }
+export interface GrokSessionSettings { mode: "oneshot" | "live"; max: number; parkMinutes: number; toolWaitMinutes: number }
+export function grokSessionSettings(provider: Pick<ProviderConfig, "grokSessions">): GrokSessionSettings {
+  const value = provider.grokSessions || {};
+  return { mode: value.mode === "oneshot" ? "oneshot" : "live", max: value.max ?? 4, parkMinutes: value.parkMinutes ?? 30, toolWaitMinutes: value.toolWaitMinutes ?? 25 };
 }
 /** Whether a provider bridges the client's `tool_search` instead of dropping it; `off` and any other value stay today's drop. */
 export const bridgesToolSearch = (provider: Pick<ProviderConfig, "type" | "toolSearch">): boolean =>
@@ -281,7 +290,17 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       // Copilot fails a pending tool call after 30 minutes and then calls the model on its own; the gateway closes the session first.
       if (copilot.toolWaitMinutes !== undefined && !integerIn(copilot.toolWaitMinutes, 1, 25)) throw new Error(`${provider.id}: copilotSessions toolWaitMinutes must be 1 through 25`);
     }
-    return { ...provider, models: { ...provider.models }, ...(sessions ? { claudeSessions: { ...sessions } } : {}), ...(copilot ? { copilotSessions: { ...copilot } } : {}), ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}),
+    const grok = provider.grokSessions;
+    if (grok !== undefined) {
+      if (provider.type !== "grok-subscription") throw new Error(`${provider.id}: grokSessions is only valid for grok-subscription providers`);
+      if (!grok || typeof grok !== "object" || Array.isArray(grok)) throw new Error(`${provider.id}: grokSessions must be an object`);
+      if (grok.mode !== undefined && !["oneshot", "live"].includes(grok.mode)) throw new Error(`${provider.id}: grokSessions mode must be oneshot or live`);
+      if (grok.max !== undefined && !integerIn(grok.max, 1, 16)) throw new Error(`${provider.id}: grokSessions max must be 1 through 16`);
+      if (grok.parkMinutes !== undefined && !integerIn(grok.parkMinutes, 5, 240)) throw new Error(`${provider.id}: grokSessions parkMinutes must be 5 through 240`);
+      // A held tool call is a pending MCP request; the gateway closes the session before any client-side timeout could end it on its own.
+      if (grok.toolWaitMinutes !== undefined && !integerIn(grok.toolWaitMinutes, 1, 25)) throw new Error(`${provider.id}: grokSessions toolWaitMinutes must be 1 through 25`);
+    }
+    return { ...provider, models: { ...provider.models }, ...(sessions ? { claudeSessions: { ...sessions } } : {}), ...(copilot ? { copilotSessions: { ...copilot } } : {}), ...(grok ? { grokSessions: { ...grok } } : {}), ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}),
       ...(provider.type === "grok-subscription" ? { grokHome: resolve(directory, provider.grokHome ?? join(stateDirectory, "grok-home")) } : {}) };
   });
   const accountEngines = config.accountEngines === undefined ? undefined : validateAccountEngines(config.accountEngines, providers);

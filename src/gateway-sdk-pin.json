@@ -1,10 +1,10 @@
 {
-  "version": "0.163.0",
-  "revision": "83086188ae0614bd882818ff1aa23f3194962012",
-  "archiveSha256": "7497d34682e169a46b0781065ccb562dac3ff2294a9a6655eb9aa4681931a4a7",
-  "originalLockSha256": "17cdd862471774ba7aef836aaf0a0a3ed76bd23e503b1fc7278c89d1f2719d03",
-  "lockSha256": "cae541406f7ec43a418e126be2bcd5de00b243e7bbf6382570028727d99c1069",
-  "workspaceRepairs": 160,
-  "originalAggregatorSha256": "9387d973b31f5d1fab5c595fad6497c123c86059f34cdd4afba3fca89a254b88",
+  "version": "0.166.0",
+  "revision": "6ff1e1ca3b30fc8b914720681fcf5fe62e95f856",
+  "archiveSha256": "f4693ca48d5b3ffaf7b13c3c490481c0d7a68ad29f945753fea9cc08a570db72",
+  "originalLockSha256": "22bd51f50864ce40f6686f3350c0547fdd50a8213240f54435ed394f68bf08e6",
+  "lockSha256": "360ea1e0ec391255ffc153a73548be524aa5d50c3476f247631cec184c21d4cb",
+  "workspaceRepairs": 170,
+  "originalAggregatorSha256": "5d53476eeb77995e367807a5a10b57c3d9dfeebf9d41f04ba50cbad4e3b37a39",
   "compactionAggregatorSha256": "6295182fbcad8d71b7816f6ef05ad0b27502272b7ae05975f0de686c4725d8d5"
 }

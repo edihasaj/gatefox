@@ -129,6 +129,8 @@ test("new Claude and Copilot processes use verified provider tools without chang
     assert.ok(seen.some(entry => entry.kind === "claude-infer" && entry.updater === "1"));
     assert.ok(seen.some(entry => entry.kind === "claude-discovery" && entry.updater === "1"));
     assert.ok(seen.some(entry => entry.kind === "copilot-open" && Array.isArray(entry.args) && entry.args.includes("--no-auto-update")));
+    // The managed installation's verified version (1.2.3) reaches the command line: no retired --no-remote, export still off.
+    assert.ok(seen.some(entry => entry.kind === "copilot-open" && Array.isArray(entry.args) && !entry.args.includes("--no-remote") && entry.args.includes("--no-remote-export")));
   } finally {
     if (previousLog === undefined) delete process.env.GATEWAY_PROVIDER_TOOL_LOG; else process.env.GATEWAY_PROVIDER_TOOL_LOG = previousLog;
     await tools.cleanup();

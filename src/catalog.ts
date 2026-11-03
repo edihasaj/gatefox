@@ -5,6 +5,7 @@ import { tailnetFetch, type TailnetSeams } from "./tailnet.js";
 import { apiCredential, bridgesToolSearch, capContextWindow, type GatewayConfig, type ProviderConfig, type ModelMetadata } from "./config.js";
 import { publicServiceTierFields, readPublicServiceTierMetadata, readServiceTierMetadata } from "./model-service-tiers.js";
 import { upstreamSlugField } from "./codex-native-rows.js";
+import { tokenFamily, tokenizerFamilyField } from "./compaction-switch-guard.js";
 import { pickerHidden, releasedAtMetadata } from "./model-auto-latest/metadata.js";
 import { managedCatalog } from "./managed-routing-catalog.js";
 import { modelLabel } from "./model-label.js";
@@ -27,6 +28,9 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       description: `${provider.type}; account route ${provider.id}`, priority: metadata?.priority ?? modelIndex,
       // The desktop adapter copies the native row for this slug; Codex ignores the extra key.
       ...(codex ? { [upstreamSlugField]: provider.models[alias] } : {}),
+      // The tokenizer family of the upstream model, which the alias text may not show; the desktop adapter's switch guard
+      // reads it (docs/app-server-compaction.md). Codex ignores the extra key.
+      [tokenizerFamilyField]: tokenFamily(provider.models[alias]),
       // A superseded automatic model stays routable and in the full catalog, only marked `hide` for the picker.
       visibility: pickerHidden(metadata) ? "hide" : "list", supported_in_api: true, availability_nux: null, upgrade: null,
       ...publicServiceTierFields(readServiceTierMetadata(metadata)),

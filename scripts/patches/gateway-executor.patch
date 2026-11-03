@@ -1,8 +1,62 @@
+diff --git a/codex-rs/app-server/src/config_manager.rs b/codex-rs/app-server/src/config_manager.rs
+index 461920b..f789c33 100644
+--- a/codex-rs/app-server/src/config_manager.rs
++++ b/codex-rs/app-server/src/config_manager.rs
+@@ -439,7 +439,15 @@ impl ConfigManager {
+         let configured = self
+             .load_latest_config(Some(current.cwd.to_path_buf()))
+             .await?;
+-        if current.model_provider_id != configured.model_provider_id {
++        // Harness Gateway: a saved legacy gateway chat and the executor's `openai` alias are one gateway.
++        if current.model_provider_id != configured.model_provider_id
++            && !codex_model_provider_info::same_gateway_executor_provider(
++                &current.model_provider_id,
++                &current.model_provider,
++                &configured.model_provider_id,
++                &configured.model_provider,
++            )
++        {
+             return Err(std::io::Error::new(
+                 std::io::ErrorKind::InvalidInput,
+                 ModelProviderError::ModelProviderMismatch {
+@@ -594,11 +602,31 @@ impl ConfigManager {
+                     }
+                 }
+                 let current_provider = current_provider?;
++                // Harness Gateway: inside a marked executor the legacy gateway id and the loopback `openai`
++                // alias name the same gateway, so a chat resumes under the id it was saved with.
++                let provider_info = |id: &str| {
++                    config.model_providers.get(id).cloned().or_else(|| {
++                        built_in_model_providers(config.openai_base_url.clone())
++                            .get(id)
++                            .cloned()
++                    })
++                };
+                 for provider in [
+                     saved_provider.unwrap_or(requested_provider),
+                     requested_provider,
+                 ] {
+-                    if provider != current_provider {
++                    let one_gateway = match (provider_info(provider), provider_info(&current_provider)) {
++                        (Some(saved), Some(current)) => {
++                            codex_model_provider_info::same_gateway_executor_provider(
++                                provider,
++                                &saved,
++                                &current_provider,
++                                &current,
++                            )
++                        }
++                        _ => false,
++                    };
++                    if provider != current_provider && !one_gateway {
+                         return Err(std::io::Error::new(
+                             std::io::ErrorKind::InvalidInput,
+                             ModelProviderError::ModelProviderMismatch {
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 0879533..2702f3d 100644
+index e4a092e..1df8327 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -1364,6 +1364,17 @@ async fn maybe_run_previous_model_inline_compact(
+@@ -1459,6 +1459,17 @@ async fn maybe_run_previous_model_inline_compact(
          previous_turn_settings.comp_hash.as_deref(),
          turn_context.model_info().comp_hash.as_deref(),
      );
@@ -21,10 +75,10 @@ index 0879533..2702f3d 100644
      if !should_compact_for_comp_hash_change && previous_model == turn_context.model_info().slug {
          return Ok(());
 diff --git a/codex-rs/core/tests/suite/compact.rs b/codex-rs/core/tests/suite/compact.rs
-index b46bc10..a83a58b 100644
+index c480ace..1d4d4c8 100644
 --- a/codex-rs/core/tests/suite/compact.rs
 +++ b/codex-rs/core/tests/suite/compact.rs
-@@ -2375,6 +2375,145 @@ async fn pre_sampling_compact_runs_on_switch_to_smaller_context_model() {
+@@ -2684,6 +2684,145 @@ async fn pre_sampling_compact_runs_on_switch_to_smaller_context_model() {
      );
  }
  
@@ -171,10 +225,10 @@ index b46bc10..a83a58b 100644
  async fn pre_sampling_compact_runs_when_comp_hash_changes() {
      skip_if_no_network!();
 diff --git a/codex-rs/model-provider-info/src/lib.rs b/codex-rs/model-provider-info/src/lib.rs
-index f020d34..8c1f7f7 100644
+index 9bf505d..74cc27b 100644
 --- a/codex-rs/model-provider-info/src/lib.rs
 +++ b/codex-rs/model-provider-info/src/lib.rs
-@@ -691,6 +691,73 @@ pub fn built_in_model_providers(
+@@ -776,6 +776,108 @@ pub fn built_in_model_providers(
      .collect()
  }
  
@@ -191,19 +245,27 @@ index f020d34..8c1f7f7 100644
 +/// Harness Gateway: whether a base URL is plain HTTP on this machine's loopback interface, with no
 +/// credentials in it. A name that merely resolves to loopback, or an IPv4-mapped IPv6 address, is not.
 +pub fn is_loopback_http_base_url(base_url: Option<&str>) -> bool {
-+    base_url
-+        .and_then(|value| url::Url::parse(value).ok())
-+        .is_some_and(|url| {
-+            url.scheme() == "http"
-+                && url.username().is_empty()
-+                && url.password().is_none()
-+                && match url.host() {
-+                    Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-+                    Some(url::Host::Ipv4(address)) => address.is_loopback(),
-+                    Some(url::Host::Ipv6(address)) => address.is_loopback(),
-+                    None => false,
-+                }
-+        })
++    let Some(uri) = base_url.and_then(|value| value.parse::<http::Uri>().ok()) else {
++        return false;
++    };
++    let Some(authority) = uri.authority() else {
++        return false;
++    };
++    // Credentials in the authority (`user:secret@host`) never make a gateway URL.
++    if uri.scheme_str() != Some("http") || authority.as_str().contains('@') {
++        return false;
++    }
++    let host = authority.host();
++    if let Some(address) = host.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
++        // Only `::1`: an IPv4-mapped address such as `::ffff:127.0.0.1` is not IPv6 loopback.
++        return address
++            .parse::<std::net::Ipv6Addr>()
++            .is_ok_and(|address| address.is_loopback());
++    }
++    host.eq_ignore_ascii_case("localhost")
++        || host
++            .parse::<std::net::Ipv4Addr>()
++            .is_ok_and(|address| address.is_loopback())
 +}
 +
 +/// Harness Gateway: whether a provider is the gateway's own, given whether the executor marker is set.
@@ -222,6 +284,33 @@ index f020d34..8c1f7f7 100644
 +/// Harness Gateway: whether a provider is the gateway's own in this process.
 +pub fn is_gateway_executor_provider(provider_id: &str, provider: &ModelProviderInfo) -> bool {
 +    is_gateway_executor_provider_with_marker(provider_id, provider, gateway_executor_marker())
++}
++
++/// Harness Gateway: whether two different provider ids name this executor's one gateway. Inside a marked
++/// executor the legacy id and the loopback `openai` alias are the same provider: a chat keeps the id it was
++/// saved with, and the SDK's resume and input provider checks must not refuse it for the other spelling.
++/// Outside a marked executor `openai` is never the gateway, so nothing changes there.
++pub fn same_gateway_executor_provider_with_marker(
++    first_id: &str,
++    first: &ModelProviderInfo,
++    second_id: &str,
++    second: &ModelProviderInfo,
++    marker: bool,
++) -> bool {
++    marker
++        && first_id != second_id
++        && is_gateway_executor_provider_with_marker(first_id, first, marker)
++        && is_gateway_executor_provider_with_marker(second_id, second, marker)
++}
++
++/// Harness Gateway: `same_gateway_executor_provider_with_marker` for this process.
++pub fn same_gateway_executor_provider(
++    first_id: &str,
++    first: &ModelProviderInfo,
++    second_id: &str,
++    second: &ModelProviderInfo,
++) -> bool {
++    same_gateway_executor_provider_with_marker(first_id, first, second_id, second, gateway_executor_marker())
 +}
 +
 +/// Harness Gateway: inside a marked executor, `openai` names the gateway's own provider when it is
@@ -248,7 +337,7 @@ index f020d34..8c1f7f7 100644
  /// Merge configured providers into the built-in provider catalog.
  ///
  /// Configured providers extend the built-in set. Built-in providers are not
-@@ -729,6 +796,7 @@ pub fn merge_configured_model_providers(
+@@ -837,6 +939,7 @@ pub fn merge_configured_model_providers(
              model_providers.entry(key).or_insert(provider);
          }
      }
@@ -257,12 +346,12 @@ index f020d34..8c1f7f7 100644
      Ok(model_providers)
  }
 diff --git a/codex-rs/model-provider-info/src/model_provider_info_tests.rs b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
-index 9c15c54..37eb457 100644
+index 0d3742f..d5534c1 100644
 --- a/codex-rs/model-provider-info/src/model_provider_info_tests.rs
 +++ b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
-@@ -882,3 +882,97 @@ model_catalog_url = "https://gateway.example/codex/catalog?token=catalog-secret"
-         "https://gateway.example/v1"
-     );
+@@ -1081,3 +1081,114 @@ fn builtin_openai_catalog_accepts_existing_chatgpt_hosts() {
+         );
+     }
  }
 +
 +fn gateway_provider(base_url: &str) -> ModelProviderInfo {
@@ -357,4 +446,21 @@ index 9c15c54..37eb457 100644
 +    assert!(!is_gateway_executor_provider_with_marker(
 +        "ollama", &local, /*marker*/ true
 +    ));
++}
++
++#[test]
++fn gateway_executor_legacy_and_openai_ids_are_one_provider_only_when_marked() {
++    let gateway = gateway_provider("http://127.0.0.1:4318/v1");
++    let remote = gateway_provider("https://api.openai.com/v1");
++    let same = |a: &str, ai: &ModelProviderInfo, b: &str, bi: &ModelProviderInfo, marker: bool| {
++        same_gateway_executor_provider_with_marker(a, ai, b, bi, marker)
++    };
++    assert!(same(LEGACY_GATEWAY_PROVIDER_ID, &gateway, "openai", &gateway, true));
++    assert!(same("openai", &gateway, LEGACY_GATEWAY_PROVIDER_ID, &gateway, true));
++    // Unmarked processes (the native engine) and a non-loopback `openai` keep the SDK's strict check.
++    assert!(!same(LEGACY_GATEWAY_PROVIDER_ID, &gateway, "openai", &gateway, false));
++    assert!(!same(LEGACY_GATEWAY_PROVIDER_ID, &gateway, "openai", &remote, true));
++    // Identical ids are not a pair, and other providers never join the gateway.
++    assert!(!same("openai", &gateway, "openai", &gateway, true));
++    assert!(!same(LEGACY_GATEWAY_PROVIDER_ID, &gateway, "ollama", &gateway, true));
 +}

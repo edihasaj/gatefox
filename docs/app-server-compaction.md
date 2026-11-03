@@ -195,6 +195,16 @@ the selected model's usable window, the turn is refused before anything is sent:
 history are unchanged. The refusal is recorded as `compaction_switch_refused`.
 
 Families come from the upstream model name: `claude-…` is Anthropic, and `gpt-…`,
-`o…`, `codex-…` and `chatgpt-…` are OpenAI. Any other name is its own family. A fact
-that cannot be read, such as a missing rollout, never refuses a turn. Recorded
-counters that fit even after a 1.7 recount skip the rollout read.
+`o…`, `codex-…` and `chatgpt-…` are OpenAI. Any other name is its own family. The
+gateway publishes each row's family as `tokenizer_family` in its model catalog, computed
+from the upstream name, because the alias a chat records can hide it: `team/large` and
+`team/small` may both be one upstream family. The adapter keeps that field only when it
+is a short plain name, and falls back to the alias text for a row without one, such as
+a catalog from an older gateway. Codex ignores the extra key. A fact that cannot be
+read, such as a missing rollout, never refuses a turn. Recorded counters that fit even
+after a 1.7 recount skip the rollout read.
+
+Codex 0.166 records the selected model in a small `turn_context` record, so the guard
+can attribute nearly every measurement. Earlier SDKs wrote larger records that the
+adapter often could not read, which left a same-family switch between differently named
+aliases unchecked; with the published family such a switch is not refused.

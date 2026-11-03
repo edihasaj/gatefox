@@ -1,6 +1,22 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 2ac9b93..bec0033 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -936,6 +936,9 @@ impl ModelClient {
+         responses_metadata: &CodexResponsesMetadata,
+     ) -> ApiHeaderMap {
+         let mut extra_headers = responses_metadata.compatibility_headers();
++        if codex_model_provider_info::gateway_executor_marker() {
++            extra_headers.insert("x-harness-cache-recovery", HeaderValue::from_static("1"));
++        }
+         if matches!(
+             self.state.session_source,
+             SessionSource::Internal(InternalSessionSource::MemoryConsolidation)
+diff --git a/codex-rs/core/src/context_manager/history.rs b/codex-rs/core/src/context_manager/history.rs
+index 12fff89..633bfeb 100644
 --- a/codex-rs/core/src/context_manager/history.rs
 +++ b/codex-rs/core/src/context_manager/history.rs
-@@ -495,6 +495,25 @@
+@@ -495,6 +495,28 @@ impl ContextManager {
      }
  
      pub(crate) fn set_token_usage_full(&mut self, context_window: i64) {
@@ -16,17 +32,20 @@
 +            // Preserve billing totals while marking this context full for recovery.
 +            let info = self.token_info.get_or_insert_with(|| TokenUsageInfo {
 +                total_token_usage: TokenUsage::default(),
++                last_usage_includes_reasoning: None,
 +                last_token_usage: TokenUsage::default(),
 +                model_context_window: Some(context_window),
 +            });
 +            info.model_context_window = Some(context_window);
++            // A synthetic full count, like upstream's `fill_to_context_window`, says nothing about reasoning.
++            info.last_usage_includes_reasoning = None;
 +            info.last_token_usage.total_tokens = context_window;
 +            return;
 +        }
          match &mut self.token_info {
              Some(info) => info.fill_to_context_window(context_window),
              None => {
-@@ -1401,3 +1420,47 @@
+@@ -1434,3 +1456,50 @@ fn user_message_positions(items: &[ResponseItemEnvelope]) -> Vec<usize> {
  #[cfg(test)]
  #[path = "history_tests.rs"]
  mod tests;
@@ -41,12 +60,14 @@
 +            let mut history = ContextManager::new();
 +            history.token_info = Some(TokenUsageInfo {
 +                total_token_usage: TokenUsage { total_tokens: cumulative, input_tokens: 110, output_tokens: 7, ..TokenUsage::default() },
++                last_usage_includes_reasoning: Some(true),
 +                last_token_usage: TokenUsage { total_tokens: 200_000, ..TokenUsage::default() },
 +                model_context_window: Some(900_000),
 +            });
 +            history.set_token_usage_full_with_gateway_marker(900_000, true);
-+            assert!(history.get_total_token_usage(true) >= 900_000);
++            assert!(history.get_total_token_usage() >= 900_000);
 +            let info = history.token_info.unwrap();
++            assert_eq!(info.last_usage_includes_reasoning, None, "a synthetic full count claims nothing about reasoning");
 +            assert_eq!(info.total_token_usage.total_tokens, cumulative);
 +            assert_eq!(info.total_token_usage.input_tokens, 110);
 +            assert_eq!(info.total_token_usage.output_tokens, 7);
@@ -57,7 +78,7 @@
 +    fn gateway_cache_recovery_initializes_context_without_inventing_billing() {
 +        let mut history = ContextManager::new();
 +        history.set_token_usage_full_with_gateway_marker(900_000, true);
-+        assert!(history.get_total_token_usage(true) >= 900_000);
++        assert!(history.get_total_token_usage() >= 900_000);
 +        assert_eq!(history.token_info.unwrap().total_token_usage.total_tokens, 0);
 +    }
 +
@@ -66,6 +87,7 @@
 +        let mut history = ContextManager::new();
 +        history.token_info = Some(TokenUsageInfo {
 +            total_token_usage: TokenUsage { total_tokens: 400_000, ..TokenUsage::default() },
++            last_usage_includes_reasoning: None,
 +            last_token_usage: TokenUsage::default(), model_context_window: Some(900_000),
 +        });
 +        history.set_token_usage_full_with_gateway_marker(900_000, false);
@@ -74,15 +96,3 @@
 +        assert_eq!(info.last_token_usage.total_tokens, 500_000);
 +    }
 +}
---- a/codex-rs/core/src/client.rs
-+++ b/codex-rs/core/src/client.rs
-@@ -872,6 +872,9 @@
-         responses_metadata: &CodexResponsesMetadata,
-     ) -> ApiHeaderMap {
-         let mut extra_headers = responses_metadata.compatibility_headers();
-+        if codex_model_provider_info::gateway_executor_marker() {
-+            extra_headers.insert("x-harness-cache-recovery", HeaderValue::from_static("1"));
-+        }
-         if matches!(
-             self.state.session_source,
-             SessionSource::Internal(InternalSessionSource::MemoryConsolidation)

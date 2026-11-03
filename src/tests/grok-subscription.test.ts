@@ -44,7 +44,7 @@ async function setup(lines: Line[], hang = false) {
   await writeFile(scenario, JSON.stringify({ lines, hang })); await writeFile(capture, "");
   const saved = { PATH: process.env.PATH, s: process.env.GATEWAY_TEST_GROK_SCENARIO, c: process.env.GATEWAY_TEST_GROK_CAPTURE, x: process.env.XAI_API_KEY };
   Object.assign(process.env, { PATH: bin + delimiter + (saved.PATH ?? ""), GATEWAY_TEST_GROK_SCENARIO: scenario, GATEWAY_TEST_GROK_CAPTURE: capture, XAI_API_KEY: "must-not-reach-grok" });
-  const provider = new GrokSubscription({ id: "grok", type: "grok-subscription", grokHome: home, models: { "grok/main": "grok-4.7" }, modelMetadata: { "grok/main": { reasoningEfforts: ["low", "high"] } } });
+  const provider = new GrokSubscription({ id: "grok", type: "grok-subscription", grokHome: home, models: { "grok/main": "grok-4.7" }, modelMetadata: { "grok/main": { reasoningEfforts: ["low", "high"] } }, grokSessions: { mode: "oneshot" } });
   const captured = async () => (await readFile(capture, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, any>);
   const restore = async () => {
     for (const [key, value] of [["PATH", saved.PATH], ["GATEWAY_TEST_GROK_SCENARIO", saved.s], ["GATEWAY_TEST_GROK_CAPTURE", saved.c], ["XAI_API_KEY", saved.x]] as const) if (value === undefined) delete process.env[key]; else process.env[key] = value;

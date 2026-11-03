@@ -1,3 +1,152 @@
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index 968d331..bbcaca4 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -482,10 +482,29 @@ impl CodexThread {
+         &self,
+         request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
+     ) -> CodexResult<StartIfIdleSubmission> {
+-        match self
+-            .submit_turn_input_with_mode(request, TurnInputMode::StartIfIdle)
+-            .await?
+-        {
++        self.start_idle_turn_with_mode(request, TurnInputMode::StartIfIdle)
++            .await
++    }
++
++    /// Automatic queue dispatch checks its pause state inside Core's idle reservation.
++    pub async fn start_queued_turn_if_idle(
++        &self,
++        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
++    ) -> CodexResult<StartIfIdleSubmission> {
++        self.start_idle_turn_with_mode(request, TurnInputMode::StartQueuedIfIdle)
++            .await
++    }
++
++    pub async fn automatic_queue_paused(&self) -> bool {
++        self.session.automatic_queue_paused().await
++    }
++
++    async fn start_idle_turn_with_mode(
++        &self,
++        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
++        mode: TurnInputMode,
++    ) -> CodexResult<StartIfIdleSubmission> {
++        match self.submit_turn_input_with_mode(request, mode).await? {
+             TurnInputSubmission::Started {
+                 turn_id,
+                 root_turn_id,
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index cc418ca..d4cfa18 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -1504,6 +1504,22 @@ impl Session {
+         matches!(*self.agent_status.borrow(), AgentStatus::Interrupted)
+     }
+ 
++    fn preserves_failed_queue(provider_id: &str) -> bool {
++        provider_id == codex_model_provider_info::LEGACY_GATEWAY_PROVIDER_ID
++            || codex_model_provider_info::gateway_executor_marker()
++    }
++
++    pub(crate) async fn automatic_queue_paused(&self) -> bool {
++        let status = self.agent_status.borrow().clone();
++        match status {
++            AgentStatus::Interrupted => true,
++            AgentStatus::Errored(_) => {
++                Self::preserves_failed_queue(&self.thread_config_snapshot().await.model_provider_id)
++            }
++            _ => false,
++        }
++    }
++
+     pub(crate) fn get_tx_event(&self) -> Sender<Event> {
+         self.tx_event.clone()
+     }
+@@ -1693,14 +1709,18 @@ impl Session {
+             InitialHistory::Resumed(resumed_history) => {
+                 let turn_context = self.new_default_turn().await;
+                 let rollout_items = resumed_history.history;
+-                if matches!(
+-                    rollout_items.iter().rev().find_map(|item| match item {
+-                        RolloutItem::EventMsg(event) => agent_status_from_event(event),
+-                        _ => None,
+-                    }),
+-                    Some(AgentStatus::Interrupted)
+-                ) {
+-                    self.agent_status.send_replace(AgentStatus::Interrupted);
++                let prior_status = rollout_items.iter().rev().find_map(|item| match item {
++                    RolloutItem::EventMsg(event) => agent_status_from_event(event),
++                    _ => None,
++                });
++                if let Some(status) = prior_status
++                    && (matches!(&status, AgentStatus::Interrupted)
++                        || (matches!(&status, AgentStatus::Errored(_))
++                            && Self::preserves_failed_queue(
++                                &turn_context.config.model_provider_id,
++                            )))
++                {
++                    self.agent_status.send_replace(status);
+                 }
+                 let previous_turn_settings = self
+                     .apply_rollout_reconstruction(&turn_context, &rollout_items)
+diff --git a/codex-rs/core/src/session/turn_input.rs b/codex-rs/core/src/session/turn_input.rs
+index 4fa1c9d..7546450 100644
+--- a/codex-rs/core/src/session/turn_input.rs
++++ b/codex-rs/core/src/session/turn_input.rs
+@@ -243,9 +243,10 @@ pub(super) async fn handle(
+         .values()
+         .try_for_each(AdditionalContextEntry::validate)
+         .map_err(|message| CodexErr::InvalidRequest(message.to_owned()))?;
++    let queued_dispatch = matches!(&mode, TurnInputMode::StartQueuedIfIdle);
+     let result = match mode {
+         TurnInputMode::StartOrSteer => start_or_steer(session, request, submission_id).await,
+-        TurnInputMode::StartIfIdle => {
++        TurnInputMode::StartIfIdle | TurnInputMode::StartQueuedIfIdle => {
+             let kind = match &request.request.input {
+                 SubmittedTurnInput::UserInput { content, .. } if !content.is_empty() => {
+                     TurnStartKind::User
+@@ -261,6 +262,7 @@ pub(super) async fn handle(
+                 submission_id,
+                 kind,
+                 /*expected_previous_turn_id*/ None,
++                queued_dispatch,
+             )
+             .await
+         }
+@@ -281,6 +283,7 @@ pub(super) async fn handle(
+                 submission_id,
+                 TurnStartKind::Recovery,
+                 Some(expected_previous_turn_id),
++                /*queued_dispatch*/ false,
+             )
+             .await
+         }
+@@ -326,6 +329,7 @@ pub(super) async fn handle_recovery(
+         submission_id,
+         TurnStartKind::Recovery,
+         /*expected_previous_turn_id*/ None,
++        /*queued_dispatch*/ false,
+     )
+     .await;
+     if let Ok(TurnInputSubmission::Started { turn_id, .. }) = &result {
+@@ -476,6 +480,7 @@ async fn start_if_idle(
+     submission_id: String,
+     kind: TurnStartKind,
+     expected_previous_turn_id: Option<String>,
++    queued_dispatch: bool,
+ ) -> CodexResult<TurnInputSubmission> {
+     let WithTurnExtensionData {
+         request,
+@@ -528,7 +533,7 @@ async fn start_if_idle(
+ 
+     let turn_state = {
+         let mut active_turn = session.active_turn.lock().await;
+-        if active_turn.is_some() {
++        if active_turn.is_some() || (queued_dispatch && session.automatic_queue_paused().await) {
+             return Ok(TurnInputSubmission::NotSubmitted {
+                 reason: NotSubmittedReason::NotIdle,
+             });
 diff --git a/codex-rs/ext/queue/src/service.rs b/codex-rs/ext/queue/src/service.rs
 index 06aeb63..d7662b5 100644
 --- a/codex-rs/ext/queue/src/service.rs
@@ -59,170 +208,8 @@ index 06aeb63..d7662b5 100644
          {
              thread
                  .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
-diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index dd70a76..171f139 100644
---- a/codex-rs/core/src/session/mod.rs
-+++ b/codex-rs/core/src/session/mod.rs
-@@ -1418,6 +1418,22 @@ impl Session {
-         matches!(*self.agent_status.borrow(), AgentStatus::Interrupted)
-     }
- 
-+    fn preserves_failed_queue(provider_id: &str) -> bool {
-+        provider_id == codex_model_provider_info::LEGACY_GATEWAY_PROVIDER_ID
-+            || codex_model_provider_info::gateway_executor_marker()
-+    }
-+
-+    pub(crate) async fn automatic_queue_paused(&self) -> bool {
-+        let status = self.agent_status.borrow().clone();
-+        match status {
-+            AgentStatus::Interrupted => true,
-+            AgentStatus::Errored(_) => {
-+                Self::preserves_failed_queue(&self.thread_config_snapshot().await.model_provider_id)
-+            }
-+            _ => false,
-+        }
-+    }
-+
-     pub(crate) fn get_tx_event(&self) -> Sender<Event> {
-         self.tx_event.clone()
-     }
-@@ -1607,14 +1623,18 @@ impl Session {
-             InitialHistory::Resumed(resumed_history) => {
-                 let turn_context = self.new_default_turn().await;
-                 let rollout_items = resumed_history.history;
--                if matches!(
--                    rollout_items.iter().rev().find_map(|item| match item {
--                        RolloutItem::EventMsg(event) => agent_status_from_event(event),
--                        _ => None,
--                    }),
--                    Some(AgentStatus::Interrupted)
--                ) {
--                    self.agent_status.send_replace(AgentStatus::Interrupted);
-+                let prior_status = rollout_items.iter().rev().find_map(|item| match item {
-+                    RolloutItem::EventMsg(event) => agent_status_from_event(event),
-+                    _ => None,
-+                });
-+                if let Some(status) = prior_status
-+                    && (matches!(&status, AgentStatus::Interrupted)
-+                        || (matches!(&status, AgentStatus::Errored(_))
-+                            && Self::preserves_failed_queue(
-+                                &turn_context.config.model_provider_id,
-+                            )))
-+                {
-+                    self.agent_status.send_replace(status);
-                 }
-                 let previous_turn_settings = self
-                     .apply_rollout_reconstruction(&turn_context, &rollout_items)
-diff --git a/codex-rs/core/src/session/turn_input.rs b/codex-rs/core/src/session/turn_input.rs
-index 7672b54..e467108 100644
---- a/codex-rs/core/src/session/turn_input.rs
-+++ b/codex-rs/core/src/session/turn_input.rs
-@@ -226,9 +226,10 @@ pub(super) async fn handle(
-     submission_id: String,
- ) -> CodexResult<TurnInputSubmission> {
-     let request = request.into();
-+    let queued_dispatch = matches!(&mode, TurnInputMode::StartQueuedIfIdle);
-     let result = match mode {
-         TurnInputMode::StartOrSteer => start_or_steer(session, request, submission_id).await,
--        TurnInputMode::StartIfIdle => {
-+        TurnInputMode::StartIfIdle | TurnInputMode::StartQueuedIfIdle => {
-             let kind = match &request.request.input {
-                 SubmittedTurnInput::UserInput { content, .. } if !content.is_empty() => {
-                     TurnStartKind::User
-@@ -243,6 +244,7 @@ pub(super) async fn handle(
-                 submission_id,
-                 kind,
-                 /*expected_previous_turn_id*/ None,
-+                queued_dispatch,
-             )
-             .await
-         }
-@@ -260,6 +262,7 @@ pub(super) async fn handle(
-                 submission_id,
-                 TurnStartKind::Recovery,
-                 Some(expected_previous_turn_id),
-+                /*queued_dispatch*/ false,
-             )
-             .await
-         }
-@@ -305,6 +308,7 @@ pub(super) async fn handle_recovery(
-         submission_id,
-         TurnStartKind::Recovery,
-         /*expected_previous_turn_id*/ None,
-+        /*queued_dispatch*/ false,
-     )
-     .await;
-     if let Ok(TurnInputSubmission::Started { turn_id, .. }) = &result {
-@@ -438,6 +442,7 @@ async fn start_if_idle(
-     submission_id: String,
-     kind: TurnStartKind,
-     expected_previous_turn_id: Option<String>,
-+    queued_dispatch: bool,
- ) -> CodexResult<TurnInputSubmission> {
-     let WithTurnExtensionData {
-         request,
-@@ -490,7 +495,7 @@ async fn start_if_idle(
- 
-     let turn_state = {
-         let mut active_turn = session.active_turn.lock().await;
--        if active_turn.is_some() {
-+        if active_turn.is_some() || (queued_dispatch && session.automatic_queue_paused().await) {
-             return Ok(TurnInputSubmission::NotSubmitted {
-                 reason: NotSubmittedReason::NotIdle,
-             });
-diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
-index e3beb6b..6e0e3cb 100644
---- a/codex-rs/core/src/codex_thread.rs
-+++ b/codex-rs/core/src/codex_thread.rs
-@@ -422,10 +422,29 @@ impl CodexThread {
-         &self,
-         request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
-     ) -> CodexResult<StartIfIdleSubmission> {
--        match self
--            .submit_turn_input_with_mode(request, TurnInputMode::StartIfIdle)
--            .await?
--        {
-+        self.start_idle_turn_with_mode(request, TurnInputMode::StartIfIdle)
-+            .await
-+    }
-+
-+    /// Automatic queue dispatch checks its pause state inside Core's idle reservation.
-+    pub async fn start_queued_turn_if_idle(
-+        &self,
-+        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
-+    ) -> CodexResult<StartIfIdleSubmission> {
-+        self.start_idle_turn_with_mode(request, TurnInputMode::StartQueuedIfIdle)
-+            .await
-+    }
-+
-+    pub async fn automatic_queue_paused(&self) -> bool {
-+        self.session.automatic_queue_paused().await
-+    }
-+
-+    async fn start_idle_turn_with_mode(
-+        &self,
-+        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
-+        mode: TurnInputMode,
-+    ) -> CodexResult<StartIfIdleSubmission> {
-+        match self.submit_turn_input_with_mode(request, mode).await? {
-             TurnInputSubmission::Started {
-                 turn_id,
-                 root_turn_id,
-diff --git a/codex-rs/protocol/src/turn_input.rs b/codex-rs/protocol/src/turn_input.rs
-index 3069a5f..4a10556 100644
---- a/codex-rs/protocol/src/turn_input.rs
-+++ b/codex-rs/protocol/src/turn_input.rs
-@@ -159,6 +159,8 @@ pub enum TurnInputMode {
-     StartOrSteer,
-     /// Start only when the thread is idle.
-     StartIfIdle,
-+    /// Automatically start queued input only when idle and the queue is not paused.
-+    StartQueuedIfIdle,
-     /// Start an internal continuation when idle.
-     /// Reject if another task has started since the expected previous turn.
-     ContinueIfIdle { expected_previous_turn_id: String },
 diff --git a/codex-rs/ext/queue/tests/queue_service.rs b/codex-rs/ext/queue/tests/queue_service.rs
-index 305b8ed..390a155 100644
+index e46ae8b..3fd2311 100644
 --- a/codex-rs/ext/queue/tests/queue_service.rs
 +++ b/codex-rs/ext/queue/tests/queue_service.rs
 @@ -514,6 +514,203 @@ async fn interrupted_turns_pause_queued_messages_but_failed_turns_drain_them() -
@@ -429,3 +416,16 @@ index 305b8ed..390a155 100644
  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
  async fn registered_queue_lifecycle_starts_messages_in_fifo_order() -> anyhow::Result<()> {
      let server = start_mock_server().await;
+diff --git a/codex-rs/protocol/src/turn_input.rs b/codex-rs/protocol/src/turn_input.rs
+index 514578d..c147b80 100644
+--- a/codex-rs/protocol/src/turn_input.rs
++++ b/codex-rs/protocol/src/turn_input.rs
+@@ -194,6 +194,8 @@ pub enum TurnInputMode {
+     StartOrSteer,
+     /// Start only when the thread is idle.
+     StartIfIdle,
++    /// Automatically start queued input only when idle and the queue is not paused.
++    StartQueuedIfIdle,
+     /// Start an internal continuation when idle.
+     /// Reject if another task has started since the expected previous turn.
+     ContinueIfIdle { expected_previous_turn_id: String },

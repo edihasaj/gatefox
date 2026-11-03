@@ -122,7 +122,7 @@ function pickPolicy(metadata: object | undefined): Record<string, unknown> {
 }
 
 /** Fields that are not part of where a provider's models come from; everything else (an unknown future field included) counts as route identity. */
-const nonRouteFields = new Set(["models", "modelMetadata", "label", "maxConcurrent", "capacityDiscovery", "claudeSessions", "copilotSessions", "defaultForBareModels", "toolSearch", "sessionAffinity"]);
+const nonRouteFields = new Set(["models", "modelMetadata", "label", "maxConcurrent", "capacityDiscovery", "claudeSessions", "copilotSessions", "grokSessions", "defaultForBareModels", "toolSearch", "sessionAffinity"]);
 /** A digest of the provider's route: its type, endpoint and account settings as configured. A change makes a stale metadata patch unsafe. */
 export function routeFingerprint(provider: ProviderConfig): string {
   const route = Object.fromEntries(Object.entries(provider).filter(([key]) => !nonRouteFields.has(key)).sort(([a], [b]) => a.localeCompare(b)));

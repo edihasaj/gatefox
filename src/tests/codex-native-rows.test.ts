@@ -145,6 +145,21 @@ test("the desktop adapter publishes native copies in the combined catalog but ca
   } finally { f.close(); }
 });
 
+test("the desktop adapter keeps a host's plain tokenizer family on every row and drops anything else", async () => {
+  const f = await shimFiles();
+  try {
+    f.value.providers = [codex({ "codex/sol": "gpt-6.1-sol", "codex/odd": "gpt-6.1-sol", "codex/long": "gpt-6.1-sol" }, { "codex/sol": solMetadata, "codex/odd": solMetadata, "codex/long": solMetadata })];
+    const published = modelCatalog(f.value);
+    published.models = published.models.map(row => row.slug === "codex/odd" ? { ...row, tokenizer_family: "Not/Plain" }
+      : row.slug === "codex/long" ? { ...row, tokenizer_family: "a".repeat(65) } : row);
+    f.setCatalog(published);
+    const live = new DesktopCatalog(f.value, [nativeSol], join(f.directory, "combined.json"), true);
+    const rows = (await live.refresh(true)).models;
+    assert.equal(rows.find(row => row.slug === "codex/sol")?.tokenizer_family, "openai", "the switch guard reads the host's family");
+    for (const slug of ["codex/odd", "codex/long"]) assert.equal(Object.hasOwn(rows.find(row => row.slug === slug)!, "tokenizer_family"), false, slug);
+  } finally { f.close(); }
+});
+
 test("a native row is carried with tool search off", () => {
   const carried = executorNativeRow(nativeSol, [nativeSol]);
   assert.equal(carried.supports_search_tool, false, "the ChatGPT backend refuses a forwarded tool_search, so Codex must not add one");

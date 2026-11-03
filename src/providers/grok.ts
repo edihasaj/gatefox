@@ -6,7 +6,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { responsesToChatRequest } from "../protocol/request.js";
 import type { InferenceEvent, OpenAIChatMessage, OpenAITool, ResponsesRequest } from "../protocol/types.js";
-import type { ProviderConfig } from "../config.js";
+import { grokSessionSettings, type ProviderConfig } from "../config.js";
 import { imageConversation } from "../protocol/images.js";
 import { telemetry } from "../telemetry.js";
 import { ProviderError, type InferenceContext, type Provider } from "./provider.js";
@@ -19,6 +19,7 @@ import { GrokMessageStream, grokUsage, type GrokStreamEnd } from "./grok-stream.
 import { createHash } from "node:crypto";
 import { CliContinuityUnavailable } from "./cli-continuity.js";
 import { providerConversationId } from "./provider.js";
+import { grokLive, grokOneShotKinds, type GrokLiveInput } from "./grok-live.js";
 
 /** Every built-in Grok Build tool. search_tool and use_tool stay: they are Grok's only route to the gateway's MCP tools. */
 export const grokBuiltinTools = ["run_terminal_command", "read_file", "search_replace", "list_dir", "grep", "kill_command_or_subagent", "todo_write",
@@ -34,23 +35,26 @@ const grokSystem = `${gatewaySystemPrompt} Caller tools are in the gateway MCP s
 const toolsScript = fileURLToPath(new URL("./grok-cli-tools.js", import.meta.url));
 const continuitySymbol = Symbol.for("harness-gateway/grok-standalone/v1");
 /**
- * The current Grok transport is standalone-only until its persistent ACP confinement is qualified.
- * Admission is recorded before the CLI starts so a concurrent duplicate is refused rather than
- * charged twice. `release` removes that record when the attempt never produced an answer, so a
- * sign-in failure does not turn the user's corrected retry into a replay refusal.
+ * The one-shot Grok transport admits standalone requests only: a conversation with history is served by a live
+ * session (see grok-live.ts) or refused. Admission is recorded before the CLI starts so a concurrent duplicate is
+ * refused rather than charged twice. `release` removes that record when the attempt never produced an answer, so a
+ * sign-in failure does not turn the user's corrected retry into a replay refusal. `live` says live sessions are on:
+ * the refusals then name the live-mode reason, and a compaction, prewarm or memory request is not recorded as the
+ * conversation's admission (the live session owns that conversation).
  */
-function standaloneGrok(config: ProviderConfig, model: string, context: InferenceContext, history: OpenAIChatMessage[]): { admit: () => void; release: () => void } {
+function standaloneGrok(config: ProviderConfig, model: string, context: InferenceContext, history: OpenAIChatMessage[], live = false): { admit: () => void; release: () => void } {
   const state = globalThis as unknown as Record<symbol, Map<string, number> | undefined>;
   const conversations = state[continuitySymbol] ??= new Map();
   const conversation = providerConversationId(context);
-  const key = conversation ? createHash("sha256").update(JSON.stringify([config.id, config.grokHome, model, conversation])).digest("hex") : undefined;
+  const key = conversation && !live ? createHash("sha256").update(JSON.stringify([config.id, config.grokHome, model, conversation])).digest("hex") : undefined;
+  const reason = !live ? "persistent_session_unqualified" : conversation ? "request_kind" : "conversation_id_required";
   if (history.some(message => message.role === "assistant" || message.role === "tool") || key && conversations.has(key)) {
-    telemetry("grok_cli", { model, outcome: "blocked", missReason: "persistent_session_unqualified" });
-    throw new CliContinuityUnavailable("Grok", "persistent_session_unqualified");
+    telemetry("grok_cli", { model, outcome: "blocked", missReason: reason });
+    throw new CliContinuityUnavailable("Grok", reason);
   }
   return {
     admit: () => {
-      if (key && conversations.has(key)) throw new CliContinuityUnavailable("Grok", "persistent_session_unqualified");
+      if (key && conversations.has(key)) throw new CliContinuityUnavailable("Grok", reason);
       if (key) { conversations.set(key, Date.now()); if (conversations.size > 4096) conversations.delete(conversations.keys().next().value!); }
     },
     release: () => { if (key) conversations.delete(key); },
@@ -101,7 +105,10 @@ export class GrokSubscription implements Provider {
       throw new ProviderError("invalid_request", "Grok through the gateway accepts text only; remove the image or choose another model", 400);
     }
     const history = grokToolHistory(markCustomCalls(normalized.messages, normalized.tools || []), normalized.tools || []);
-    const continuity = standaloneGrok(this.config, request.model, context, history);
+    const settings = grokSessionSettings(this.config);
+    const conversationId = providerConversationId(context);
+    const live = settings.mode === "live" && conversationId !== undefined && !grokOneShotKinds.has(context.requestKind);
+    const continuity = live ? undefined : standaloneGrok(this.config, request.model, context, history, settings.mode === "live");
     const leading = leadingInstructions(history);
     const system = [grokSystem, ...history.slice(0, leading).map(message => message.content ?? "")].filter(Boolean).join("\n\n");
     if (Buffer.byteLength(system) > maxSystemBytes) throw new ProviderError("invalid_request", "Instructions are too large for the Grok CLI", 400);
@@ -119,7 +126,15 @@ export class GrokSubscription implements Provider {
     if (!home) throw new ProviderError("invalid_request", "The Grok provider has no Grok home", 400);
     await ensureGrokHome(home);
     if (signal.aborted) throw cancelled();
-    continuity.admit();
+    if (live) {
+      // A live session continues the conversation's process; it never replays history, and it has no one-shot fallback.
+      const input: GrokLiveInput = { scope: this.config.id, home, conversationId, model: request.model, effort, command: await grokCommand(), system, builtinTools: grokBuiltinTools,
+        env: catalogPath => grokEnv(home, catalogPath), tools, allTools: normalized.tools || [], catalog: claudeMcpCatalog(tools), choice, forced, request, conversation, images,
+        leading, summaryVisible, observe: usage => context.observeCacheUsage?.(usage) };
+      yield* await grokLive(settings).attach(input, signal);
+      return;
+    }
+    continuity!.admit();
 
     const directory = await mkdtemp(join(tmpdir(), "gateway-grok-"));
     const catalogPath = join(directory, "tools.json"); const promptPath = join(directory, "prompt.md");
@@ -183,7 +198,7 @@ export class GrokSubscription implements Provider {
       // a corrected retry (for example after signing in) may start it again. A partly streamed or
       // already charged turn stays recorded, and cancellation keeps its own outcome.
       const billed = (stream.observedTokens?.input ?? 0) > 0 || stream.costUsd !== undefined;
-      if (!emitted && !signal.aborted && !billed) continuity.release();
+      if (!emitted && !signal.aborted && !billed) continuity!.release();
       context.observeCacheUsage?.({ inputTokens: stream.observedTokens?.input, cachedTokens: stream.observedTokens?.cacheRead });
       telemetry("grok_cli", { model: alias ?? request.model, effort, durationMs: Date.now() - began, result: end?.kind ?? "none", exitCode, spawnFailed,
         aborted: signal.aborted, toolCalls: stream.toolCalls, inputTokens: stream.tokens.input, cacheReadTokens: stream.tokens.cacheRead,

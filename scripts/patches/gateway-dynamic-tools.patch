@@ -278,7 +278,7 @@ index 0000000..8d57c05
 +    );
 +}
 diff --git a/codex-rs/core/src/tools/router_tests.rs b/codex-rs/core/src/tools/router_tests.rs
-index aff6d41..72c201b 100644
+index 498fe97..741ca27 100644
 --- a/codex-rs/core/src/tools/router_tests.rs
 +++ b/codex-rs/core/src/tools/router_tests.rs
 @@ -4,6 +4,7 @@ use std::sync::Arc;
@@ -321,23 +321,23 @@ index aff6d41..72c201b 100644
      let updated_router = test_tool_router(step_context.as_ref(), Vec::new(), Vec::new(), &[]);
      let updated_specs = updated_router.model_visible_specs();
 diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
-index fd5b5e1..871a880 100644
+index 2602fcb..7889e25 100644
 --- a/codex-rs/core/src/tools/spec_plan.rs
 +++ b/codex-rs/core/src/tools/spec_plan.rs
-@@ -169,7 +169,11 @@ pub(crate) fn build_tool_router(
+@@ -171,7 +171,11 @@ pub(crate) fn build_tool_router(
          extension_tool_executors(session, step_store),
          &mut registry,
      );
--    append_dynamic_tool_runtimes(&turn_context.dynamic_tools, &mut registry);
+-    append_dynamic_tool_runtimes(dynamic_tools, &mut registry);
 +    append_dynamic_tool_runtimes(
-+        &turn_context.dynamic_tools,
++        dynamic_tools,
 +        model_info.supports_search_tool,
 +        &mut registry,
 +    );
      let hosted_specs = hosted_model_tool_specs(
          turn_context,
          model_info,
-@@ -337,7 +341,7 @@ pub(crate) fn append_source_tools(
+@@ -339,7 +343,7 @@ pub(crate) fn append_source_tools(
          extension_tool_executors,
          registry,
      );
@@ -346,7 +346,7 @@ index fd5b5e1..871a880 100644
      hosted_model_tool_specs(
          turn_context,
          model_info,
-@@ -1591,8 +1595,32 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
+@@ -1585,8 +1589,32 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
      }
  }
  
@@ -380,7 +380,7 @@ index fd5b5e1..871a880 100644
      for spec in dynamic_tools {
          match spec {
              DynamicToolSpec::Function(tool) => {
-@@ -1603,7 +1631,7 @@ fn append_dynamic_tool_runtimes(dynamic_tools: &[DynamicToolSpec], registry: &mu
+@@ -1597,7 +1625,7 @@ fn append_dynamic_tool_runtimes(dynamic_tools: &[DynamicToolSpec], registry: &mu
                      );
                      continue;
                  };
@@ -389,7 +389,7 @@ index fd5b5e1..871a880 100644
              }
              DynamicToolSpec::Namespace(namespace) => {
                  for tool in &namespace.tools {
-@@ -1617,7 +1645,7 @@ fn append_dynamic_tool_runtimes(dynamic_tools: &[DynamicToolSpec], registry: &mu
+@@ -1611,7 +1639,7 @@ fn append_dynamic_tool_runtimes(dynamic_tools: &[DynamicToolSpec], registry: &mu
                          );
                          continue;
                      };
@@ -399,10 +399,10 @@ index fd5b5e1..871a880 100644
              }
          }
 diff --git a/codex-rs/core/src/tools/spec_plan_tests.rs b/codex-rs/core/src/tools/spec_plan_tests.rs
-index 1a8a066..07bbd16 100644
+index 58351c7..0d17f50 100644
 --- a/codex-rs/core/src/tools/spec_plan_tests.rs
 +++ b/codex-rs/core/src/tools/spec_plan_tests.rs
-@@ -3392,3 +3392,6 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
+@@ -3398,3 +3398,6 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
  
  #[path = "spec_plan_strict_third_party_tests.rs"]
  mod strict_third_party;
