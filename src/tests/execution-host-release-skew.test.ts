@@ -99,6 +99,34 @@ test("an adapter whose gateway SDK is the installed release's is a newer adapter
   } finally { await client?.close(); await host?.close(); await f.clean(); }
 });
 
+test("a newer adapter's generation runs on the installed release's SDK, verified by that release, instead of being refused", { timeout: 30000 }, async () => {
+  // The per-chat rollout: the older service keeps running and serves the newer adapter on the newer SDK.
+  const f = await fixture(); let host; let client; let released = 0;
+  try {
+    const newer = join(f.directory, "newer-gateway-codex");
+    await writeFile(newer, `${await readFile(join(f.directory, "gateway-codex"), "utf8")}\n// newer release\n`, { mode: 0o700 });
+    const newerSha = (await sdkIdentity(newer)).sdkSha256;
+    let verified: GatewaySdkRuntime = { executable: newer, binarySha256: newerSha, selectedModelCompaction: true, executorIdentity: true, codeModeHost: false };
+    const loads: string[] = [];
+    host = await startExecutionHost({ ...f.options, pendingRelease: async () => ({ release: "1.6.0", gatewaySdkSha256: newerSha }),
+      installedRuntime: async release => { loads.push(release); return { release, runtime: verified, lease: { releaseName: release, release: () => { released++; } } }; } });
+    client = await control(join(f.hostHome, "host.sock"));
+    assert.equal((await client.request<ExecutionRecord>("execution/acquire", { descriptor: f.descriptor(newerSha) })).revision, "a".repeat(64));
+    assert.equal(await readFile(join(f.directory, "engine-a.state"), "utf8"), "runtime", "the newer SDK was spawned");
+    assert.deepEqual(loads, ["1.6.0"]); assert.equal(released, 0, "the release is retained while its engine runs");
+    assert.deepEqual(await f.events(), [], "nothing was refused"); assert.equal(host.skewRefused?.("1.6.0"), false);
+    // The host's own SDK still runs beside it, and never loads the newer verifier.
+    assert.equal((await client.request<ExecutionRecord>("execution/acquire", { descriptor: f.descriptor(f.binarySha256, "b") })).revision, "b".repeat(64));
+    assert.deepEqual(loads, ["1.6.0"]);
+    // A verifier that answers with another SDK is not trusted: the adapter keeps the release skew refusal.
+    verified = { ...verified, binarySha256: thirdSha };
+    await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(newerSha, "c") }), error => (error as Error).message === releaseSkewMessages.adapter_newer);
+    assert.equal(released, 1, "the refused load gave its lease back");
+    await client.close(); client = undefined; await host.close(); host = undefined;
+    assert.equal(released, 2, "closing the host releases the running engine's lease");
+  } finally { await client?.close(); await host?.close(); await f.clean(); }
+});
+
 test("an SDK that is not the installed release's does not make the move urgent", { timeout: 30000 }, async () => {
   const f = await fixture(); let host; let client;
   try {

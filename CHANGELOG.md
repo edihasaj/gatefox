@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Per-chat rollout: after a release is installed, the running service serves
+  newer adapters on that release's own verified gateway SDK instead of refusing
+  them with "This Mac's gateway service is moving to the newer release". New and
+  resumed chats move to the new release one at a time; running chats stay on
+  their engine, and old engines retire once empty. No service restart is needed.
+
 - Fix Claude chats locking with "Claude's live session was preserved" when a
   message sent while a tool or subagent ran was recorded before the tool's
   output: the session now relays the results and then the messages.
