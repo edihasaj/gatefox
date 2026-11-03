@@ -24,13 +24,18 @@ export function renderConversation(conversation: ClaudeConversation, images: Cla
 
 /** Items from index `from` onward, each followed by its attached images. */
 export function renderItems(conversation: ClaudeConversation, images: ClaudeImages, from: number, format: ReplayFormat): ContentBlock[] {
+  return renderSelected(conversation, images, conversation.slice(from).map((_item, offset) => from + offset), format);
+}
+
+/** The content blocks of exactly these conversation indices, each labeled and with its images as `renderItems` would. */
+export function renderSelected(conversation: ClaudeConversation, images: ClaudeImages, indices: number[], format: ReplayFormat): ContentBlock[] {
   const attached = new Map<number, ContentBlock[]>();
   for (const { label, image } of images) {
     const index = Number(/^conversation-message-(\d+)-part-/.exec(label)?.[1]) - 1;
     attached.set(index, [...(attached.get(index) || []), { type: "text", text: `Attached image ${label}:` }, { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } }]);
   }
-  return conversation.slice(from).flatMap((item, offset) => {
-    const index = from + offset;
+  return indices.filter(index => index >= 0 && index < conversation.length).flatMap(index => {
+    const item = conversation[index];
     // The custom-call mark is a gateway annotation; JSON replay keeps today's exact items.
     const own = format === "json" ? [{ type: "text", text: JSON.stringify(item, (key, value) => key === "responseTool" ? undefined : value) }] : textBlocks(item, index + 1);
     return [...own, ...(attached.get(index) || [])];

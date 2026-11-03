@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { declaredResponsesTools, normalizeResponsesToolChoice, normalizeResponsesTools } from "../protocol/request.js";
 import type { ResponseToolIdentity, ResponsesRequest, ResponsesTool } from "../protocol/types.js";
 import { ProviderError } from "./provider.js";
+import { toolIdentityFailure } from "./tool-identity.js";
 
 type Item = Record<string, unknown>;
 type StrictFlag = { present: boolean; value?: unknown };
@@ -16,7 +17,6 @@ export interface ResponsesFunctionToolBridge {
 const record = (value: unknown): Item | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Item : undefined;
 const identityKey = (identity: ResponseToolIdentity): string => JSON.stringify([identity.type, identity.namespace || "", identity.name]);
 const invalidRequest = () => new ProviderError("invalid_request", "Responses request contains an invalid caller tool", 400);
-const invalidCall = () => new ProviderError("invalid_tool_call", "Provider returned a tool outside the caller's catalog");
 
 
 /** A custom tool has exactly one caller-visible string; extra fields would be discarded. */
@@ -131,8 +131,9 @@ export function responsesFunctionTools(body: ResponsesRequest, prefix: "grok" | 
     body: bridged,
     restoreItem(item): Item {
       if (item.type !== "function_call") return item;
-      if (typeof item.name !== "string" || !item.name || item.namespace !== undefined) throw invalidCall();
-      const binding = bindings.get(item.name); if (!binding) throw invalidCall();
+      if (typeof item.name !== "string" || !item.name) throw toolIdentityFailure("missing_tool_name");
+      if (item.namespace !== undefined) throw toolIdentityFailure("unexpected_tool_namespace");
+      const binding = bindings.get(item.name); if (!binding) throw toolIdentityFailure("unknown_wire_tool");
       return { ...item, name: binding.identity.name, ...(binding.identity.namespace ? { namespace: binding.identity.namespace } : {}) };
     },
   };

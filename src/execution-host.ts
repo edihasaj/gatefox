@@ -61,9 +61,9 @@ async function sdkCheck<T>(check: () => Promise<T>): Promise<T> {
 }
 const failureMessages: Array<[HostFailureReason, RegExp]> = [
   ["live_owner", /^(An execution host already owns this configuration|An execution generation is still running|A native execution owner (is still running|already owns this native home)|Native execution launch is unconfirmed|A live execution listener was preserved|Private preferences are busy)/],
-  ["identity_changed", /^(Execution host identity changed|Native execution ownership changed|Execution host ownership changed)/],
+  ["identity_changed", /^(Execution host identity changed|Native execution ownership changed|Execution host ownership changed|Execution generation (identity|catalog) changed)/],
   ["socket_occupied", /^(Execution control socket target is occupied|Execution socket (belongs to another listener|changed during recovery|must be private)|Execution SDK socket (rendezvous points to an unrelated target|target must be private)|Native execution socket (is occupied|ownership changed))/],
-  ["sdk_invalid", /^(Execution host (SDK |requires the pinned)|Native execution (requires|SDK signature|SDK changed)|Gateway executor artifact does not match)/],
+  ["sdk_invalid", /^(Execution host (SDK |requires the pinned)|Native execution (requires|SDK signature|SDK changed)|Gateway executor artifact does not match|Execution generation requires|Execution SDK did not stop)/],
   ["receipt_invalid", /^(Execution host ownership receipt is (invalid|unreadable)|Native execution ownership receipt is invalid|Execution generation receipt is invalid|Native execution (SDK identity|death metadata) is invalid|Execution host capabilities are invalid|Private preference lock is invalid)/],
 ];
 /**
@@ -91,6 +91,21 @@ export function hostFailureReason(error: unknown): HostFailureReason {
   if (code === "EADDRINUSE") return "socket_occupied";
   if (typeof code === "string" && /^E[A-Z0-9]+$/.test(code) || /^(Execution (host|SDK socket) directory must be private|Execution ownership archive is full)/.test(text)) return "io_error";
   return "other";
+}
+
+/** Refusals whose fixed text the control API passes through unchanged; anything else is masked (see executionErrorMessage). */
+const passedThrough = /^(Invalid execution(?: probe)?|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|This (Mac's gateway service is moving to the newer release|app and this Mac's gateway service run different gateway releases)|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts|ownership (is held by a live owner|changed))|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/;
+/**
+ * The message a failed control request answers with. A fixed refusal passes through; anything else may carry a path or a
+ * value, so it is masked, but the mask names the fixed failure class and the host records `execution_request_failed` with the
+ * method and that class, so a masked failure can be diagnosed from telemetry (2026-11-03: hours of "Execution operation
+ * failed" whose cause, an SDK selection refusal, was visible nowhere). The text and the class never contain the original message.
+ */
+export function executionErrorMessage(method: unknown, error: unknown): string {
+  if (error instanceof Error && passedThrough.test(error.message)) return error.message;
+  const reason = hostFailureReason(error);
+  telemetry("execution_request_failed", { method: typeof method === "string" && /^[a-z]+\/[A-Za-z]+$/.test(method) ? method : "other", reason });
+  return `Execution operation failed (${reason}); managed chat ownership was preserved`;
 }
 
 /** How long `release_skew_refused` is held back after one was recorded (ms); `GATEWAY_RELEASE_SKEW_EVENT_MS` shortens it for tests. */
@@ -121,9 +136,12 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     if (!runtime) return;
     const fresh = await resolveRuntime();
     if (!fresh || fresh.binarySha256 !== runtime.binarySha256 || fresh.codeModeHost !== runtime.codeModeHost) return;
-    // A signed app may be atomically replaced while this host is busy. Its verified same-release CLI remains a safe fallback.
-    if (resolve(fresh.executable) !== resolve(runtime.executable)
-      && (!runtime.identityExecutable || resolve(fresh.executable) !== resolve(runtime.identityExecutable))) return;
+    // A signed app may be atomically replaced while this host is busy. Its verified same-release CLI remains a safe fallback,
+    // and the reverse holds too: an app update that brings a signed derivative of the very SDK this host started on (same
+    // original executable, same release hash) is the same runtime, verified again by its signature and receipt.
+    const same = (a: string | undefined, b: string | undefined) => !!a && !!b && resolve(a) === resolve(b);
+    if (!same(fresh.executable, runtime.executable) && !same(fresh.executable, runtime.identityExecutable)
+      && !same(fresh.identityExecutable, runtime.executable) && !same(fresh.identityExecutable, runtime.identityExecutable)) return;
     return fresh;
   };
   // Gateway generations run the checked runtime, independently of the app's
@@ -434,7 +452,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
         // in the queue: the service's 5 s probe must never read a busy host as a hung one.
         const operation = status ? Promise.resolve().then(run) : serial.then(run);
         if (!status) serial = operation.catch(() => undefined);
-        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution(?: probe)?|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|This (Mac's gateway service is moving to the newer release|app and this Mac's gateway service run different gateway releases)|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts|ownership (is held by a live owner|changed))|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
+        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: executionErrorMessage(message.method, error) } }))
           .then(reply => {
             if (client.readyState !== WebSocket.OPEN) return;
             const payload = JSON.stringify(reply);

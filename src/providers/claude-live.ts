@@ -3,7 +3,7 @@ import type { ChatToolSelection } from "../protocol/types.js";
 import { telemetry } from "../telemetry.js";
 import { ProviderError } from "./provider.js";
 import { choiceBlock } from "./claude-render.js";
-import { decide, ledgerEntries, messagesAfterTools, queuedToolContinuation, type LedgerDecision, type LedgerPhase, type LedgerEntry } from "./claude-ledger.js";
+import { decide, interleavedToolContinuation, ledgerEntries, messagesAfterTools, queuedToolContinuation, type LedgerDecision, type LedgerPhase, type LedgerEntry } from "./claude-ledger.js";
 import { relayContent, type RelayContent } from "./claude-relay.js";
 import { ClaudeSession, SessionStartFailure, sweepSessionDirectories, type SessionEnd } from "./claude-session.js";
 import { closeSessions, evictable, idleMs, pinReplay, recordWarmupCompletion, rememberEnd, replayPinned, sessionRegistry, slotsTaken, warmupCompletions, type SessionRegistry } from "./claude-session-registry.js";
@@ -22,7 +22,7 @@ type ReseedReason = ClaudeMissReason | "idle_expired" | "effort_rejected";
  */
 type Settings = { max: number; parkMinutes: number; warmup: number };
 type Plan = Exclude<LedgerDecision, { kind: "reseed" }> | { kind: "seed" }
-  | { kind: "continue_outputs_with_messages"; outputs: LedgerEntry[]; from: number };
+  | { kind: "continue_outputs_with_messages"; outputs: LedgerEntry[]; from: number; indices?: number[] };
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 // Bump when rendered replay semantics change so adopted sessions reseed safely once.
@@ -110,12 +110,20 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
     else if (decision.kind === "reseed") {
       const queued = decision.reason === "unexpected_tail" && session.state === "awaiting_outputs"
         ? queuedToolContinuation(entries, decision.divergedAt, session.pending, messages) : undefined;
-      if (queued && session.queuedInputVersion === 1 && messages === input.conversation.length && input.effort === session.effort) {
+      // A steer recorded before the outputs, or a subagent report between them: the outputs go first, then the messages.
+      const interleaved = !queued && decision.reason === "unexpected_tail" && session.state === "awaiting_outputs" && input.renderAt
+        ? interleavedToolContinuation(entries, decision.divergedAt, session.pending, messages) : undefined;
+      const continuable = session.queuedInputVersion === 1 && messages === input.conversation.length && input.effort === session.effort;
+      if (queued && continuable) {
         plan = { kind: "continue_outputs_with_messages", ...queued };
+      } else if (interleaved && continuable) {
+        plan = { kind: "continue_outputs_with_messages", outputs: interleaved.outputs, from: interleaved.indices[0], indices: interleaved.indices };
       } else reason = decision.reason === "prefix_diverged" && session.compacted ? "context_compacted"
         : decision.reason === "prefix_diverged" && input.callerHistoryReplacement && session.state === "turn_done" && !session.pending.length
           ? "client_history_replaced"
-        : decision.reason === "unexpected_tail" && session.state === "awaiting_outputs" && messagesAfterTools(entries, decision.divergedAt, session.pending)
+        // Outputs with caller messages that could not continue in place reseed, as the outputs-first shape always did.
+        : decision.reason === "unexpected_tail" && session.state === "awaiting_outputs"
+          && (messagesAfterTools(entries, decision.divergedAt, session.pending) || interleavedToolContinuation(entries, decision.divergedAt, session.pending, messages))
           ? "messages_after_tools" : decision.reason;
       divergedAt = decision.divergedAt;
     }
@@ -197,7 +205,8 @@ function start(registry: SessionRegistry, settings: Settings, session: ClaudeSes
   const forcedBlock = choiceBlock(input.choice, input.tools);
   const begin = plan.kind === "continue_outputs" || plan.kind === "continue_outputs_with_messages"
     ? { outputs: new Map<string, RelayContent[]>(plan.outputs.map(entry => [entry.callId!, relayContent(entry.item?.output)])),
-      ...(plan.kind === "continue_outputs_with_messages" ? { user: [...input.render(plan.from), ...(forcedBlock ? [forcedBlock] : [])] } : {}) }
+      ...(plan.kind === "continue_outputs_with_messages"
+        ? { user: [...(plan.indices && input.renderAt ? input.renderAt(plan.indices) : input.render(plan.from)), ...(forcedBlock ? [forcedBlock] : [])] } : {}) }
     : { user: [...input.render(plan.kind === "continue_user" ? plan.from : 0), ...(forcedBlock ? [forcedBlock] : [])] };
   session.park(settings.parkMinutes * 60000);
   return session.run({

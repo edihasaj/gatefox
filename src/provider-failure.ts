@@ -1,5 +1,6 @@
 import { oauthErrorCodes } from "./auth/chatgpt.js";
 import { ProviderError } from "./providers/provider.js";
+import { toolIdentityReasons } from "./providers/tool-identity.js";
 import { classifyNetworkFailure, diagnosticNetworkCodes, networkCodesField, transientNetworkCodes } from "./provider-network.js";
 import { ResponsesTranslationError, translationItemTypes, translationReasons } from "./protocol/request.js";
 
@@ -7,12 +8,13 @@ export type ProviderAbortCause = "timeout" | "cancelled" | "shutdown" | undefine
 const networkCodes: ReadonlySet<string> = new Set([...transientNetworkCodes, ...diagnosticNetworkCodes]);
 const diagnosticCodes = new Set([
   "timeout", "cancelled", "authentication", "invalid_request", "invalid_json", "request_too_large", "model_not_found", "busy", "usage_limit",
-  "upstream_error", "upstream_unavailable", "provider_failed", "inference_failed", "incomplete", "invalid_tool_call", "cli_failed", "output_too_large",
+  "upstream_error", "upstream_unavailable", "provider_failed", "inference_failed", "incomplete", "invalid_tool_call", "tool_identity_failure", "cli_failed", "output_too_large",
   "inconsistent_stream", "unsupported_protocol", "invalid_stream", "invalid_output", "context_length_exceeded", "rate_limit_exceeded", "insufficient_quota",
   "upstream_rejected", "provider_unreachable",
   "managed_route_identity_required", "managed_route_unavailable", "managed_route_changed", "managed_route_state_unbound", "managed_route_state_unavailable",
 ]);
 const upstreamCodes = new Set([
+  ...toolIdentityReasons,
   "unknown", "missing_terminal", "server_error", "server_is_overloaded", "rate_limit", "authentication_failed", "billing_error", "invalid_request", "cache_recovery_required",
   "rate_limit_exceeded", "slow_down", "insufficient_quota", "invalid_prompt", "invalid_encrypted_content", "invalid_request_error", "max_output_tokens",
   "content_filter", "context_length_exceeded", "invalid_api_key", "authentication_error", "token_expired", "unauthorized", "credit_balance_exhausted",
@@ -44,7 +46,7 @@ function allowlisted(value: unknown, allowed: ReadonlySet<string>): string | und
 // Codex retries a failed stream up to five times unless its code is one Codex treats
 // as final. These failures repeat identically, so the stream reports such a code and
 // the turn stops at once instead of re-running inference.
-const deterministicOutputCodes = new Set(["invalid_tool_call", "invalid_stream", "invalid_output", "inconsistent_stream", "output_too_large", "unsupported_output", "unsupported_input"]);
+const deterministicOutputCodes = new Set(["invalid_tool_call", "tool_identity_failure", "invalid_stream", "invalid_output", "inconsistent_stream", "output_too_large", "unsupported_output", "unsupported_input"]);
 const permanentCodes = new Set(["invalid_request", "invalid_json", "request_too_large", "model_not_found", "unsupported_protocol", "authentication", "usage_limit", "insufficient_quota", ...deterministicOutputCodes]);
 for (const code of ["managed_route_identity_required", "managed_route_changed", "managed_route_state_unbound", "managed_route_state_unavailable"]) permanentCodes.add(code);
 const finalUpstreamCodes = new Set(["cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "invalid_prompt"]);

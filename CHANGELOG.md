@@ -114,6 +114,16 @@
   their bindings. Thanks to Edi Hasaj for requesting code-enforced routing and
   identifying the duplicated instruction policy.
 
+- Fix Claude chats locking with "Claude's live session was preserved" when a
+  message sent while a tool or subagent ran was recorded before the tool's
+  output: the session now relays the results and then the messages.
+
+- Fix new chats failing with "Execution operation failed" after a Harness
+  Gateway app update while the service kept running: the service now accepts the
+  app's signed copy of the very gateway SDK it started on. Masked execution
+  failures now name a fixed reason class and are recorded as
+  `execution_request_failed`.
+
 - Fix Claude live-session recovery when tool results arrive with new caller
   messages. Apply a shared large-context cache safety stop across every provider,
   including measured failures, cancellations and repeated missing cache metrics.

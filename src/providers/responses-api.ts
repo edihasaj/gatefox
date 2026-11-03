@@ -18,6 +18,7 @@ import { apiRoutingHeaders, isOpenRouterApi } from "./api-routing.js";
 import { stableResponsesCatalog } from "./responses-catalog.js";
 import { apiCacheTrace } from "./api-cache-trace.js";
 import { grokToolBridge } from "./grok-tools.js";
+import { toolIdentityFailure } from "./tool-identity.js";
 import { responsesFunctionTools, validCustomFunctionEnvelope } from "./responses-function-tools.js";
 import { codexUsageFromEvent, codexUsageFromHeaders, credentialRevision, observeCodexUsage, type CodexUsageObserver } from "./codex-usage.js";
 import { networkCodesField } from "../provider-network.js";
@@ -251,13 +252,14 @@ export class ResponsesAPI implements Provider {
       const namespace = effectiveNamespace === defaultNamespace ? undefined : effectiveNamespace;
       const name = String(item.name); const alias = namespace ? `${namespace}.${name}` : name;
       const identity = (effectiveNamespace === defaultNamespace ? current : plan ? history : identities).get(alias) ?? identities.get(alias);
-      if (!identity) throw new ProviderError("invalid_tool_call", "Provider returned a tool outside the caller's catalog");
+      if (!identity) throw toolIdentityFailure("undeclared_tool");
       return identity;
     };
     const toolInput = (item: Record<string, unknown>) => {
       const invalid = () => new ProviderError("invalid_tool_call", "Provider returned an invalid or duplicate tool call");
+      if (typeof item.name !== "string" || !item.name) throw toolIdentityFailure("missing_tool_name");
+      if (item.namespace !== undefined && typeof item.namespace !== "string") throw toolIdentityFailure("unexpected_tool_namespace");
       if (typeof item.call_id !== "string" || !item.call_id || item.call_id.length > 1024 || item.call_id.includes("\0") ||
-        typeof item.name !== "string" || !item.name || (item.namespace !== undefined && typeof item.namespace !== "string") ||
         (item.id !== undefined && (typeof item.id !== "string" || !item.id || item.id.length > 1024 || item.id.includes("\0")))) throw invalid();
       const arguments_ = item.type === "custom_tool_call" ? item.input : item.arguments;
       if (typeof arguments_ !== "string") throw invalid();
@@ -413,6 +415,8 @@ export class ResponsesAPI implements Provider {
         break;
       }
     } } catch (error) {
+      if (error instanceof ProviderError && error.code === "tool_identity_failure")
+        throw new ProviderError(error.code, error.message, error.status, { ...error.upstream, stream: { ...stream } });
       throw networkProviderError(error, "stream") ?? error;
     }
     if (!done) throw responsesEOFError(stream, response.headers.get("x-request-id") || undefined);

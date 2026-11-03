@@ -195,7 +195,7 @@ test("a host with no gateway SDK of its own cannot tell the sides apart and keep
   try {
     host = await startExecutionHost({ ...f.options, gatewayRuntime: async () => undefined, pendingRelease: async () => ({ release: "0.4.7", gatewaySdkSha256: otherSha }) });
     client = await control(join(f.hostHome, "host.sock"));
-    await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(otherSha) }), /^Error: Execution operation failed; managed chat ownership was preserved$/);
+    await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(otherSha) }), /^Error: Execution operation failed \(sdk_invalid\); managed chat ownership was preserved$/);
     assert.deepEqual(await f.events(), []); assert.equal(host.skewRefused?.("0.4.7"), false);
   } finally { await client?.close(); await host?.close(); await f.clean(); }
 });
