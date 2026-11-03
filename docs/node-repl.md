@@ -270,6 +270,9 @@ ChatGPT desktop 26.1007 changes the model only through `thread/settings/update` 
 sends `turn/settings/update` only with `approvalsReviewer`. The picker therefore
 never hits the rejection: it shows the new model, the running turn finishes on the
 old one, and the next turn uses the new one. A CLI or script gets the error.
+With `midTurnModelSwitch` on, the adapter offers the picker change to the running
+turn and keeps the next-turn behaviour when this check refuses it
+([mid-turn model changes](app-server.md#mid-turn-model-changes-from-the-picker)).
 
 ## What the desktop shows
 

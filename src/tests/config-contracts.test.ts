@@ -34,6 +34,13 @@ test("automatic project trust requires an explicit boolean operator choice", () 
   for (const value of [null, "true", 1, [], {}]) assert.throws(() => config([codex()], { trustAllProjects: value }), /trustAllProjects must be boolean/);
 });
 
+test("mid-turn model switching is off unless the operator sets it to true", () => {
+  assert.equal(config([codex()]).midTurnModelSwitch, undefined);
+  assert.equal(config([codex()], { midTurnModelSwitch: false }).midTurnModelSwitch, undefined);
+  assert.equal(config([codex()], { midTurnModelSwitch: true }).midTurnModelSwitch, true);
+  for (const value of [null, "true", 1, [], {}]) assert.throws(() => config([codex()], { midTurnModelSwitch: value }), /midTurnModelSwitch must be boolean/);
+});
+
 test("bare-model defaults require subscription accounts and one boolean designation per vendor", () => {
   const first = codex({ defaultForBareModels: true });
   const second = codex({ id: "personal", models: { "personal/sol": "sol" }, defaultForBareModels: false });

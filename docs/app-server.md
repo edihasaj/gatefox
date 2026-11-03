@@ -718,6 +718,36 @@ isolated native home: an active goal whose chat switches gateway model mid-goal 
 `thread/settings/update`, as the picker does, must start its next turn by itself and send
 that turn's requests on the new model. Every rendered control remains a separate desktop check.
 
+## Mid-turn model changes from the picker
+
+The desktop picker changes a model only with `thread/settings/update`, so the running
+turn finishes on its old model. With `"midTurnModelSwitch": true` in the gateway
+configuration (off when absent), the adapter also offers an applied picker change to a
+running gateway turn on another model. It sends one `turn/settings/update` with only
+the model and that turn's ID, after the thread update succeeded:
+
+1. The thread update is always forwarded first, so the next turn, a resume and a fork
+   use the new model whatever happens to the offer.
+2. The [tokenizer recount](app-server-compaction.md#switching-to-another-tokenizer)
+   runs for every active-turn model change, including ones a CLI or script sends. A
+   history the new model cannot hold is refused before anything reaches the SDK.
+3. The SDK's own active-step check decides the review groups
+   ([which rows](node-repl.md#switching-models-during-a-running-turn)); the adapter
+   keeps no copy of them.
+
+An applied offer takes effect at the next inference step and is recorded as
+`model_switch_promoted`. A refusal from either check, an unapplied answer or any
+error is recorded as `model_switch_deferred` with `reason` (`context`,
+`review_group`, `not_applied` or `error`). It is never reported to the desktop: the
+picker change already succeeded and applies from the next turn, as without the
+setting. Nothing is offered to an idle chat, a turn already on that model, a
+throwaway fork, a native chat or a turn this connection did not start. A switch to or
+from Claude starts a new Claude CLI session, which costs one cache write. The
+desktop may show the new model while the running turn's earlier steps used the old
+one. Only adapter tests cover the offer so far; a rendered desktop check is still
+required before this becomes the default. Changing the setting needs a fresh adapter
+connection.
+
 ## Re-attaching a gateway chat
 
 A gateway chat runs on an executor that can go away under a loaded chat: the shared host

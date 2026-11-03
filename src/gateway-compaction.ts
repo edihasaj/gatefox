@@ -90,6 +90,12 @@ export class GatewayCompactionSession {
     // Closing a chat is still available; uncertain SDK work requires reconnecting
     // its owning connection rather than pretending this guard has been cleared.
     if (!selected && !isRead(method) && method !== "thread/unsubscribe") this.recovery.assertAvailable(threadId);
+    // A model change for the running turn reaches the next inference step without a user turn, so its tokenizer
+    // recount runs here; the SDK's own active-step check does not count tokens.
+    if (method === "turn/settings/update" && typeof params.model === "string") {
+      await this.checkSwitch(threadId, { model: params.model });
+      return { intercepted: false };
+    }
     // Preserve SDK steering and ordinary turns when no recovery is required.
     if (method !== "turn/start" || this.options.isActive(threadId)) return { intercepted: false };
     if (this.closed) throw new CompactionRecoveryError("closed");

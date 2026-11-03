@@ -61,7 +61,7 @@ test("compaction, rollback and an unreadable turn record clear the measurement",
   assert.deepEqual(await readMeasuredUsage(compacted.home, "chat", compacted.path), { lastTokens: 33000, model: terra, emittedAtMs: Date.parse(at(8)) });
 });
 
-async function guard(records: unknown[], model: string | undefined, threadModel = sonnet) {
+async function guard(records: unknown[], model: string | undefined, threadModel = sonnet, method = "turn/start", active = false) {
   const f = await fixture(records); const state = await mkdtemp(join(tmpdir(), "gateway-switch-state-"));
   const previous = process.env.CODEX_HOME; process.env.CODEX_HOME = f.home;
   try {
@@ -70,10 +70,10 @@ async function guard(records: unknown[], model: string | undefined, threadModel 
       models: [{ slug: terra, context_window: 872000, effective_context_window_percent: 95 }, { slug: sonnet, context_window: 1000000, effective_context_window_percent: 90 },
         { slug: sol, context_window: 872000, effective_context_window_percent: 95 }],
       settings: {}, args: [], aliases: new Set([terra, sonnet, sol]), shared: true, selectedModelCompaction: true,
-      isGatewayThread: () => true, isActive: () => false,
+      isGatewayThread: () => true, isActive: () => active,
       request: async (method, params) => { reads.push(method); return { thread: { id: params.threadId, model: threadModel, path: f.path, status: { type: "idle" } } }; },
     });
-    try { return { result: await session.before("turn/start", { threadId: "chat", ...(model ? { model } : {}) }), reads }; }
+    try { return { result: await session.before(method, { threadId: "chat", ...(method === "turn/settings/update" ? { turnId: "running" } : {}), ...(model ? { model } : {}) }), reads }; }
     finally { await session.close(); }
   } finally { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; }
 }
@@ -89,6 +89,15 @@ test("small histories, same-tokenizer switches and compacted chats start normall
   assert.deepEqual((await guard([session, turn(terra), counts(300000)], sonnet)).result, { intercepted: false });
   assert.deepEqual((await guard(incident, sol, sol)).result, { intercepted: false });
   assert.deepEqual((await guard([...incident, { timestamp: at(6), type: "compacted", payload: {} }, turn(terra, 7), counts(33000, 8)], sonnet)).result, { intercepted: false });
+});
+
+test("a running turn's model change gets the same recount, because it reaches the next inference step without a user turn", async () => {
+  await assert.rejects(guard(incident, sonnet, terra, "turn/settings/update", true), (error: unknown) => error instanceof CompactionRecoveryError && error.reason === "switch");
+  assert.deepEqual((await guard([session, turn(terra), counts(300000)], sonnet, terra, "turn/settings/update", true)).result, { intercepted: false });
+  assert.deepEqual((await guard(incident, sol, sol, "turn/settings/update", true)).result, { intercepted: false });
+  // A settings change without a model, such as the desktop's reviewer update, reads nothing.
+  const reviewer = await guard(incident, undefined, terra, "turn/settings/update", true);
+  assert.deepEqual(reviewer.result, { intercepted: false }); assert.deepEqual(reviewer.reads, []);
 });
 
 test("a catalog's published families decide the switch, not the alias text", () => {
