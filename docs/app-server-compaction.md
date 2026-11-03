@@ -194,6 +194,10 @@ the selected model's usable window, the turn is refused before anything is sent:
 "Switch back to MODEL, run /compact, then switch to MODEL again." The chat and its
 history are unchanged. The refusal is recorded as `compaction_switch_refused`.
 
+The same recount runs for a `turn/settings/update` that changes the running turn's
+model, because that change reaches the next inference step without a user turn. A
+refused change fails with the same message and the turn keeps its model.
+
 Families come from the upstream model name: `claude-…` is Anthropic, and `gpt-…`,
 `o…`, `codex-…` and `chatgpt-…` are OpenAI. Any other name is its own family. The
 gateway publishes each row's family as `tokenizer_family` in its model catalog, computed

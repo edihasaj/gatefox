@@ -114,6 +114,14 @@
   their bindings. Thanks to Edi Hasaj for requesting code-enforced routing and
   identifying the duplicated instruction policy.
 
+- Opt-in mid-turn model changes from the desktop picker: with
+  `"midTurnModelSwitch": true`, a model change made while a gateway turn runs also
+  reaches that turn's next inference step, when the tokenizer recount and the SDK's
+  review-group check allow it. Otherwise it applies from the next turn, as before,
+  and the desktop sees no error. A running turn's model change, whoever sends it,
+  now gets the same context recount as a new turn, so a mid-turn switch to Claude
+  can no longer overflow its window.
+
 - Gateway chats run on Codex 0.166.0 (from 0.163.0). Its experimental
   `wake_on_agent_messages` feature lets an idle chat continue on its own when a
   subagent finishes; set it under `[features]` in `~/.codex/config.toml`. The six

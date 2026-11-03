@@ -24,6 +24,7 @@ import { gatewayModelList } from "./app-server-model-list.js";
 import { AppServerRoutingError } from "./app-server-routing-error.js";
 import { gatewayProviderIds, nativeIdentityProvider, savedChatProvider } from "./executor-identity.js";
 import { translateGatewaySchedulerRoots } from "./app-server-scheduler-roots.js";
+import { promoteModelSwitch } from "./app-server-step-promotion.js";
 
 export { AppServerRoutingError };
 type ObjectValue = Record<string, unknown>;
@@ -604,11 +605,22 @@ export class AppServerRouter {
         ...(sentTier && (sentTier.value === null || typeof sentTier.value === "string") ? { serviceTier: tierId(sentTier.value) as string | null } : {}) } });
     }
     if (method === "thread/unsubscribe" && typeof params.threadId === "string" && this.ephemeralThreads.has(params.threadId)) this.forgetEphemeral(params.threadId);
+    if (method === "thread/settings/update" && result.status === "applied" && typeof selected === "string" && typeof params.threadId === "string") await this.offerToActiveTurn(params.threadId, selected);
     if (method === "config/read") {
       await this.readPreferences();
       const { desktop, ...modelPreferences } = this.preferences;
       return { ...result, config: { ...mergeDesktopPreferences(object(result.config), object(desktop)), ...modelPreferences, model_catalog_json: this.catalogPath } };
     }
     return result;
+  }
+  /**
+   * Opt-in: the picker changes a model only for the next turn. A running gateway turn on another model is offered the
+   * change through the router's own `turn/settings/update`; any refusal keeps today's next-turn behaviour.
+   */
+  private async offerToActiveTurn(threadId: string, model: string): Promise<void> {
+    if (this.config.midTurnModelSwitch !== true || this.ephemeralThreads.has(threadId) || !this.aliases.has(model)) return;
+    const active = this.activeTurns.get(threadId);
+    if (!active || active.route.kind !== "gateway" || active.route.model === model || this.routes.get(threadId)?.kind !== "gateway") return;
+    await promoteModelSwitch(sent => this.request("turn/settings/update", sent), threadId, active.turnId, model);
   }
 }
