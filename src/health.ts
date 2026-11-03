@@ -6,7 +6,7 @@ import { loadConfig } from "./config.js";
 import { configPath } from "./paths.js";
 import { resolve } from "node:path";
 import { nativeRegistrationPath } from "./native-pause.js";
-import { appFindings, componentFindings, errorFindings, inferenceFindings, nativePaused, relayFindings, serviceFindings, smokeFindings, statusFields, type RelayHealth, type ServiceStatus } from "./health-checks.js";
+import { appFindings, componentFindings, errorFindings, inferenceFindings, nativePaused, relayFindings, serviceFindings, smokeFindings, statusFields, upgradeFindings, type RelayHealth, type ServiceStatus } from "./health-checks.js";
 import { desktopFindings } from "./health-desktop.js";
 import { appPathFromPlan, detectAppChange, readAppInfo } from "./health-app.js";
 import { healthWindowMs, exitCodeFor, verdictOf, type AppInfo, type Exec, type Finding, type HealthReport, type InferenceProbe, type PushOutcome, type SmokeOutcome, type Verdict } from "./health-types.js";
@@ -173,7 +173,7 @@ export async function runHealth(options: HealthOptions, deps: HealthDeps = {}): 
     .catch(() => ({ outcome: { ran: false, result: "unavailable" } as SmokeOutcome }));
   const components = componentFindings(reconcileServiceRelease(versions, status), now, switched);
   const findings: Finding[] = [
-    ...appFindings(app, change.changed), ...components.findings,
+    ...appFindings(app, change.changed), ...components.findings, ...upgradeFindings(plan, components.lagging, components.stale),
     ...serviceFindings(status, signals), ...relayFindings(status, relay, now), ...inferenceFindings(inference, versions.installed),
     ...errorFindings(signals, nativePaused(status)), ...desktop, ...smokeFindings(smoke.outcome.result, smoke.outcome.phase),
     ...unreadable,
