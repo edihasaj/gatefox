@@ -1,3 +1,4 @@
+import { readHealthTelemetry, unansweredSkewRefusals, type HealthEvent } from "./health-telemetry.js";
 import { execFile } from "node:child_process";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { basename, resolve } from "node:path";
@@ -20,7 +21,7 @@ export type RolloutReason =
   | "service_status_pending" | "service_identity_pending" | "service_release_pending"
   | "component_pending" | "inference_pending" | "inference_failed" | "host_pending"
   | "host_status_pending" | "host_identity_pending" | "probe_pending" | "probe_stale"
-  | "probe_failed" | "active_work" | "rollout_changed" | "native_sharing_pending" | "native_owner_pending" | "claude_consolidation_pending";
+  | "probe_failed" | "active_work" | "release_skew" | "rollout_changed" | "native_sharing_pending" | "native_owner_pending" | "claude_consolidation_pending";
 
 interface HostIdentity {
   hostPid: number;
@@ -74,6 +75,8 @@ export interface RolloutDeps {
   componentLiveness?: (component: ServicePlan["components"][number], pid: number, startedAt: string) => Promise<boolean>;
   nativeSharingPending?: (state: string) => Promise<boolean>;
   claudeConsolidationPending?: (state: string) => Promise<boolean>;
+  /** This Mac's recent telemetry, read for release skew refusals. */
+  telemetry?: (state: string) => Promise<HealthEvent[]>;
 }
 
 const release = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.[0-9]$/;
@@ -279,7 +282,13 @@ export async function runRollout(verify: boolean, explicitConfig?: string, deps:
     unknown: versions.processes.filter(row => row.release === "unknown").length };
   const base = { checkedAt, installed: versions.installed, versions: counts };
   if (!versions.installed || !release.test(versions.installed)) return result("pending", "installed_unknown", base);
-  if (counts.pending || counts.unknown) return result("pending", "process_version_pending", base);
+  if (counts.pending || counts.unknown) {
+    // A lagging service that is also refusing chats of the installed release is not catching up by itself fast enough: chats
+    // do not open. That is blocked, not a pending move to wait out (docs/rollout.md).
+    const rows = await (deps.telemetry ?? (state => readHealthTelemetry(state)))(config.stateDirectory).catch(() => [] as HealthEvent[]);
+    if (unansweredSkewRefusals(rows) > 0) return result("blocked", "release_skew", base);
+    return result("pending", "process_version_pending", base);
+  }
   const sharingPending = async (): Promise<boolean> => {
     try { return await (deps.nativeSharingPending ?? (async state => !!await readPendingNativeSharing(state)))(config.stateDirectory); }
     catch { return true; } // An unreadable adoption receipt cannot earn readiness.

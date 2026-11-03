@@ -9,7 +9,7 @@ import { healthWindowMs } from "./health-types.js";
  * in UTC, so the two files that can cover a 15-minute window are today's and
  * yesterday's, named by their UTC date.
  */
-export const watchedFields = ["at", "event", "component", "kind", "method", "code", "site", "errorClass", "rejection"] as const;
+export const watchedFields = ["at", "event", "component", "kind", "method", "code", "site", "errorClass", "rejection", "direction", "count", "mode"] as const;
 export type WatchedField = (typeof watchedFields)[number];
 /** One accepted line: only the watched fields survive, and `at` becomes an instant. */
 export interface HealthEvent {
@@ -17,6 +17,8 @@ export interface HealthEvent {
   component?: string; kind?: string; method?: string; code?: string | number; site?: string;
   /** The error's class name, and the fixed refusal vocabulary. Only `rejection` is judged. */
   errorClass?: string; rejection?: string;
+  /** `release_skew_refused` only: the fixed direction and how many refusals the line stands for; `self_upgrade` only: its mode. */
+  direction?: string; count?: number; mode?: string;
 }
 
 /** The methods whose refusals mean a chat could not start or continue at all. */
@@ -60,10 +62,15 @@ export interface TelemetrySignals {
   nativeSharing: string[];
   /** Whether any `component_exit` names the native component. */
   nativeExited: boolean;
+  /**
+   * Chats a newer adapter could not open because this service still runs an older release (`release_skew_refused` with
+   * `adapter_newer`) and no service move has answered them since. Any count fails: every one is a chat that did not open.
+   */
+  skewRefusals: number;
 }
 
 export const emptySignals = (): TelemetrySignals =>
-  ({ hostFailures: 0, exits: {}, explainedExits: {}, rpcErrors: {}, refusals: 0, activeRefusals: 0, recentRefusals: 0, refusalsOngoing: false, ongoingMethods: [], lastRefusalAt: {}, featureRetries: 0, retriedThenRefused: 0, nativeSharing: [], nativeExited: false });
+  ({ hostFailures: 0, exits: {}, explainedExits: {}, rpcErrors: {}, refusals: 0, activeRefusals: 0, recentRefusals: 0, refusalsOngoing: false, ongoingMethods: [], lastRefusalAt: {}, featureRetries: 0, retriedThenRefused: 0, nativeSharing: [], nativeExited: false, skewRefusals: 0 });
 
 const text = (value: unknown): string | undefined => typeof value === "string" ? value : undefined;
 
@@ -127,6 +134,16 @@ function explainedByRestart(kind: string, at: number, rows: HealthEvent[]): bool
 const relapsed = (recovered: HealthEvent, rows: HealthEvent[]): boolean =>
   rows.some(row => row.at > recovered.at && (row.event === "execution_host_failed" || row.event === "execution_host_restarted"));
 
+/**
+ * Newer-adapter refusals that no service move has answered yet. A `self_upgrade` of the service answers them, except a `live`
+ * one: that swaps only the supervisor's controller and leaves the execution host, which refuses, on the older release.
+ */
+export function unansweredSkewRefusals(rows: HealthEvent[]): number {
+  const moved = Math.max(0, ...rows.filter(row => row.event === "self_upgrade" && row.component === "service" && row.mode !== "live").map(row => row.at));
+  return rows.filter(row => row.event === "release_skew_refused" && row.direction === "adapter_newer" && row.at > moved)
+    .reduce((total, row) => total + (typeof row.count === "number" && row.count > 0 ? row.count : 1), 0);
+}
+
 /** Reduces the window's lines to counts. `at` is the epoch millisecond the parser kept. */
 export function summarizeHealthEvents(rows: HealthEvent[], options: SummarizeOptions = {}): TelemetrySignals {
   const signals = emptySignals();
@@ -162,6 +179,7 @@ export function summarizeHealthEvents(rows: HealthEvent[], options: SummarizeOpt
   signals.refusalsOngoing = recent.length > 0;
   signals.ongoingMethods = [...new Set(recent.map(refusal => refusal.method))].sort();
   // A retry that still ends in a refusal is the one config-load failure worth alerting on, while that refusal is ongoing.
+  signals.skewRefusals = unansweredSkewRefusals(rows);
   signals.retriedThenRefused = signals.refusalsOngoing ? active.filter(refusal => retries.some(retry => refusal.at >= retry)).length : 0;
   return signals;
 }

@@ -394,6 +394,14 @@ export function runUpdateFixture({ appArchive, backendArchive, previousApp, inst
   return fixtureRoot;
 }
 
+/**
+ * The deployed release must hand chats to this one without a restart (scripts/check-forward-compat.mjs): it runs that
+ * release's own forwarding code against the backend archive and refuses to publish a release it would refuse.
+ */
+export function runForwardCheck({ backendArchive, installedRelease, cwd = root, run = defaultRun }) {
+  run(process.execPath, ['scripts/check-forward-compat.mjs', '--deployed', join(installedRelease, 'package'), '--candidate', backendArchive], { cwd });
+}
+
 export function validatePublishFixtureInputs({ previousApp, installedRelease, run = defaultRun }) {
   if (!isAbsolute(previousApp) || !previousApp.endsWith('.app') || !existsSync(previousApp) || !statSync(previousApp).isDirectory()) {
     throw new Error('Publishing requires an existing signed --previous-app bundle');
@@ -404,7 +412,7 @@ export function validatePublishFixtureInputs({ previousApp, installedRelease, ru
   verifySignedApp(run, previousApp);
 }
 
-export function releaseMacosApp(options, { cwd = root, run = defaultRun, e2e = runUpdateFixture } = {}) {
+export function releaseMacosApp(options, { cwd = root, run = defaultRun, e2e = runUpdateFixture, forward = runForwardCheck } = {}) {
   assertFreeSpace(join(cwd, '.state'), releaseDiskSpaceRequirements.releaseMacosApp, 'macOS app release');
   const head = assertReleaseContext({ cwd, run });
   const version = assertVersionLockfile({ cwd });
@@ -447,6 +455,7 @@ export function releaseMacosApp(options, { cwd = root, run = defaultRun, e2e = r
     validateSignedApp({ app: build.app, version, source: head, backendSha256: options.backendSha256 });
     verifyStage(stage, { backendSha256: options.backendSha256, appSha256: stage.metadataValue.appSha256 });
     validatePublishFixtureInputs({ previousApp: options.previousApp, installedRelease: options.installedRelease, run });
+    forward({ backendArchive: options.backendArchive, installedRelease: options.installedRelease, cwd, run });
     assertFreeSpace(join(cwd, '.state'), releaseDiskSpaceRequirements.releaseMacosApp, 'macOS app update fixture');
     e2e({ appArchive: stage.app, backendArchive: options.backendArchive, previousApp: options.previousApp,
       installedRelease: options.installedRelease, cwd, run });

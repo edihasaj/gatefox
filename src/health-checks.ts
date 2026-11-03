@@ -203,6 +203,7 @@ export function errorFindings(signals: TelemetrySignals, paused = false): Findin
     const last = signals.lastRefusalAt[method];
     return { level: "warn" as const, reason: `refused ${method} ${count}x${last === undefined ? "" : `, none since ${clock(last)} UTC`}` };
   });
+  if (signals.skewRefusals > 0) findings.push({ level: "fail", reason: `chats refused ${signals.skewRefusals}x: the service still runs an older release than the installed one; finish running turns or run gateway service restart --interrupt` });
   if (signals.retriedThenRefused > 0) findings.push({ level: "fail", reason: `config retry refused ${signals.retriedThenRefused}x` });
   else if (signals.featureRetries > 0) findings.push({ level: "info", reason: `config retried ${signals.featureRetries}x` });
   for (const [kind, count] of Object.entries(signals.exits).sort()) {

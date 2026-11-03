@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Releases reach every Mac without a restart, and a release that would block chats can no
+  longer ship. Each release now carries a versioned forward contract
+  (`forward-preparation.js`), so an older execution host prepares newer chats with the new
+  release's own code whatever preparation code changed. A pre-publish check
+  (`scripts/check-forward-compat.mjs`, also run by the app publisher) runs the deployed
+  release's own forwarding code against the candidate and refuses to publish when it
+  would refuse it. `gateway rollout` reports `blocked: release_skew` and `gateway health`
+  fails while chats of the installed release are refused. `gateway service restart
+  --interrupt` restarts at once, ending running turns, for the rare case nothing else covers.
+
 - Fix chats that would not open after a Codex SDK update on a busy Mac. An older
   service refused every newer adapter whenever the release changed the feature
   schema data, which every SDK update does, and the urgent move then waited for a

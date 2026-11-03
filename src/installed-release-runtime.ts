@@ -5,6 +5,7 @@ import { readRegularFile } from "./service-claude-io.js";
 import { releaseState } from "./self-update.js";
 import { retainRunningRelease, type ReleaseLease } from "./release-retention.js";
 import type { GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
+import { forwardContract, type ForwardPreparation } from "./forward-preparation.js";
 
 /**
  * The gateway SDK of the installed (newer) release, verified by that release's own `gateway-sdk-runtime.js`. A running host
@@ -15,17 +16,15 @@ import type { GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
  */
 /**
  * How a forwarded generation is prepared: the installed release's own engine-home writer and spawn-argument trim, so its
- * settings are cut to that release's feature schema rather than this older host's. See `preparationFiles`.
+ * settings are cut to that release's feature schema rather than this older host's. See src/forward-preparation.ts.
  */
-export interface ReleasePreparation {
-  engineHome: (state: string, settings: Record<string, unknown>, options: { nativeHome?: string; sharedWriterLocks?: boolean; preserveConfig?: boolean }) => Promise<string>;
-  trimArgs: (input: string[], settings: Record<string, unknown>) => string[];
-}
+export type ReleasePreparation = ForwardPreparation;
 export interface InstalledReleaseRuntime { release: string; runtime: GatewaySdkRuntime; lease: ReleaseLease; preparation: ReleasePreparation }
 type RuntimeModule = { gatewaySdkRuntime?: (packageDirectory?: string) => Promise<GatewaySdkRuntime | undefined> };
 
 /**
- * The compiled modules that turn a descriptor into an engine's settings and configuration file. A forwarded engine is prepared
+ * For a release without the forward contract: the compiled modules that turn a descriptor into an engine's settings and
+ * configuration file. A forwarded engine is prepared
  * by the installed release's own copies of them, imported from that release, so its settings are trimmed to the schema its
  * SDK accepts. The code must still be byte-identical to this host's, which keeps the interface this host calls unchanged; a
  * release that changes that code keeps the release skew refusal. The schema data (`schemaDataFile`) may differ: it changes
@@ -52,6 +51,24 @@ async function releasePreparation(installedDist: string): Promise<ReleasePrepara
   };
 }
 
+/**
+ * The installed release's forward contract module (src/forward-preparation.ts): used whenever its contract number is this
+ * host's, whatever else changed in its preparation code. Undefined for a release without the module or with another number.
+ */
+export const forwardModuleFile = "forward-preparation.js";
+async function contractPreparation(installedDist: string): Promise<ReleasePreparation | undefined> {
+  const file = resolve(installedDist, forwardModuleFile);
+  if (!await readRegularFile(file, 256 * 1024, false)) return;
+  const module = await import(pathToFileURL(file).href) as { forwardContract?: unknown; forwardPreparation?: Partial<ReleasePreparation> };
+  const preparation = module.forwardPreparation;
+  if (module.forwardContract !== forwardContract || !preparation || typeof preparation.engineHome !== "function" || typeof preparation.trimArgs !== "function") return;
+  return { engineHome: preparation.engineHome, trimArgs: preparation.trimArgs };
+}
+/** A release from before the forward contract: forwarded only when its preparation code is byte-identical to this host's. */
+async function legacyPreparation(runningDist: string, installedDist: string): Promise<ReleasePreparation | undefined> {
+  return await samePreparation(runningDist, installedDist) ? releasePreparation(installedDist) : undefined;
+}
+
 async function samePreparation(runningDist: string, installedDist: string): Promise<boolean> {
   for (const name of preparationFiles) {
     const [mine, theirs] = await Promise.all([readRegularFile(resolve(runningDist, name), 1024 * 1024, false), readRegularFile(resolve(installedDist, name), 1024 * 1024, false)]);
@@ -67,14 +84,14 @@ export async function installedReleaseRuntime(release: string, moduleUrl = impor
     const file = realpathSync(resolve(releases, "../current/package/dist/gateway-sdk-runtime.js"));
     if (file !== resolve(releases, release, "package/dist/gateway-sdk-runtime.js")) return;
     if (!await readRegularFile(file, 256 * 1024, false)) return;
-    if (!await samePreparation(realpathSync(dirname(fileURLToPath(moduleUrl))), dirname(file))) return;
     const lease = retainRunningRelease(pathToFileURL(file).href);
     if (lease.releaseName !== release) { lease.release(); return; }
     try {
       const candidate = await import(pathToFileURL(file).href) as RuntimeModule;
       const runtime = typeof candidate.gatewaySdkRuntime === "function" ? await candidate.gatewaySdkRuntime(resolve(releases, release, "package")) : undefined;
       if (!runtime) { lease.release(); return; }
-      const preparation = await releasePreparation(dirname(file));
+      const preparation = await contractPreparation(dirname(file)).catch(() => undefined)
+        ?? await legacyPreparation(realpathSync(dirname(fileURLToPath(moduleUrl))), dirname(file));
       if (!preparation) { lease.release(); return; }
       return { release, runtime, lease, preparation };
     } catch { lease.release(); return; }

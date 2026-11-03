@@ -54,6 +54,7 @@ or write user gateway state.
 | `ready` | 0 | All required live evidence agrees. |
 | `pending` | 1 | A process, service, host, or proof has not adopted the release yet. Recheck after idle adoption. |
 | `blocked` | 1 | The host explicitly reports active work, so a canary was not claimed. |
+| `blocked` (`release_skew`) | 1 | A process still runs an older release and the host refused chats of the installed release since the service last moved, so chats do not open. Forwarding should have prevented it; finish turns or run `gateway service restart --interrupt`. A `live` controller swap does not count as a move. |
 | `failed` | 2 | Inference or the direct-tool canary failed. Investigate before publishing or declaring the machine ready. |
 
 The command reports only fixed reason codes, counts, versions, capabilities and

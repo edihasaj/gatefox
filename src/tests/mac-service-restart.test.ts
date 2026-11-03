@@ -82,3 +82,9 @@ test("a slow launchctl cannot stretch the idle wait past its deadline", async ()
   await assert.rejects(restartUnifiedService(plain, 100, false, tools), /held the idle restart/);
   assert.ok(elapsed() <= 15000, `waited ${elapsed()} ms`);
 });
+
+test("--interrupt restarts through launchd without the maintenance window, and says it interrupted", async () => {
+  const { tools, calls } = fakeTools({ next: 400, moveOn: "kickstart", refuse: "quit ChatGPT" });
+  assert.deepEqual(await restartUnifiedService(withClaude, 100, true, tools, true), { pid: 400, restart: "interrupted" });
+  assert.deepEqual(calls, ["kickstart"], "the window that holds --force never runs");
+});
