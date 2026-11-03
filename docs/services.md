@@ -259,7 +259,15 @@ drains inference for `GATEWAY_SHUTDOWN_DRAIN_MS` and stops every component, incl
 Claude components, which can interrupt Claude work. It waits up to a minute for the
 new process and reports `restart: "forced"`; a plain restart reports `restart: "idle"`.
 Use it to adopt an installed release when Claude components hold the automatic move,
-then confirm with `gateway rollout --verify`. `gateway service uninstall` explicitly stops all owned components
+then confirm with `gateway rollout --verify`.
+
+`gateway service restart --interrupt` is the same launchd restart without the
+maintenance window or the client-only inference guard: it runs while ChatGPT is open, remote chats are connected or
+inference is busy, ends every running turn, and reports `restart: "interrupted"`. It is
+the way out of a service that cannot find an idle moment while chats are refused
+(`gateway rollout` says `blocked: release_skew`); a release that forwards never needs it.
+
+`gateway service uninstall` explicitly stops all owned components
 and moves the plan and LaunchAgent to Trash. Provider credentials remain. A job
 launchd has already dropped (`launchctl bootout` reporting `3: No such process`)
 can be absent while its process still drains. Legacy standalone installation
@@ -871,13 +879,38 @@ the engine runs, so the installer cannot prune it. The move is logged as
 `execution_generation_forward` with `to`, the release. A verifier that is missing,
 fails or answers with another SDK leaves the release skew refusal below unchanged.
 
-Forwarding also requires that both releases prepare an engine the same way. The
-forwarded engine is set up by the older host's code, so the installed release's
-feature schema, its normalization and engine-home modules (`preparationFiles` in
-`src/installed-release-runtime.ts`) must be byte-identical to the running release's.
-Its SDK must also match the host's Code Mode support, because the descriptor's
-tools were normalized against it. A release that changes either keeps the refusal
-and moves under the rules above. A forwarded generation keeps its engine home in
+Forwarding also requires that both releases prepare an engine compatibly. From 1.5.7 a
+release ships a **forward contract** module (`dist/forward-preparation.js`, source
+`src/forward-preparation.ts`): its engine-home writer and spawn-argument trim, cut to its
+own feature schema. An older host imports that module from the installed release and uses
+it whenever its `forwardContract` number equals the host's own, so a release can change any
+preparation code or schema without an older host refusing it. Everything imported from the installed
+release (the SDK verifier, the contract module and all they import, in any syntax,
+including JSON, `.mjs`, CommonJS and packages) passes through Node's resolver hook
+(`src/foreign-release-loader.ts`) before it runs: it may resolve only to a builtin or to a
+regular file inside that release's `package/` that you own, with one link, no symlink and
+no folder others can write. Anything else fails the import, and forwarding falls back as
+for a release without the module. Bump `forwardContract` only
+when the shape or meaning of `forwardPreparation` changes. An installed release without
+the module, or with another number, is forwarded only under the earlier rule: its
+preparation code (`preparationFiles` in `src/installed-release-runtime.ts`) must be
+byte-identical to the host's; the schema data may differ (since 1.5.7) and its own modules
+read it. Its SDK must also match the host's Code Mode support, because the descriptor's
+tools were normalized against it. A release that fails these keeps the refusal and moves
+under the rules above.
+
+Before 1.5.7 any schema data change, which every Codex SDK update brings, kept newer
+adapters refused, and on a Mac whose agents never leave a second with no turn running
+unloaded chats stayed unopenable until a forced restart (3 Nov 2026, 1.5.4 to 1.5.6).
+Three guards keep that from recurring: the pre-publish forward check
+([releasing](RELEASING.md)) refuses to publish a release the deployed one would refuse;
+`gateway rollout` reports `blocked: release_skew` and `gateway health` fails while chats
+are being refused ([rollout](rollout.md), [health](health.md)); and
+`gateway service restart --interrupt` restarts at once, ending running turns, when nothing
+else can. These checks only work once 1.5.7 is the release that is already running,
+because the older host's own code decides whether to forward. Trim counts of a forwarded
+engine are not recorded, because the imported modules run without this host's telemetry.
+A forwarded generation keeps its engine home in
 `desktop-generations/shared-v1-<revision>-forward-<release>`. The service that later
 moves to that release starts the same revision in the ordinary folder, with a
 configuration it writes itself.

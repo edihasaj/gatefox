@@ -258,7 +258,16 @@ JavaScript. Installing a CLI update preserves the registration. See
    entry points, and verifies the complete backend manifest before archiving. Its final
    JSON line gives absolute `asset` and `checksum` paths; inspect the archive's
    file list and verify `SHA256SUMS`.
-7. Publish the versioned archive and checksums to the private GitHub release.
+7. Before publishing anything, run the forward check against the release the fleet runs
+   now, so every Mac picks up the new release without a restart:
+   `node scripts/check-forward-compat.mjs --deployed ~/.local/share/subscription-gateway/current/package --candidate ARCHIVE`.
+   It runs the deployed release's own forwarding code against the candidate package in a
+   private `/tmp` layout and exits non-zero (`deployed_release_refuses_candidate`,
+   `code_mode_differs`, ...) when that release would refuse chats of the new one. Do not
+   publish a release that fails it. `same_gateway_sdk` and `forwards` pass. The app
+   publisher (`scripts/release-macos-app.mjs --publish`) runs the same check against
+   `--installed-release` before its updater fixture and refuses to publish on failure.
+8. Publish the versioned archive and checksums to the private GitHub release.
    Install exactly that asset on each device, then run `gateway versions --check`
    there and require a zero exit before the device is treated as updated. Run
    `gateway rollout` after each install and require `ready` before declaring the

@@ -70,6 +70,7 @@ const help = `gateway — local subscription and API inference
   gateway serve [--config PATH] [--port NUMBER]
   gateway service install|status|restart|uninstall [--config PATH]
   gateway service restart --force [--config PATH]   Stop and restart now even with Claude components (may interrupt Claude work)
+  gateway service restart --interrupt [--config PATH]   Restart now even while chats run or ChatGPT is open; ends every running turn
   gateway service consolidate [--apply | --next-login] [--config PATH]
   gateway service claude-desktop [--on-restart [--force]] [--config PATH]
   gateway service shared-executors [--apply] [--disable] [--config PATH]
@@ -122,7 +123,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "from-config": { type: "string" }, "native-home": { type: "string" }, app: { type: "string" }, codex: { type: "string" },
     client: { type: "boolean" }, state: { type: "string" },
     "tunnel-id": { type: "string" }, host: { type: "string" }, "remote-port": { type: "string" }, reverse: { type: "boolean" }, "ssh-config": { type: "string" },
-    apply: { type: "boolean" }, "next-login": { type: "boolean" }, "on-restart": { type: "boolean" }, "with-gateway": { type: "boolean" }, force: { type: "boolean" },
+    apply: { type: "boolean" }, "next-login": { type: "boolean" }, "on-restart": { type: "boolean" }, "with-gateway": { type: "boolean" }, force: { type: "boolean" }, interrupt: { type: "boolean" },
   } });
   const [command, id, ...extra] = positionals;
   // `desktop api-mode` is the one command that takes a word after its id, so it is the one place an extra positional is allowed.
@@ -133,6 +134,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (values.disable && (command !== "service" || !["shared-executors", "shared-native"].includes(id))) throw new Error("--disable is only valid for service shared-executors or shared-native");
   if (values["on-restart"] && (command !== "service" || !["shared-native", "claude-desktop"].includes(id))) throw new Error("--on-restart is only valid for service shared-native or claude-desktop");
   if (values["on-restart"] && (values.apply || values.disable)) throw new Error("--on-restart cannot be combined with --apply or --disable");
+  if (values.interrupt && !(command === "service" && id === "restart")) throw new Error("--interrupt is only valid with service restart");
   if (values.force && !(command === "service" && (id === "restart" || id === "claude-desktop" && values["on-restart"]))) throw new Error("--force is only valid with service restart or service claude-desktop --on-restart");
   if (values["with-gateway"] && !(command === "service" && id === "shared-native" && values["on-restart"])) throw new Error("--with-gateway is only valid with service shared-native --on-restart");
   if (values["next-login"] && (command !== "service" || id !== "consolidate" || values.apply)) throw new Error("--next-login is only valid for service consolidate and cannot be combined with --apply");
@@ -198,7 +200,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       : id === "consolidate" ? values["next-login"] ? await stageLoginConsolidation(path) : await consolidateService(path, values.apply)
       : values.disable && (id === "shared-executors" || id === "shared-native") ? await disableSharing(path, id, values.apply)
       : id === "shared-native" && values["on-restart"] ? await stageNativeSharing(path, values["with-gateway"])
-      : id === "shared-executors" ? await enableSharedExecutors(path, values.apply) : id === "shared-native" ? await enableSharedNative(path, values.apply) : await macService(id, path, { force: values.force });
+      : id === "shared-executors" ? await enableSharedExecutors(path, values.apply) : id === "shared-native" ? await enableSharedNative(path, values.apply) : await macService(id, path, { force: values.force, interrupt: values.interrupt });
     process.stdout.write(JSON.stringify(result, null, 2) + "\n"); return;
   }
   if (command === "init") {

@@ -266,3 +266,22 @@ test("command exit codes distinguish ready, pending, and failed without printing
   const failed = await rolloutCommand([], { ...base({ inference: async () => ({ status: 500 }) }), stdout: () => {} });
   assert.equal(failed, 2);
 });
+
+test("a lagging service that refuses chats of the installed release is blocked by release skew, not pending", async () => {
+  const lagging = async () => versions([{ role: "service", pid: 101, release: "0.5.9", startedAt: new Date(Date.now() - 3_600_000).toISOString() }]);
+  const at = (minutes: number) => Date.now() - minutes * 60_000;
+  const refused = { event: "release_skew_refused", direction: "adapter_newer", count: 7, at: at(3) };
+  const blocked = await runRollout(false, undefined, base({ versions: lagging, telemetry: async () => [refused] }));
+  assert.deepEqual([blocked.state, blocked.reason], ["blocked", "release_skew"]);
+  // A live controller swap leaves the refusing host behind; only a real service move answers the refusals.
+  const live = await runRollout(false, undefined, base({ versions: lagging, telemetry: async () => [refused, { event: "self_upgrade", component: "service", mode: "live", at: at(2) }] }));
+  assert.equal(live.reason, "release_skew");
+  const moved = await runRollout(false, undefined, base({ versions: lagging, telemetry: async () => [refused, { event: "self_upgrade", component: "service", mode: "skew", at: at(2) }] }));
+  assert.deepEqual([moved.state, moved.reason], ["pending", "process_version_pending"]);
+  const older = await runRollout(false, undefined, base({ versions: lagging, telemetry: async () => [{ ...refused, direction: "adapter_older" }] }));
+  assert.equal(older.reason, "process_version_pending", "an older adapter is the app's to reopen, not this service's to move");
+  const adapterOnly = await runRollout(false, undefined, base({ versions: async () => versions([{ role: "service", pid: 101, release: installed }, { role: "desktop-adapter", pid: 102, release: "0.5.9" }]), telemetry: async () => [refused] }));
+  assert.equal(adapterOnly.reason, "process_version_pending", "only a lagging service refuses chats");
+  const restarted = await runRollout(false, undefined, base({ versions: async () => versions([{ role: "service", pid: 103, release: "0.5.9", startedAt: new Date().toISOString() }]), telemetry: async () => [refused] }));
+  assert.equal(restarted.reason, "process_version_pending", "a service started after the refusal answered it");
+});

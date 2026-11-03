@@ -13,6 +13,7 @@ import { trimGatewayFeatureArgs, trimmedGatewayFeatures } from "./gateway-featur
 import { gatewaySdkRuntime, type GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 import { spawnStamp } from "./boot-identity.js";
 import { trackExecutorTurns, type TurnTracker } from "./execution-host-turns.js";
+import type { ReleasePreparation } from "./installed-release-runtime.js";
 import gatewaySdkPin from "./gateway-sdk-pin.json" with { type: "json" };
 
 export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; gatewaySdkSha256?: string }
@@ -53,10 +54,11 @@ export function canonicalJson(value: unknown): string {
     ? Object.fromEntries(Object.entries(item).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) : item);
 }
 export function descriptorFingerprint(descriptor: ExecutionDescriptor): string { return createHash("sha256").update(canonicalJson(descriptor)).digest("hex"); }
-export function executionArgs(input: string[], socket: string, catalog: string, settings: Message = {}): string[] {
+const ownTrim = (input: string[], settings: Message): string[] => trimmedGatewayFeatures("spawn", stats => trimGatewayFeatureArgs(normalizeCodexFeatureArgs(input, settings), stats));
+export function executionArgs(input: string[], socket: string, catalog: string, settings: Message = {}, trim: (input: string[], settings: Message) => string[] = ownTrim): string[] {
   // Older connected adapters can still supply legacy flags to a newer host.
   // The SDK started here is the pinned gateway SDK, which rejects feature tables newer than itself.
-  const args = trimmedGatewayFeatures("spawn", stats => trimGatewayFeatureArgs(normalizeCodexFeatureArgs(input, settings), stats));
+  const args = trim(input, settings);
   const forwarded: string[] = [];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
@@ -118,7 +120,9 @@ export class ExecutionEngine {
      * revision starts in the ordinary folder with a configuration that release writes. Chats live in the shared native
      * `sessions` folder either way.
      */
-    private readonly forwardRelease?: string) {
+    private readonly forwardRelease?: string,
+    /** A forwarded generation's preparation, from the installed release: its settings are trimmed to that release's schema. */
+    private readonly preparation?: ReleasePreparation) {
     this.record = { revision: descriptor.revision, socketPath: resolve(hostHome, `e-${descriptor.revision.slice(0, 16)}.sock`), aliases: [...descriptor.aliases], defaultCwd: process.cwd() };
     this.owner = { revision: descriptor.revision, socketPath: this.record.socketPath, pid: 0 };
     this.fingerprint = descriptorFingerprint(descriptor);
@@ -149,7 +153,7 @@ export class ExecutionEngine {
       if (!recorded || recorded.managed !== expected.managed) { await archiveStaleReceipt(metadata, "generation", "invalid_receipt"); await writePrivateJson(metadata, expected); }
       else if (JSON.stringify(runtime ? { ...recorded, sdkSha256: expected.sdkSha256 } : recorded) !== JSON.stringify(expected)) throw new Error("Execution generation identity changed; existing files were preserved");
     } else await writePrivateJson(metadata, expected);
-    const home = await gatewayEngineHome(directory, descriptor.settings, { nativeHome: this.identity.nativeHome, sharedWriterLocks: true, preserveConfig: true });
+    const home = await (this.preparation?.engineHome ?? gatewayEngineHome)(directory, descriptor.settings, { nativeHome: this.identity.nativeHome, sharedWriterLocks: true, preserveConfig: true });
     const catalog = resolve(directory, "catalog.json");
     let existing: unknown;
     try { existing = JSON.parse(await readFile(catalog, "utf8")); }
@@ -168,7 +172,7 @@ export class ExecutionEngine {
     if (this.stopped) throw new Error("Execution host is closing");
     const occupied = await lstat(this.record.socketPath).catch(error => { if (error.code === "ENOENT") return; throw error; });
     if (occupied) throw new Error("Execution generation socket is occupied; its listener was preserved");
-    const child = spawn(runtime?.executable || this.identity.codex, executionArgs(descriptor.args, this.record.socketPath, catalog, descriptor.settings), { stdio: "ignore", cwd: this.record.defaultCwd, env: gatewayEnvironment(home), detached: false });
+    const child = spawn(runtime?.executable || this.identity.codex, executionArgs(descriptor.args, this.record.socketPath, catalog, descriptor.settings, this.preparation?.trimArgs), { stdio: "ignore", cwd: this.record.defaultCwd, env: gatewayEnvironment(home), detached: false });
     this.child = child;
     this.exited = new Promise(resolve => {
       child.once("error", () => { this.closed = true; });

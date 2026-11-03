@@ -220,3 +220,10 @@ test("a service whose controller moved live is not blamed on Claude Desktop and 
   assert.equal(statusFields({ controllerRelease: "1.5.3", components: [] }).controllerRelease, "1.5.3");
   assert.equal(statusFields({ controllerRelease: "../x", components: [] }).controllerRelease, undefined);
 });
+
+test("chats refused by release skew fail health and name the way out", async () => {
+  const { errorFindings } = await import("../health-checks.js");
+  const { emptySignals } = await import("../health-telemetry.js");
+  const findings = errorFindings({ ...emptySignals(), skewRefusals: 4 });
+  assert.equal(findings[0]?.level, "fail"); assert.match(findings[0]!.reason, /chats refused 4x.*--interrupt/);
+});

@@ -252,13 +252,19 @@ test('a failed signed updater fixture prevents every GitHub write', () => {
   };
   const options = { backendArchive: fixture.archive, backendSha256: fixture.sha256, identity: 'A'.repeat(40),
     profile: 'asc-notary', publish: true, previousApp, installedRelease };
-  assert.throws(() => releaseMacosApp(options, { cwd: directory, run: fakeRun, e2e: values => {
+  // The forward check (the deployed release must hand chats to this one) runs before the fixture; a throw there stops publication.
+  const order = [];
+  assert.throws(() => releaseMacosApp(options, { cwd: directory, run: fakeRun, forward: values => {
+    assert.equal(values.installedRelease, installedRelease); assert.equal(values.backendArchive, fixture.archive); order.push('forward');
+  }, e2e: values => {
+    order.push('fixture'); assert.equal(githubWrite, false);
     assert.equal(values.appArchive.endsWith('.zip'), true);
     assert.equal(values.backendArchive, fixture.archive);
     assert.equal(values.previousApp, previousApp);
     assert.equal(values.installedRelease, installedRelease);
     throw new Error('updater fixture failed');
   } }), /updater fixture failed/);
+  assert.deepEqual(order, ['forward', 'fixture']);
   assert.equal(githubWrite, false);
 });
 

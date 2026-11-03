@@ -165,11 +165,12 @@ export async function replaceLegacyService(existing: string | undefined, content
     throw error;
   }
 }
-export async function macService(action: string | undefined, configPath: string, options: { force?: boolean } = {}): Promise<Record<string, unknown>> {
+export async function macService(action: string | undefined, configPath: string, options: { force?: boolean; interrupt?: boolean } = {}): Promise<Record<string, unknown>> {
   if (options.force && action !== "restart") throw new Error("--force is only valid with gateway service restart");
+  if (options.interrupt && action !== "restart") throw new Error("--interrupt is only valid with gateway service restart");
   if (action === "status") return serviceOperation(action, configPath);
   const config = await loadConfig(configPath);
-  return withLoginRegistrationLock(config.stateDirectory, () => serviceOperation(action, configPath, options.force === true));
+  return withLoginRegistrationLock(config.stateDirectory, () => serviceOperation(action, configPath, options.force === true || options.interrupt === true, options.interrupt === true));
 }
 /** What restarting a running unified service needs; a test supplies fakes, so none of it reaches the real session. */
 export interface UnifiedRestartTools {
@@ -200,13 +201,19 @@ const claudeRestartRefusal = "Claude Desktop components are configured, so the s
  * that case is refused up front with its reason. With `force` the operator has authorized an interruption: launchd stops the
  * supervisor (SIGTERM, which drains inference and stops every component) and starts it again.
  */
-export async function restartUnifiedService(plan: ServicePlan, pid: number, force: boolean, tools: UnifiedRestartTools): Promise<Record<string, unknown>> {
+/**
+ * `interrupt` (implies `force`) also skips the maintenance window: it restarts even while ChatGPT is open, a remote chat is
+ * connected or inference is busy, and so ends every running turn. It is the operator's way out of a service that cannot find
+ * an idle moment to move to the installed release; a release that forwards (docs/services.md) never needs it.
+ */
+export async function restartUnifiedService(plan: ServicePlan, pid: number, force: boolean, tools: UnifiedRestartTools, interrupt = false): Promise<Record<string, unknown>> {
   // A forced stop has no supervisor idle guard behind it, so the window's inference probe must not be skipped while the
   // running plan still serves inference: a config edited to client-only would otherwise stop busy inference unchecked.
-  if (force && tools.configuredClientOnly && plan.components.some(component => component.kind === "inference")) {
+  // An explicit interruption stops busy inference by intent, so the guard that protects it does not apply.
+  if (force && !interrupt && tools.configuredClientOnly && plan.components.some(component => component.kind === "inference")) {
     throw new Error("The configuration is client-only but the running service still serves inference, so its idle state cannot be checked; the service was not restarted");
   }
-  await tools.maintenance();
+  if (!interrupt) await tools.maintenance();
   if (!force && plan.components.some(isClaudeComponent)) throw new Error(claudeRestartRefusal);
   // A deadline, not an attempt count: a slow launchctl must not stretch the advertised wait (and the held lock) past it.
   const moved = async (budgetMs: number, interval: number): Promise<boolean> => {
@@ -221,7 +228,7 @@ export async function restartUnifiedService(plan: ServicePlan, pid: number, forc
   };
   if (force) {
     await tools.kickstart();
-    if (await moved(60000, 500)) return { ...await tools.finish(), restart: "forced" };
+    if (await moved(60000, 500)) return { ...await tools.finish(), restart: interrupt ? "interrupted" : "forced" };
     throw new Error("The gateway service was stopped but has not started again yet; inspect gateway service status");
   }
   tools.signal(pid);
@@ -250,7 +257,7 @@ export async function installUnifiedService(paths: { service: string; desktop: s
   return { ...await tools.finish(), programRewritten: renamed.programRewritten, desktopRewritten: renamed.desktopRewritten,
     ...(changed ? { appliesAt: renamed.programRewritten && !current.installed ? "now" : "next login" } : {}), ...(renamed.failed ? { launcherRenameFailed: true } : {}) };
 }
-async function serviceOperation(action: string | undefined, configPath: string, force = false): Promise<Record<string, unknown>> {
+async function serviceOperation(action: string | undefined, configPath: string, force = false, interrupt = false): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin") throw new Error("User service setup currently supports macOS; use gateway serve on other systems");
   if (!["install", "status", "restart", "uninstall"].includes(action || "")) throw new Error("Choose gateway service install, status, restart, or uninstall");
   const domain = `gui/${process.getuid!()}`; const target = `${domain}/${label}`;
@@ -287,14 +294,14 @@ async function serviceOperation(action: string | undefined, configPath: string, 
         wait: ms => delay(ms),
         now: () => performance.now(),
         configuredClientOnly: configured.clientOnly === true,
-      });
+      }, interrupt);
     }
     if (!current.installed) { await exec("/bin/launchctl", ["enable", target]); await exec("/bin/launchctl", ["bootstrap", domain, path]); }
     else if (!current.pid) await exec("/bin/launchctl", ["kickstart", target]);
     return consolidatedStatus(configured.stateDirectory);
   }
   if (action === "restart") {
-    if (force) throw new Error("--force needs the unified gateway service; this Mac runs the standalone service, so it was not restarted");
+    if (force) throw new Error((interrupt ? "--interrupt" : "--force") + " needs the unified gateway service; this Mac runs the standalone service, so it was not restarted");
     const before = await status(target);
     if (existing === undefined || !before.installed) throw new Error("Gateway service is not installed");
     if (!before.pid) { await exec("/bin/launchctl", ["kickstart", target], { timeout: 10000 }); return { service: label, ...await status(target) }; }

@@ -118,6 +118,7 @@ no registration is not checked at all. No process's environment is ever read.
 | 3+ refusals, each under 5 minutes old and after the last marker | `refused <method> Nx` | fail (exit 2) |
 | 1-2 refusals under 5 minutes old and after the last marker | `refused <method> Nx` | warn (exit 1) |
 | Refusals that stopped, or that a marker ended | `refused <method> Nx, none since HH:MM UTC` | warn |
+| A newer adapter refused (`release_skew_refused`, `adapter_newer`) since the service last moved or started (a restart answers them); a `live` controller swap does not count | `chats refused Nx: the service still runs an older release ...` | fail (exit 2) |
 | Exit explained by a restart | none | no change |
 | Any other component exit | `<kind> exited Nx` | warn |
 | Registered ChatGPT on the stock engine | the sentence above | warn |

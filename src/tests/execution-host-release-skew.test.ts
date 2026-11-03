@@ -11,6 +11,9 @@ import { WebSocket } from "ws";
 import { startExecutionHost, executionHostHome, type ExecutionDescriptor, type ExecutionRecord } from "../execution-host.js";
 import { isReleaseSkew, releaseSkewMessages } from "../execution-host-engine.js";
 import { sdkIdentity } from "../execution-host-storage.js";
+import { gatewayEngineHome } from "../gateway-engine-home.js";
+import { trimGatewayFeatureArgs } from "../gateway-feature-schema.js";
+import type { ReleasePreparation } from "../installed-release-runtime.js";
 import type { GatewaySdkRuntime } from "../gateway-sdk-runtime.js";
 import { pendingGatewaySdkReader, receiptGatewaySdkSha256 } from "../self-update.js";
 import { chmod } from "node:fs/promises";
@@ -107,12 +110,18 @@ test("a newer adapter's generation runs on the installed release's SDK, verified
     await writeFile(newer, `${(await readFile(join(f.directory, "gateway-codex"), "utf8")).replace("'runtime'", "'newer'")}\n// newer release\n`, { mode: 0o700 });
     const newerSha = (await sdkIdentity(newer)).sdkSha256;
     let verified: GatewaySdkRuntime = { executable: newer, binarySha256: newerSha, selectedModelCompaction: true, executorIdentity: true, codeModeHost: false };
-    const loads: string[] = [];
+    const loads: string[] = []; const prepared: string[] = [];
+    // The installed release prepares its own generation: its engine home and its spawn arguments, cut to its schema.
+    const preparation: ReleasePreparation = {
+      engineHome: (state, settings, options) => { prepared.push("home"); return gatewayEngineHome(state, settings, options); },
+      trimArgs: input => { prepared.push("args"); return trimGatewayFeatureArgs(input); },
+    };
     host = await startExecutionHost({ ...f.options, pendingRelease: async () => ({ release: "1.6.0", gatewaySdkSha256: newerSha }),
-      installedRuntime: async release => { loads.push(release); return { release, runtime: verified, lease: { releaseName: release, release: () => { released++; } } }; } });
+      installedRuntime: async release => { loads.push(release); return { release, runtime: verified, lease: { releaseName: release, release: () => { released++; } }, preparation }; } });
     client = await control(join(f.hostHome, "host.sock"));
     assert.equal((await client.request<ExecutionRecord>("execution/acquire", { descriptor: f.descriptor(newerSha) })).revision, "a".repeat(64));
     assert.equal(await readFile(join(f.directory, "engine-a.state"), "utf8"), "newer", "the newer SDK was spawned");
+    assert.deepEqual(prepared, ["home", "args"], "the installed release's own preparation wrote the home and the arguments");
     const generations = join(f.options.config.stateDirectory, "desktop-generations");
     assert.ok((await readFile(join(generations, `shared-v1-${"a".repeat(64)}-forward-1.6.0`, "execution-generation.json"), "utf8")).includes(newerSha),
       "a forwarded generation keeps its engine home apart, so the moved service writes a fresh one for the same revision");

@@ -3,17 +3,26 @@ import assert from "node:assert/strict";
 import { chmod, mkdir, realpath, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { installedReleaseRuntime, preparationFiles } from "../installed-release-runtime.js";
+import { forwardModuleFile, installedReleaseRuntime, preparationFiles, schemaDataFile } from "../installed-release-runtime.js";
+import { forwardContract, forwardPreparation } from "../forward-preparation.js";
 import { shortFolder } from "./short-folder.js";
 
 const sha = "d".repeat(64);
+/** Stand-ins with the exports a forwarded generation calls; the trim reads its own release's schema data. */
+const preparationModule = (name: string): string => ({
+  "gateway-engine-home.js": "export async function gatewayEngineHome(state){return state + '/home';}\n",
+  "gateway-feature-schema.js": "import { readFileSync } from 'node:fs';\nconst data = JSON.parse(readFileSync(new URL('./gateway-feature-schema-data.json', import.meta.url), 'utf8'));\n"
+    + "export function trimmedGatewayFeatures(site, trim){return trim({count:0});}\nexport function trimGatewayFeatureArgs(input){return [...input, data.release];}\n",
+  "codex-feature-compat.js": "export function normalizeCodexFeatureArgs(input){return input;}\n",
+} as Record<string, string>)[name] ?? `// ${name}\n`;
 /** A managed layout: the running release 1.1.8 and the installed release 1.1.9 whose verifier is `body`. */
 async function fixture(body: string, installed = "1.1.9") {
   const made = await shortFolder("gwir-");
   for (const version of ["1.1.8", "1.1.9"]) {
     await mkdir(join(made.directory, "releases", version, "package", "dist"), { recursive: true, mode: 0o700 });
     await writeFile(join(made.directory, "releases", version, ".gateway-release"), version + "\n", { mode: 0o600 });
-    for (const name of preparationFiles) await writeFile(join(made.directory, "releases", version, "package", "dist", name), `// ${name}\n`, { mode: 0o600 });
+    for (const name of preparationFiles) await writeFile(join(made.directory, "releases", version, "package", "dist", name), preparationModule(name), { mode: 0o600 });
+    await writeFile(join(made.directory, "releases", version, "package", "dist", schemaDataFile), JSON.stringify({ release: version }), { mode: 0o600 });
   }
   const module = join(made.directory, "releases/1.1.9/package/dist/gateway-sdk-runtime.js");
   await writeFile(module, body, { mode: 0o600 });
@@ -31,6 +40,8 @@ test("the installed release's own verifier answers for its own package, and the 
     assert.equal(loaded?.runtime.binarySha256, sha);
     assert.equal((loaded?.runtime as unknown as { dir: string }).dir, join(await realpath(f.directory), "releases/1.1.9/package"), "verified against the installed package, never the running one");
     assert.equal(loaded?.lease.releaseName, "1.1.9");
+    assert.deepEqual(loaded?.preparation.trimArgs(["app-server"], {}), ["app-server", "1.1.9"], "trimmed with the installed release's own schema");
+    assert.equal(await loaded?.preparation.engineHome("/state", {}, {}), "/state/home");
     loaded?.lease.release();
   } finally { await f.remove(); }
 });
@@ -59,6 +70,102 @@ test("only the release current names, and only a safe module that answers with a
       assert.equal(await installedReleaseRuntime("1.1.9", m.source), undefined, `a release whose ${name} differs prepares settings differently`);
     } finally { await m.remove(); }
   }
+});
+
+test("a new feature schema alone no longer blocks forwarding, but missing preparation exports do", async () => {
+  const f = await fixture(verifier());
+  try {
+    // The fixture already gives each release its own schema data; an SDK update changes exactly that file.
+    const loaded = await installedReleaseRuntime("1.1.9", f.source);
+    assert.ok(loaded, "differing schema data forwards"); loaded?.lease.release();
+  } finally { await f.remove(); }
+  const g = await fixture(verifier());
+  try {
+    await writeFile(join(g.directory, "releases/1.1.9/package/dist/codex-feature-compat.js"), "// codex-feature-compat.js\n", { mode: 0o600 });
+    await writeFile(join(g.directory, "releases/1.1.8/package/dist/codex-feature-compat.js"), "// codex-feature-compat.js\n", { mode: 0o600 });
+    assert.equal(await installedReleaseRuntime("1.1.9", g.source), undefined, "identical code without the export is not a preparation");
+  } finally { await g.remove(); }
+});
+
+const contractModule = (contract: number) => `export const forwardContract = ${contract};\nexport const forwardPreparation = {
+  engineHome: async state => state + "/contract-home",
+  trimArgs: input => [...input, "contract"],
+};\n`;
+
+test("a release with this host's forward contract prepares its own engines whatever its preparation code is", async () => {
+  const f = await fixture(verifier());
+  try {
+    const dist = join(f.directory, "releases/1.1.9/package/dist");
+    for (const name of preparationFiles) await writeFile(join(dist, name), `// ${name} rewritten\n`, { mode: 0o600 });
+    await writeFile(join(dist, forwardModuleFile), contractModule(forwardContract), { mode: 0o600 });
+    const loaded = await installedReleaseRuntime("1.1.9", f.source);
+    assert.ok(loaded, "changed preparation code forwards under the contract");
+    assert.deepEqual(loaded?.preparation.trimArgs(["app-server"], {}), ["app-server", "contract"]);
+    assert.equal(await loaded?.preparation.engineHome("/state", {}, {}), "/state/contract-home");
+    loaded?.lease.release();
+  } finally { await f.remove(); }
+  const g = await fixture(verifier());
+  try {
+    const dist = join(g.directory, "releases/1.1.9/package/dist");
+    await writeFile(join(dist, forwardModuleFile), contractModule(forwardContract + 1), { mode: 0o600 });
+    const same = await installedReleaseRuntime("1.1.9", g.source);
+    assert.deepEqual(same?.preparation.trimArgs(["app-server"], {}), ["app-server", "1.1.9"], "another contract falls back to the byte-identical rule");
+    same?.lease.release();
+    await writeFile(join(dist, "gateway-engine-home.js"), "// changed\n", { mode: 0o600 });
+    assert.equal(await installedReleaseRuntime("1.1.9", g.source), undefined, "and is refused once its code differs");
+  } finally { await g.remove(); }
+  const h = await fixture(verifier());
+  try {
+    await writeFile(join(h.directory, "releases/1.1.9/package/dist", forwardModuleFile), contractModule(forwardContract), { mode: 0o666 });
+    await chmod(join(h.directory, "releases/1.1.9/package/dist", forwardModuleFile), 0o666);
+    assert.deepEqual((await installedReleaseRuntime("1.1.9", h.source))?.preparation.trimArgs(["x"], {}), ["x", "1.1.9"], "a writable contract module is never imported");
+  } finally { await h.remove(); }
+});
+
+test("a contract module whose imports are symlinked out of the release or writable is never imported", async () => {
+  const importing = `import { tag } from "./helper.js";\nexport const forwardContract = ${forwardContract};\nexport const forwardPreparation = { engineHome: async state => state + tag, trimArgs: input => [...input, tag] };\n`;
+  for (const damage of ["symlink", "writable", "missing", "comment", "template", "mjs"]) {
+    const f = await fixture(verifier());
+    try {
+      const dist = join(f.directory, "releases/1.1.9/package/dist");
+      await writeFile(join(dist, forwardModuleFile), importing, { mode: 0o600 });
+      const outside = async (name: string) => { await writeFile(join(f.directory, "outside.js"), "export const tag = 'outside';\n", { mode: 0o600 }); await symlink(join(f.directory, "outside.js"), join(dist, name)); };
+      if (damage === "comment") { await writeFile(join(dist, forwardModuleFile), importing.replace('from "./helper.js"', 'from /* c */ "./helper.js"'), { mode: 0o600 }); await outside("helper.js"); }
+      else if (damage === "template") {
+        await writeFile(join(dist, forwardModuleFile), `const { tag } = await import(\`./helper.js\`);\n${importing.split("\n").slice(1).join("\n")}`, { mode: 0o600 }); await outside("helper.js");
+      } else if (damage === "mjs") {
+        await writeFile(join(dist, "helper.js"), "export { tag } from './deep.mjs';\n", { mode: 0o600 });
+        await writeFile(join(dist, "deep.mjs"), "export { tag } from './deeper.js';\n", { mode: 0o600 }); await outside("deeper.js");
+      } else if (damage === "symlink") { await writeFile(join(f.directory, "outside.js"), "export const tag = 'outside';\n", { mode: 0o600 }); await symlink(join(f.directory, "outside.js"), join(dist, "helper.js")); }
+      else if (damage === "writable") { await writeFile(join(dist, "helper.js"), "export const tag = 'writable';\n", { mode: 0o600 }); await chmod(join(dist, "helper.js"), 0o666); }
+      const loaded = await installedReleaseRuntime("1.1.9", f.source);
+      assert.deepEqual(loaded?.preparation.trimArgs(["x"], {}), ["x", "1.1.9"], `${damage}: the contract module is skipped for the byte-identical rule`);
+      loaded?.lease.release();
+    } finally { await f.remove(); }
+  }
+  const g = await fixture(verifier());
+  try {
+    const dist = join(g.directory, "releases/1.1.9/package/dist");
+    await writeFile(join(dist, forwardModuleFile), importing, { mode: 0o600 });
+    await writeFile(join(dist, "helper.js"), "export const tag = '-safe';\n", { mode: 0o600 });
+    assert.deepEqual((await installedReleaseRuntime("1.1.9", g.source))?.preparation.trimArgs(["x"], {}), ["x", "-safe"], "a safe tree is used");
+  } finally { await g.remove(); }
+});
+
+test("a verifier whose own imports are unsafe is never imported", async () => {
+  const f = await fixture(`import "./elsewhere.js";\n${verifier()}`);
+  try {
+    await writeFile(join(f.directory, "outside.js"), "\n", { mode: 0o600 });
+    await symlink(join(f.directory, "outside.js"), join(f.directory, "releases/1.1.9/package/dist/elsewhere.js"));
+    assert.equal(await installedReleaseRuntime("1.1.9", f.source), undefined);
+  } finally { await f.remove(); }
+});
+
+test("this release's own contract module answers with the shape older hosts call", () => {
+  // Changing this shape needs a new forwardContract number: older hosts call exactly these two functions.
+  assert.equal(forwardContract, 1);
+  assert.deepEqual(Object.keys(forwardPreparation).sort(), ["engineHome", "trimArgs"]);
+  assert.ok(forwardPreparation.trimArgs(["app-server"], {}).includes("app-server"));
 });
 
 test("a checkout never loads another release's verifier", async () => {
