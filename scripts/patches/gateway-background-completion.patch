@@ -1,532 +1,3 @@
-diff --git a/codex-rs/core/src/unified_exec/mod.rs b/codex-rs/core/src/unified_exec/mod.rs
-index c4ea099..0adf2ab 100644
---- a/codex-rs/core/src/unified_exec/mod.rs
-+++ b/codex-rs/core/src/unified_exec/mod.rs
-@@ -47,6 +47,7 @@ use crate::tools::network_approval::DeferredNetworkApproval;
- use codex_core_plugins::PluginMetricsSidecar;
- 
- mod async_watcher;
-+pub(crate) mod background_completion;
- mod errors;
- mod head_tail_buffer;
- mod oneshot;
-@@ -87,6 +88,7 @@ pub(crate) struct UnifiedExecContext {
-     pub step_context: Arc<StepContext>,
-     pub cancellation_token: CancellationToken,
-     pub call_id: String,
-+    pub completion_notification: Option<Arc<background_completion::CompletionRegistration>>,
- }
- 
- impl UnifiedExecContext {
-@@ -101,6 +103,7 @@ impl UnifiedExecContext {
-             step_context,
-             cancellation_token,
-             call_id,
-+            completion_notification: None,
-         }
-     }
- }
-@@ -162,6 +165,7 @@ impl ProcessStore {
- }
- 
- pub(crate) struct UnifiedExecProcessManager {
-+    pub(crate) background_completions: background_completion::BackgroundCompletions,
-     process_store: Mutex<ProcessStore>,
-     max_write_stdin_yield_time_ms: u64,
- }
-@@ -169,6 +173,7 @@ pub(crate) struct UnifiedExecProcessManager {
- impl UnifiedExecProcessManager {
-     pub(crate) fn new(max_write_stdin_yield_time_ms: u64) -> Self {
-         Self {
-+            background_completions: background_completion::BackgroundCompletions::default(),
-             process_store: Mutex::new(ProcessStore::default()),
-             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
-                 .max(MIN_EMPTY_YIELD_TIME_MS),
-@@ -184,6 +189,7 @@ impl Default for UnifiedExecProcessManager {
- 
- struct ProcessEntry {
-     process: Arc<UnifiedExecProcess>,
-+    completion_notification: Option<Arc<background_completion::CompletionRegistration>>,
-     plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
-     call_id: String,
-     process_id: i32,
-diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
-index cda8c59..26efb5f 100644
---- a/codex-rs/core/src/unified_exec/process_manager.rs
-+++ b/codex-rs/core/src/unified_exec/process_manager.rs
-@@ -840,6 +840,11 @@ impl UnifiedExecProcessManager {
-             (None, exit_code)
-         };
- 
-+        if response_process_id.is_some()
-+            && let Some(notification) = &context.completion_notification
-+        {
-+            notification.arm();
-+        }
-         let response = ExecCommandToolOutput {
-             event_call_id: context.call_id.clone(),
-             chunk_id,
-@@ -981,6 +986,15 @@ impl UnifiedExecProcessManager {
-         }
- 
-         // Revalidate the identity after approval: a removed process ID can be reused.
-+        if request.input.contains('\u{3}') {
-+            let store = self.process_store.lock().await;
-+            if let Some(entry) = store.processes.get(&process_id)
-+                && Arc::ptr_eq(&entry.process, &locked_process)
-+                && let Some(notification) = &entry.completion_notification
-+            {
-+                notification.cancel();
-+            }
-+        }
-         let PreparedProcessHandles {
-             process,
-             output,
-@@ -1082,6 +1096,9 @@ impl UnifiedExecProcessManager {
-                 process_id,
-             } => (Some(process_id), exit_code, call_id),
-             ProcessStatus::Exited { exit_code, entry } => {
-+                if let Some(notification) = &entry.completion_notification {
-+                    notification.cancel();
-+                }
-                 entry.process.cancellation_token().cancel();
-                 let call_id = entry.call_id.clone();
-                 if let Err(message) =
-@@ -1242,6 +1259,7 @@ impl UnifiedExecProcessManager {
-             metrics_sidecar.map(|sidecar| Arc::new(std::sync::Mutex::new(Some(sidecar))));
-         let entry = ProcessEntry {
-             process: Arc::clone(&process),
-+            completion_notification: context.completion_notification.clone(),
-             plugin_metrics_sidecar: plugin_metrics_sidecar.clone(),
-             call_id: context.call_id.clone(),
-             process_id,
-@@ -1820,6 +1838,7 @@ impl UnifiedExecProcessManager {
-     }
- 
-     pub(crate) async fn terminate_all_processes(&self) {
-+        self.background_completions.cancel();
-         let entries: Vec<ProcessEntry> = {
-             let mut processes = self.process_store.lock().await;
-             let entries: Vec<ProcessEntry> = processes
-@@ -1872,6 +1891,9 @@ impl UnifiedExecProcessManager {
-             let Some(entry) = store.processes.get(&process_id) else {
-                 return false;
-             };
-+            if let Some(notification) = &entry.completion_notification {
-+                notification.cancel();
-+            }
-             (Arc::clone(&entry.process), entry.process.has_exited())
-         };
- 
-diff --git a/codex-rs/core/src/unified_exec/async_watcher.rs b/codex-rs/core/src/unified_exec/async_watcher.rs
-index f30c750..b640b4c 100644
---- a/codex-rs/core/src/unified_exec/async_watcher.rs
-+++ b/codex-rs/core/src/unified_exec/async_watcher.rs
-@@ -175,6 +175,8 @@ pub(crate) fn spawn_exit_watcher(
-     let exit_token = process.cancellation_token();
-     let output_drained = process.output_drained_notify();
-     let interaction_lock = process.interaction_lock();
-+    let completion_notification = context.completion_notification.clone();
-+    let collection_finished = process.output_handles().collection_finished.clone();
- 
-     tokio::spawn(async move {
-         exit_token.cancelled().await;
-@@ -195,10 +197,10 @@ pub(crate) fn spawn_exit_watcher(
-             drop(plugin_metrics_sidecar);
-             emit_failed_exec_end_for_unified_exec(
-                 process.sandbox_type(),
--                session_ref,
-+                Arc::clone(&session_ref),
-                 turn_ref,
-                 model_info,
--                call_id,
-+                call_id.clone(),
-                 command,
-                 cwd,
-                 Some(process_id.to_string()),
-@@ -223,10 +225,10 @@ pub(crate) fn spawn_exit_watcher(
-             .await;
-             emit_exec_end_for_unified_exec(
-                 process.sandbox_type(),
--                session_ref,
-+                Arc::clone(&session_ref),
-                 turn_ref,
-                 model_info,
--                call_id,
-+                call_id.clone(),
-                 command,
-                 cwd,
-                 Some(process_id.to_string()),
-@@ -239,6 +241,15 @@ pub(crate) fn spawn_exit_watcher(
-             )
-             .await;
-         }
-+        drop(_interaction_guard);
-+        if let Some(notification) = completion_notification {
-+            collection_finished.cancelled().await;
-+            if !process.termination_requested.load(Ordering::Acquire)
-+                && let Some(exit_code) = process.exit_code()
-+            {
-+                notification.publish(process_id, call_id, exit_code).await;
-+            }
-+        }
-     });
- }
- 
-diff --git a/codex-rs/core/src/tools/handlers/unified_exec.rs b/codex-rs/core/src/tools/handlers/unified_exec.rs
-index 6eeaf86..dc22c09 100644
---- a/codex-rs/core/src/tools/handlers/unified_exec.rs
-+++ b/codex-rs/core/src/tools/handlers/unified_exec.rs
-@@ -26,6 +26,8 @@ pub use write_stdin::WriteStdinHandler;
- pub(crate) struct ExecCommandArgs {
-     pub(crate) cmd: String,
-     #[serde(default)]
-+    notify_on_exit: bool,
-+    #[serde(default)]
-     shell: Option<String>,
-     #[serde(default)]
-     login: Option<bool>,
-diff --git a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
-index 5028482..6e82aee 100644
---- a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
-+++ b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
-@@ -127,6 +127,15 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
-             ExecCommandLifetime::Interactive => spec,
-             ExecCommandLifetime::OneShot => one_shot_exec_command_spec(spec),
-         };
-+        if matches!(self.lifetime, ExecCommandLifetime::Interactive)
-+            && codex_model_provider_info::gateway_executor_marker()
-+            && let ToolSpec::Function(spec) = &mut spec
-+        {
-+            spec.parameters.properties.get_or_insert_default().insert(
-+                "notify_on_exit".to_string(),
-+                JsonSchema::boolean(Some("Set true for a finite background job when the user wants its result later. If this call returns a running session, command exit delivers a completion observation to this chat and can resume an idle agent without Goal mode. Defaults to false. Stop cancels pending notifications. Track existing tmux work with a waiting command; detaching tmux alone does not track its job. Read final output with write_stdin. This does not survive executor shutdown.".to_string())),
-+            );
-+        }
-         if !self.options.allow_tty
-             && let ToolSpec::Function(spec) = &mut spec
-         {
-@@ -176,7 +185,7 @@ impl ExecCommandHandler {
-         };
- 
-         let manager: &UnifiedExecProcessManager = &session.services.unified_exec_manager;
--        let context = UnifiedExecContext::new(
-+        let mut context = UnifiedExecContext::new(
-             session.clone(),
-             step_context.clone(),
-             cancellation_token,
-@@ -239,6 +248,19 @@ impl ExecCommandHandler {
-                 parse_arguments(&arguments)?
-             }
-         };
-+        if args.notify_on_exit {
-+            if !matches!(self.lifetime, ExecCommandLifetime::Interactive)
-+                || !codex_model_provider_info::is_gateway_executor_provider(
-+                    &turn.config.model_provider_id,
-+                    &turn.config.model_provider,
-+                )
-+            {
-+                return Err(FunctionCallError::RespondToModel(
-+                    "notify_on_exit requires an interactive gateway executor".to_string(),
-+                ));
-+            }
-+            context.completion_notification = Some(manager.background_completions.register());
-+        }
-         if args.tty && !session.features().enabled(Feature::UnifiedExecTty) {
-             return Err(FunctionCallError::RespondToModel(
-                 "TTY execution is disabled by config; omit `tty` or set it to false.".to_string(),
-diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index 700ee27..5906bbd 100644
---- a/codex-rs/core/src/session/mod.rs
-+++ b/codex-rs/core/src/session/mod.rs
-@@ -239,6 +239,7 @@ use codex_protocol::error::Result as CodexResult;
- use codex_protocol::exec_output::StreamOutput;
- 
- pub(crate) mod async_compaction;
-+mod background_completion;
- mod code_mode_warning;
- mod config_refresh;
- pub(crate) mod context_window;
-@@ -5327,6 +5328,10 @@ impl Session {
-     }
- 
-     pub async fn interrupt_task(self: &Arc<Self>) {
-+        self.services
-+            .unified_exec_manager
-+            .background_completions
-+            .cancel();
-         info!("interrupt received: abort current task, if any");
-         let had_active_turn = self.active_turn.lock().await.is_some();
-         self.abort_all_tasks(TurnAbortReason::Interrupted).await;
-diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
-index 91bf8de..5b9047b 100644
---- a/codex-rs/core/src/session/handlers.rs
-+++ b/codex-rs/core/src/session/handlers.rs
-@@ -444,6 +444,7 @@ pub(super) async fn submission_loop(
- ) {
-     // Session shutdown and tree shutdown both use the existing teardown handler.
-     let mut shutdown_received = false;
-+    let mut background_pending = std::collections::VecDeque::new();
-     let mut mailbox = sess.input_queue.mailbox_updates();
-     if let Some(updates) = &mut mailbox {
-         updates.mark_changed();
-@@ -459,6 +460,26 @@ pub(super) async fn submission_loop(
-                 Ok(sub) => sub,
-                 Err(_) => break,
-             },
-+            notice = sess.services.unified_exec_manager.background_completions.receiver.recv(),
-+                if background_pending.len() < crate::unified_exec::MAX_UNIFIED_EXEC_PROCESSES => {
-+                if let Ok(notice) = notice {
-+                    if !sess.deliver_background_completion(&notice).await {
-+                        background_pending.push_back(notice);
-+                    }
-+                }
-+                continue;
-+            },
-+            _ = tokio::time::sleep(std::time::Duration::from_millis(100)), if !background_pending.is_empty() => {
-+                let count = background_pending.len();
-+                for _ in 0..count {
-+                    if let Some(notice) = background_pending.pop_front() {
-+                        if !sess.deliver_background_completion(&notice).await {
-+                            background_pending.push_back(notice);
-+                        }
-+                    }
-+                }
-+                continue;
-+            },
-             update = async {
-                 match &mut mailbox {
-                     Some(updates) => updates.changed().await.map(|()| *updates.borrow_and_update()),
-diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
-index 5612045..6688dff 100644
---- a/codex-rs/core/src/tasks/mod.rs
-+++ b/codex-rs/core/src/tasks/mod.rs
-@@ -934,6 +934,15 @@ impl Session {
-         turn_state: &Mutex<TurnState>,
-         error: Option<ErrorEvent>,
-     ) {
-+        if matches!(
-+            reason,
-+            TurnAbortReason::Interrupted | TurnAbortReason::BudgetLimited
-+        ) {
-+            self.services
-+                .unified_exec_manager
-+                .background_completions
-+                .cancel();
-+        }
-         let sub_id = task.turn_context.sub_id.clone();
-         if task.cancellation_token.is_cancelled() {
-             self.emit_turn_abort_lifecycle(reason, task.turn_context.extension_data.as_ref())
-diff --git a/codex-rs/core/src/unified_exec/mod_tests.rs b/codex-rs/core/src/unified_exec/mod_tests.rs
-index 20f2236..3170fc3 100644
---- a/codex-rs/core/src/unified_exec/mod_tests.rs
-+++ b/codex-rs/core/src/unified_exec/mod_tests.rs
-@@ -136,6 +136,7 @@ async fn exec_command_with_tty(
-     let process_started_alive = !process.has_exited() && process.exit_code().is_none();
-     if process_started_alive {
-         let entry = ProcessEntry {
-+            completion_notification: None,
-             process: Arc::clone(&process),
-             plugin_metrics_sidecar: None,
-             call_id: context.call_id.clone(),
-@@ -604,6 +605,7 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
-     manager.process_store.lock().await.processes.insert(
-         process_id,
-         ProcessEntry {
-+            completion_notification: None,
-             process,
-             plugin_metrics_sidecar: None,
-             call_id: "call".to_string(),
-@@ -690,6 +692,7 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
-     manager.process_store.lock().await.processes.insert(
-         process_id,
-         ProcessEntry {
-+            completion_notification: None,
-             process: Arc::clone(&process),
-             plugin_metrics_sidecar: None,
-             call_id: "call".to_string(),
-diff --git a/codex-rs/core/src/unified_exec/process_manager_tests.rs b/codex-rs/core/src/unified_exec/process_manager_tests.rs
-index cc560d3..232e6bd 100644
---- a/codex-rs/core/src/unified_exec/process_manager_tests.rs
-+++ b/codex-rs/core/src/unified_exec/process_manager_tests.rs
-@@ -640,6 +640,7 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
-         store.processes.insert(
-             process_id,
-             ProcessEntry {
-+                completion_notification: None,
-                 process: if is_exited {
-                     Arc::clone(&exited_process)
-                 } else {
-diff --git a/codex-rs/core/src/unified_exec/background_completion.rs b/codex-rs/core/src/unified_exec/background_completion.rs
-new file mode 100644
-index 0000000..e7c01bc
---- /dev/null
-+++ b/codex-rs/core/src/unified_exec/background_completion.rs
-@@ -0,0 +1,105 @@
-+//! Opt-in command completion delivery owned by the executor, never the provider.
-+
-+use std::sync::Arc;
-+use std::sync::Mutex;
-+use std::sync::atomic::AtomicBool;
-+use std::sync::atomic::Ordering;
-+
-+use async_channel::Receiver;
-+use async_channel::Sender;
-+use tokio_util::sync::CancellationToken;
-+
-+use super::MAX_UNIFIED_EXEC_PROCESSES;
-+
-+pub(crate) struct BackgroundCompletions {
-+    sender: Sender<BackgroundCompletion>,
-+    pub(crate) receiver: Receiver<BackgroundCompletion>,
-+    generation: Mutex<CancellationToken>,
-+}
-+
-+impl Default for BackgroundCompletions {
-+    fn default() -> Self {
-+        let (sender, receiver) = async_channel::bounded(MAX_UNIFIED_EXEC_PROCESSES);
-+        Self {
-+            sender,
-+            receiver,
-+            generation: Mutex::new(CancellationToken::new()),
-+        }
-+    }
-+}
-+
-+impl BackgroundCompletions {
-+    pub(crate) fn register(&self) -> Arc<CompletionRegistration> {
-+        Arc::new(CompletionRegistration {
-+            armed: AtomicBool::new(false),
-+            cancelled: self
-+                .generation
-+                .lock()
-+                .unwrap_or_else(|e| e.into_inner())
-+                .child_token(),
-+            sender: self.sender.clone(),
-+        })
-+    }
-+
-+    /// A stop invalidates existing registrations even if the next user turn resumes.
-+    pub(crate) fn cancel(&self) {
-+        let mut generation = self.generation.lock().unwrap_or_else(|e| e.into_inner());
-+        generation.cancel();
-+        *generation = CancellationToken::new();
-+    }
-+}
-+
-+pub(crate) struct CompletionRegistration {
-+    armed: AtomicBool,
-+    cancelled: CancellationToken,
-+    sender: Sender<BackgroundCompletion>,
-+}
-+
-+impl CompletionRegistration {
-+    pub(crate) fn cancel(&self) {
-+        self.cancelled.cancel();
-+    }
-+
-+    pub(crate) fn arm(&self) {
-+        self.armed.store(true, Ordering::Release);
-+    }
-+
-+    pub(crate) async fn publish(
-+        self: &Arc<Self>,
-+        session_id: i32,
-+        call_id: String,
-+        exit_code: i32,
-+    ) {
-+        if self.cancelled.is_cancelled() || !self.armed.swap(false, Ordering::AcqRel) {
-+            return;
-+        }
-+        let notice = BackgroundCompletion {
-+            registration: Arc::clone(self),
-+            session_id,
-+            call_id,
-+            exit_code,
-+        };
-+        tokio::select! {
-+            biased;
-+            _ = self.cancelled.cancelled() => {},
-+            _ = self.sender.send(notice) => {},
-+        }
-+    }
-+}
-+
-+pub(crate) struct BackgroundCompletion {
-+    registration: Arc<CompletionRegistration>,
-+    pub(crate) session_id: i32,
-+    pub(crate) call_id: String,
-+    pub(crate) exit_code: i32,
-+}
-+
-+impl BackgroundCompletion {
-+    pub(crate) fn is_cancelled(&self) -> bool {
-+        self.registration.cancelled.is_cancelled()
-+    }
-+}
-+
-+#[cfg(test)]
-+#[path = "background_completion_tests.rs"]
-+mod tests;
-diff --git a/codex-rs/core/src/unified_exec/background_completion_tests.rs b/codex-rs/core/src/unified_exec/background_completion_tests.rs
-new file mode 100644
-index 0000000..c28c609
---- /dev/null
-+++ b/codex-rs/core/src/unified_exec/background_completion_tests.rs
-@@ -0,0 +1,53 @@
-+use super::*;
-+
-+#[tokio::test]
-+async fn gateway_background_completion_requires_arm_and_publishes_once() {
-+    let hub = BackgroundCompletions::default();
-+    let registration = hub.register();
-+    registration.publish(42, "call".to_string(), 0).await;
-+    assert!(hub.receiver.try_recv().is_err());
-+    registration.arm();
-+    registration.publish(42, "call".to_string(), 7).await;
-+    registration.publish(42, "call".to_string(), 7).await;
-+    let notice = hub.receiver.try_recv().expect("armed completion");
-+    assert_eq!(
-+        (notice.session_id, notice.call_id.as_str(), notice.exit_code),
-+        (42, "call", 7)
-+    );
-+    assert!(!notice.is_cancelled());
-+    assert!(hub.receiver.try_recv().is_err());
-+}
-+
-+#[tokio::test]
-+async fn gateway_background_completion_stop_invalidates_old_generation_only() {
-+    let hub = BackgroundCompletions::default();
-+    let old = hub.register();
-+    old.arm();
-+    old.publish(1, "old".to_string(), 0).await;
-+    let queued = hub.receiver.try_recv().expect("queued before stop");
-+    hub.cancel();
-+    assert!(queued.is_cancelled());
-+    old.arm();
-+    old.publish(1, "old".to_string(), 0).await;
-+    assert!(hub.receiver.try_recv().is_err());
-+    let new = hub.register();
-+    new.arm();
-+    new.publish(2, "new".to_string(), 0).await;
-+    assert!(
-+        !hub.receiver
-+            .try_recv()
-+            .expect("new registration")
-+            .is_cancelled()
-+    );
-+}
-+
-+#[tokio::test]
-+async fn gateway_background_completion_collected_result_cancels_queued_notice() {
-+    let hub = BackgroundCompletions::default();
-+    let registration = hub.register();
-+    registration.arm();
-+    registration.publish(42, "call".to_string(), 0).await;
-+    let notice = hub.receiver.try_recv().expect("published completion");
-+    registration.cancel();
-+    assert!(notice.is_cancelled());
-+}
 diff --git a/codex-rs/core/src/session/background_completion.rs b/codex-rs/core/src/session/background_completion.rs
 new file mode 100644
 index 0000000..ca6f32e
@@ -751,3 +222,532 @@ index 0000000..182bae7
 +    );
 +    assert!(notice.is_cancelled());
 +}
+diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
+index 128bc7d..51ddfd4 100644
+--- a/codex-rs/core/src/session/handlers.rs
++++ b/codex-rs/core/src/session/handlers.rs
+@@ -447,6 +447,7 @@ pub(super) async fn submission_loop(
+ ) {
+     // Session shutdown and tree shutdown both use the existing teardown handler.
+     let mut shutdown_received = false;
++    let mut background_pending = std::collections::VecDeque::new();
+     let mut mailbox = sess.input_queue.mailbox_updates();
+     if let Some(updates) = &mut mailbox {
+         updates.mark_changed();
+@@ -462,6 +463,26 @@ pub(super) async fn submission_loop(
+                 Ok(sub) => sub,
+                 Err(_) => break,
+             },
++            notice = sess.services.unified_exec_manager.background_completions.receiver.recv(),
++                if background_pending.len() < crate::unified_exec::MAX_UNIFIED_EXEC_PROCESSES => {
++                if let Ok(notice) = notice {
++                    if !sess.deliver_background_completion(&notice).await {
++                        background_pending.push_back(notice);
++                    }
++                }
++                continue;
++            },
++            _ = tokio::time::sleep(std::time::Duration::from_millis(100)), if !background_pending.is_empty() => {
++                let count = background_pending.len();
++                for _ in 0..count {
++                    if let Some(notice) = background_pending.pop_front() {
++                        if !sess.deliver_background_completion(&notice).await {
++                            background_pending.push_back(notice);
++                        }
++                    }
++                }
++                continue;
++            },
+             update = async {
+                 match &mut mailbox {
+                     Some(updates) => updates.changed().await.map(|()| *updates.borrow_and_update()),
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index d4cfa18..33b99f5 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -244,6 +244,7 @@ use codex_protocol::error::Result as CodexResult;
+ use codex_protocol::exec_output::StreamOutput;
+ 
+ pub(crate) mod async_compaction;
++mod background_completion;
+ mod code_mode_warning;
+ mod config_refresh;
+ pub(crate) mod context_window;
+@@ -5601,6 +5602,10 @@ impl Session {
+     }
+ 
+     pub async fn interrupt_task(self: &Arc<Self>) {
++        self.services
++            .unified_exec_manager
++            .background_completions
++            .cancel();
+         info!("interrupt received: abort current task, if any");
+         let had_active_turn = self.active_turn.lock().await.is_some();
+         self.abort_all_tasks(TurnAbortReason::Interrupted).await;
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index 2d2f7e6..9b9eeb2 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -966,6 +966,15 @@ impl Session {
+         turn_state: &Mutex<TurnState>,
+         error: Option<ErrorEvent>,
+     ) {
++        if matches!(
++            reason,
++            TurnAbortReason::Interrupted | TurnAbortReason::BudgetLimited
++        ) {
++            self.services
++                .unified_exec_manager
++                .background_completions
++                .cancel();
++        }
+         let sub_id = task.turn_context.sub_id.clone();
+         if task.cancellation_token.is_cancelled() {
+             self.emit_turn_abort_lifecycle(reason, task.turn_context.extension_data.as_ref())
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec.rs b/codex-rs/core/src/tools/handlers/unified_exec.rs
+index ec7a7d2..f4744a0 100644
+--- a/codex-rs/core/src/tools/handlers/unified_exec.rs
++++ b/codex-rs/core/src/tools/handlers/unified_exec.rs
+@@ -67,6 +67,8 @@ pub(crate) fn terminal_session_for_input(
+ pub(crate) struct ExecCommandArgs {
+     pub(crate) cmd: String,
+     #[serde(default)]
++    notify_on_exit: bool,
++    #[serde(default)]
+     shell: Option<String>,
+     #[serde(default)]
+     login: Option<bool>,
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
+index 6a81b62..8b34eff 100644
+--- a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
++++ b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
+@@ -107,6 +107,15 @@ impl ToolExecutor<ToolInvocation> for ExecCommandHandler {
+             ExecCommandLifetime::Interactive => spec,
+             ExecCommandLifetime::OneShot => one_shot_exec_command_spec(spec),
+         };
++        if matches!(self.lifetime, ExecCommandLifetime::Interactive)
++            && codex_model_provider_info::gateway_executor_marker()
++            && let ToolSpec::Function(spec) = &mut spec
++        {
++            spec.parameters.properties.get_or_insert_default().insert(
++                "notify_on_exit".to_string(),
++                JsonSchema::boolean(Some("Set true for a finite background job when the user wants its result later. If this call returns a running session, command exit delivers a completion observation to this chat and can resume an idle agent without Goal mode. Defaults to false. Stop cancels pending notifications. Track existing tmux work with a waiting command; detaching tmux alone does not track its job. Read final output with write_stdin. This does not survive executor shutdown.".to_string())),
++            );
++        }
+         if !self.options.allow_tty
+             && let ToolSpec::Function(spec) = &mut spec
+         {
+@@ -156,7 +165,7 @@ impl ExecCommandHandler {
+         };
+ 
+         let manager: &UnifiedExecProcessManager = &session.services.unified_exec_manager;
+-        let context = UnifiedExecContext::new(
++        let mut context = UnifiedExecContext::new(
+             session.clone(),
+             step_context.clone(),
+             cancellation_token,
+@@ -165,6 +174,19 @@ impl ExecCommandHandler {
+         let turn_environment = selected_executor(&environments, &step_context.environments)?;
+         let parsed =
+             ParsedExecCommand::parse(&arguments, &session, &step_context, turn_environment)?;
++        if parsed.args.notify_on_exit {
++            if !matches!(self.lifetime, ExecCommandLifetime::Interactive)
++                || !codex_model_provider_info::is_gateway_executor_provider(
++                    &step_context.turn.config.model_provider_id,
++                    &step_context.turn.config.model_provider,
++                )
++            {
++                return Err(FunctionCallError::RespondToModel(
++                    "notify_on_exit requires an interactive gateway executor".to_string(),
++                ));
++            }
++            context.completion_notification = Some(manager.background_completions.register());
++        }
+         maybe_emit_implicit_skill_invocation(
+             &session,
+             &step_context,
+diff --git a/codex-rs/core/src/unified_exec/async_watcher.rs b/codex-rs/core/src/unified_exec/async_watcher.rs
+index f30c750..b640b4c 100644
+--- a/codex-rs/core/src/unified_exec/async_watcher.rs
++++ b/codex-rs/core/src/unified_exec/async_watcher.rs
+@@ -175,6 +175,8 @@ pub(crate) fn spawn_exit_watcher(
+     let exit_token = process.cancellation_token();
+     let output_drained = process.output_drained_notify();
+     let interaction_lock = process.interaction_lock();
++    let completion_notification = context.completion_notification.clone();
++    let collection_finished = process.output_handles().collection_finished.clone();
+ 
+     tokio::spawn(async move {
+         exit_token.cancelled().await;
+@@ -195,10 +197,10 @@ pub(crate) fn spawn_exit_watcher(
+             drop(plugin_metrics_sidecar);
+             emit_failed_exec_end_for_unified_exec(
+                 process.sandbox_type(),
+-                session_ref,
++                Arc::clone(&session_ref),
+                 turn_ref,
+                 model_info,
+-                call_id,
++                call_id.clone(),
+                 command,
+                 cwd,
+                 Some(process_id.to_string()),
+@@ -223,10 +225,10 @@ pub(crate) fn spawn_exit_watcher(
+             .await;
+             emit_exec_end_for_unified_exec(
+                 process.sandbox_type(),
+-                session_ref,
++                Arc::clone(&session_ref),
+                 turn_ref,
+                 model_info,
+-                call_id,
++                call_id.clone(),
+                 command,
+                 cwd,
+                 Some(process_id.to_string()),
+@@ -239,6 +241,15 @@ pub(crate) fn spawn_exit_watcher(
+             )
+             .await;
+         }
++        drop(_interaction_guard);
++        if let Some(notification) = completion_notification {
++            collection_finished.cancelled().await;
++            if !process.termination_requested.load(Ordering::Acquire)
++                && let Some(exit_code) = process.exit_code()
++            {
++                notification.publish(process_id, call_id, exit_code).await;
++            }
++        }
+     });
+ }
+ 
+diff --git a/codex-rs/core/src/unified_exec/background_completion.rs b/codex-rs/core/src/unified_exec/background_completion.rs
+new file mode 100644
+index 0000000..e7c01bc
+--- /dev/null
++++ b/codex-rs/core/src/unified_exec/background_completion.rs
+@@ -0,0 +1,105 @@
++//! Opt-in command completion delivery owned by the executor, never the provider.
++
++use std::sync::Arc;
++use std::sync::Mutex;
++use std::sync::atomic::AtomicBool;
++use std::sync::atomic::Ordering;
++
++use async_channel::Receiver;
++use async_channel::Sender;
++use tokio_util::sync::CancellationToken;
++
++use super::MAX_UNIFIED_EXEC_PROCESSES;
++
++pub(crate) struct BackgroundCompletions {
++    sender: Sender<BackgroundCompletion>,
++    pub(crate) receiver: Receiver<BackgroundCompletion>,
++    generation: Mutex<CancellationToken>,
++}
++
++impl Default for BackgroundCompletions {
++    fn default() -> Self {
++        let (sender, receiver) = async_channel::bounded(MAX_UNIFIED_EXEC_PROCESSES);
++        Self {
++            sender,
++            receiver,
++            generation: Mutex::new(CancellationToken::new()),
++        }
++    }
++}
++
++impl BackgroundCompletions {
++    pub(crate) fn register(&self) -> Arc<CompletionRegistration> {
++        Arc::new(CompletionRegistration {
++            armed: AtomicBool::new(false),
++            cancelled: self
++                .generation
++                .lock()
++                .unwrap_or_else(|e| e.into_inner())
++                .child_token(),
++            sender: self.sender.clone(),
++        })
++    }
++
++    /// A stop invalidates existing registrations even if the next user turn resumes.
++    pub(crate) fn cancel(&self) {
++        let mut generation = self.generation.lock().unwrap_or_else(|e| e.into_inner());
++        generation.cancel();
++        *generation = CancellationToken::new();
++    }
++}
++
++pub(crate) struct CompletionRegistration {
++    armed: AtomicBool,
++    cancelled: CancellationToken,
++    sender: Sender<BackgroundCompletion>,
++}
++
++impl CompletionRegistration {
++    pub(crate) fn cancel(&self) {
++        self.cancelled.cancel();
++    }
++
++    pub(crate) fn arm(&self) {
++        self.armed.store(true, Ordering::Release);
++    }
++
++    pub(crate) async fn publish(
++        self: &Arc<Self>,
++        session_id: i32,
++        call_id: String,
++        exit_code: i32,
++    ) {
++        if self.cancelled.is_cancelled() || !self.armed.swap(false, Ordering::AcqRel) {
++            return;
++        }
++        let notice = BackgroundCompletion {
++            registration: Arc::clone(self),
++            session_id,
++            call_id,
++            exit_code,
++        };
++        tokio::select! {
++            biased;
++            _ = self.cancelled.cancelled() => {},
++            _ = self.sender.send(notice) => {},
++        }
++    }
++}
++
++pub(crate) struct BackgroundCompletion {
++    registration: Arc<CompletionRegistration>,
++    pub(crate) session_id: i32,
++    pub(crate) call_id: String,
++    pub(crate) exit_code: i32,
++}
++
++impl BackgroundCompletion {
++    pub(crate) fn is_cancelled(&self) -> bool {
++        self.registration.cancelled.is_cancelled()
++    }
++}
++
++#[cfg(test)]
++#[path = "background_completion_tests.rs"]
++mod tests;
+diff --git a/codex-rs/core/src/unified_exec/background_completion_tests.rs b/codex-rs/core/src/unified_exec/background_completion_tests.rs
+new file mode 100644
+index 0000000..c28c609
+--- /dev/null
++++ b/codex-rs/core/src/unified_exec/background_completion_tests.rs
+@@ -0,0 +1,53 @@
++use super::*;
++
++#[tokio::test]
++async fn gateway_background_completion_requires_arm_and_publishes_once() {
++    let hub = BackgroundCompletions::default();
++    let registration = hub.register();
++    registration.publish(42, "call".to_string(), 0).await;
++    assert!(hub.receiver.try_recv().is_err());
++    registration.arm();
++    registration.publish(42, "call".to_string(), 7).await;
++    registration.publish(42, "call".to_string(), 7).await;
++    let notice = hub.receiver.try_recv().expect("armed completion");
++    assert_eq!(
++        (notice.session_id, notice.call_id.as_str(), notice.exit_code),
++        (42, "call", 7)
++    );
++    assert!(!notice.is_cancelled());
++    assert!(hub.receiver.try_recv().is_err());
++}
++
++#[tokio::test]
++async fn gateway_background_completion_stop_invalidates_old_generation_only() {
++    let hub = BackgroundCompletions::default();
++    let old = hub.register();
++    old.arm();
++    old.publish(1, "old".to_string(), 0).await;
++    let queued = hub.receiver.try_recv().expect("queued before stop");
++    hub.cancel();
++    assert!(queued.is_cancelled());
++    old.arm();
++    old.publish(1, "old".to_string(), 0).await;
++    assert!(hub.receiver.try_recv().is_err());
++    let new = hub.register();
++    new.arm();
++    new.publish(2, "new".to_string(), 0).await;
++    assert!(
++        !hub.receiver
++            .try_recv()
++            .expect("new registration")
++            .is_cancelled()
++    );
++}
++
++#[tokio::test]
++async fn gateway_background_completion_collected_result_cancels_queued_notice() {
++    let hub = BackgroundCompletions::default();
++    let registration = hub.register();
++    registration.arm();
++    registration.publish(42, "call".to_string(), 0).await;
++    let notice = hub.receiver.try_recv().expect("published completion");
++    registration.cancel();
++    assert!(notice.is_cancelled());
++}
+diff --git a/codex-rs/core/src/unified_exec/mod.rs b/codex-rs/core/src/unified_exec/mod.rs
+index 78ec3c5..e1a115e 100644
+--- a/codex-rs/core/src/unified_exec/mod.rs
++++ b/codex-rs/core/src/unified_exec/mod.rs
+@@ -44,6 +44,7 @@ use crate::tools::network_approval::DeferredNetworkApproval;
+ use codex_core_plugins::PluginMetricsSidecar;
+ 
+ mod async_watcher;
++pub(crate) mod background_completion;
+ mod errors;
+ mod oneshot;
+ pub(crate) mod output;
+@@ -85,6 +86,7 @@ pub(crate) struct UnifiedExecContext {
+     pub step_context: Arc<StepContext>,
+     pub cancellation_token: CancellationToken,
+     pub call_id: String,
++    pub completion_notification: Option<Arc<background_completion::CompletionRegistration>>,
+ }
+ 
+ impl UnifiedExecContext {
+@@ -99,6 +101,7 @@ impl UnifiedExecContext {
+             step_context,
+             cancellation_token,
+             call_id,
++            completion_notification: None,
+         }
+     }
+ }
+@@ -156,6 +159,7 @@ impl ProcessStore {
+ }
+ 
+ pub(crate) struct UnifiedExecProcessManager {
++    pub(crate) background_completions: background_completion::BackgroundCompletions,
+     process_store: Mutex<ProcessStore>,
+     max_write_stdin_yield_time_ms: u64,
+ }
+@@ -163,6 +167,7 @@ pub(crate) struct UnifiedExecProcessManager {
+ impl UnifiedExecProcessManager {
+     pub(crate) fn new(max_write_stdin_yield_time_ms: u64) -> Self {
+         Self {
++            background_completions: background_completion::BackgroundCompletions::default(),
+             process_store: Mutex::new(ProcessStore::default()),
+             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
+                 .max(MIN_EMPTY_YIELD_TIME_MS),
+@@ -178,6 +183,7 @@ impl Default for UnifiedExecProcessManager {
+ 
+ struct ProcessEntry {
+     process: Arc<UnifiedExecProcess>,
++    completion_notification: Option<Arc<background_completion::CompletionRegistration>>,
+     plugin_metrics_sidecar: Option<SharedPluginMetricsSidecar>,
+     call_id: String,
+     process_id: i32,
+diff --git a/codex-rs/core/src/unified_exec/mod_tests.rs b/codex-rs/core/src/unified_exec/mod_tests.rs
+index 5dbbf83..4d62107 100644
+--- a/codex-rs/core/src/unified_exec/mod_tests.rs
++++ b/codex-rs/core/src/unified_exec/mod_tests.rs
+@@ -137,6 +137,7 @@ async fn exec_command_with_tty(
+     let process_started_alive = !process.has_exited() && process.exit_code().is_none();
+     if process_started_alive {
+         let entry = ProcessEntry {
++            completion_notification: None,
+             process: Arc::clone(&process),
+             plugin_metrics_sidecar: None,
+             call_id: context.call_id.clone(),
+@@ -609,6 +610,7 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
+     manager.process_store.lock().await.processes.insert(
+         process_id,
+         ProcessEntry {
++            completion_notification: None,
+             process,
+             plugin_metrics_sidecar: None,
+             call_id: "call".to_string(),
+@@ -699,6 +701,7 @@ async fn terminating_during_stdin_poll_returns_exited_response(
+     manager.process_store.lock().await.processes.insert(
+         process_id,
+         ProcessEntry {
++            completion_notification: None,
+             process: Arc::clone(&process),
+             plugin_metrics_sidecar: None,
+             call_id: "call".to_string(),
+diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
+index 2a2eb2a..da8e8b8 100644
+--- a/codex-rs/core/src/unified_exec/process_manager.rs
++++ b/codex-rs/core/src/unified_exec/process_manager.rs
+@@ -852,6 +852,11 @@ impl UnifiedExecProcessManager {
+             (None, exit_code)
+         };
+ 
++        if response_process_id.is_some()
++            && let Some(notification) = &context.completion_notification
++        {
++            notification.arm();
++        }
+         let response = ExecCommandToolOutput {
+             event_call_id: context.call_id.clone(),
+             chunk_id,
+@@ -990,6 +995,15 @@ impl UnifiedExecProcessManager {
+         }
+ 
+         // Revalidate the identity after approval: a removed process ID can be reused.
++        if request.input.contains('\u{3}') {
++            let store = self.process_store.lock().await;
++            if let Some(entry) = store.processes.get(&process_id)
++                && Arc::ptr_eq(&entry.process, &locked_process)
++                && let Some(notification) = &entry.completion_notification
++            {
++                notification.cancel();
++            }
++        }
+         let PreparedProcessHandles {
+             process,
+             output,
+@@ -1100,6 +1114,9 @@ impl UnifiedExecProcessManager {
+                 process_id,
+             } => (Some(process_id), exit_code, call_id),
+             ProcessStatus::Exited { exit_code, entry } => {
++                if let Some(notification) = &entry.completion_notification {
++                    notification.cancel();
++                }
+                 entry.process.cancellation_token().cancel();
+                 let call_id = entry.call_id.clone();
+                 if let Err(message) =
+@@ -1267,6 +1284,7 @@ impl UnifiedExecProcessManager {
+             metrics_sidecar.map(|sidecar| Arc::new(std::sync::Mutex::new(Some(sidecar))));
+         let entry = ProcessEntry {
+             process: Arc::clone(&process),
++            completion_notification: context.completion_notification.clone(),
+             plugin_metrics_sidecar: plugin_metrics_sidecar.clone(),
+             call_id: context.call_id.clone(),
+             process_id,
+@@ -1800,6 +1818,7 @@ impl UnifiedExecProcessManager {
+     }
+ 
+     pub(crate) async fn terminate_all_processes(&self) {
++        self.background_completions.cancel();
+         let entries: Vec<ProcessEntry> = {
+             let mut processes = self.process_store.lock().await;
+             let entries: Vec<ProcessEntry> = processes
+@@ -1859,6 +1878,9 @@ impl UnifiedExecProcessManager {
+             let Some(entry) = store.processes.get(&process_id) else {
+                 return false;
+             };
++            if let Some(notification) = &entry.completion_notification {
++                notification.cancel();
++            }
+             (Arc::clone(&entry.process), entry.process.has_exited())
+         };
+ 
+diff --git a/codex-rs/core/src/unified_exec/process_manager_tests.rs b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+index f17801b..8df55be 100644
+--- a/codex-rs/core/src/unified_exec/process_manager_tests.rs
++++ b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+@@ -629,6 +629,7 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
+         store.processes.insert(
+             process_id,
+             ProcessEntry {
++                completion_notification: None,
+                 process: if is_exited {
+                     Arc::clone(&exited_process)
+                 } else {

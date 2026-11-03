@@ -1,6 +1,22 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 2ac9b93..bec0033 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -936,6 +936,9 @@ impl ModelClient {
+         responses_metadata: &CodexResponsesMetadata,
+     ) -> ApiHeaderMap {
+         let mut extra_headers = responses_metadata.compatibility_headers();
++        if codex_model_provider_info::gateway_executor_marker() {
++            extra_headers.insert("x-harness-cache-recovery", HeaderValue::from_static("1"));
++        }
+         if matches!(
+             self.state.session_source,
+             SessionSource::Internal(InternalSessionSource::MemoryConsolidation)
+diff --git a/codex-rs/core/src/context_manager/history.rs b/codex-rs/core/src/context_manager/history.rs
+index 12fff89..1ad6384 100644
 --- a/codex-rs/core/src/context_manager/history.rs
 +++ b/codex-rs/core/src/context_manager/history.rs
-@@ -495,6 +495,25 @@
+@@ -495,6 +495,25 @@ impl ContextManager {
      }
  
      pub(crate) fn set_token_usage_full(&mut self, context_window: i64) {
@@ -26,7 +42,7 @@
          match &mut self.token_info {
              Some(info) => info.fill_to_context_window(context_window),
              None => {
-@@ -1401,3 +1420,47 @@
+@@ -1434,3 +1453,47 @@ fn user_message_positions(items: &[ResponseItemEnvelope]) -> Vec<usize> {
  #[cfg(test)]
  #[path = "history_tests.rs"]
  mod tests;
@@ -74,15 +90,3 @@
 +        assert_eq!(info.last_token_usage.total_tokens, 500_000);
 +    }
 +}
---- a/codex-rs/core/src/client.rs
-+++ b/codex-rs/core/src/client.rs
-@@ -872,6 +872,9 @@
-         responses_metadata: &CodexResponsesMetadata,
-     ) -> ApiHeaderMap {
-         let mut extra_headers = responses_metadata.compatibility_headers();
-+        if codex_model_provider_info::gateway_executor_marker() {
-+            extra_headers.insert("x-harness-cache-recovery", HeaderValue::from_static("1"));
-+        }
-         if matches!(
-             self.state.session_source,
-             SessionSource::Internal(InternalSessionSource::MemoryConsolidation)
