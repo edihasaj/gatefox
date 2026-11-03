@@ -89,6 +89,12 @@
       }
     }
   },
+  "guardianv3": {
+    "fields": [
+      "enabled"
+    ],
+    "nested": {}
+  },
   "multi_agent_v2": {
     "fields": [
       "default_wait_timeout_ms",
@@ -175,10 +181,18 @@
   "rollout_budget": {
     "fields": [
       "enabled",
+      "enforce_limit",
       "limit_tokens",
       "prefill_token_weight",
       "reminder_at_remaining_tokens",
       "sampling_token_weight"
+    ],
+    "nested": {}
+  },
+  "runtime_agent_instances": {
+    "fields": [
+      "enabled",
+      "mode"
     ],
     "nested": {}
   },

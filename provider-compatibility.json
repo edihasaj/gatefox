@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
   "codex": {
-    "version": "0.163.0",
-    "tag": "rust-v0.163.0",
-    "revision": "83086188ae0614bd882818ff1aa23f3194962012"
+    "version": "0.166.0",
+    "tag": "rust-v0.166.0",
+    "revision": "6ff1e1ca3b30fc8b914720681fcf5fe62e95f856"
   },
   "claude": {
     "package": "@anthropic-ai/claude-code",
-    "version": "2.1.303",
-    "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.303.tgz",
-    "integrity": "sha512-vGwsxL/bjxl7crYg2/BLBs75ErQ22x9L3LKqZqwqZ9vwp6A41sVCDdBXsPftM19V5LAwK6/s/sAxIVjX6F4O6Q==",
+    "version": "2.1.317",
+    "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.317.tgz",
+    "integrity": "sha512-k467+KT/LcqJXr3Ye/C4lXnfRNmxOa/TZcIiWKoiyc/XbZGzAR0fxiI/IEOkpic+BFhYRP6BiXa7cvTx4fsOSg==",
     "checks": [
       "version",
       "required_flags",
@@ -19,9 +19,9 @@
   },
   "copilot": {
     "package": "@github/copilot",
-    "version": "1.0.98",
-    "tarball": "https://registry.npmjs.org/@github/copilot/-/copilot-1.0.98.tgz",
-    "integrity": "sha512-zpXwyI8hLUM/0r9DqSRqxemRBIewLrUzTH+5sQXVH7/VKUaC4SbtbG0YHj1gpjH4YDZOvHZAl9taFQa9Kwl+Pg==",
+    "version": "1.0.105",
+    "tarball": "https://registry.npmjs.org/@github/copilot/-/copilot-1.0.105.tgz",
+    "integrity": "sha512-k5JPVZrc0Ms4YdAmYS80OGxDvwjDZNVqDS3dxphIFUVSTFJRwcHkbHh3yUKk7MEyBjKqQYKLKNAKSF+dVmjl7A==",
     "checks": [
       "version",
       "required_flags",
