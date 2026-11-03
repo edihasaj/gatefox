@@ -49,6 +49,16 @@ refusal instead of silently switching to one-shot. See [provider reuse](provider
 | `parkMinutes` | 30 | Idle time before a session closes (5–240). Copilot's prompt cache lasted 30 minutes for `gpt-6-luna` and 5 minutes for `claude-haiku-5.5` in the measurements; a session parked longer still continues, at about the price of a reseed, and keeps its native history |
 | `toolWaitMinutes` | 25 | How long a session waits for Codex to run a tool before it closes (1–25). The wait is the smaller of this and `parkMinutes`: with `parkMinutes: 10` a session waiting for tools closes after 10 minutes |
 
+## Caller tool identity
+
+Copilot may return a caller-visible alias instead of the generated native tool
+name. The gateway accepts exact, unambiguous spellings from the current caller
+catalog, using the shared Claude identity bindings. Arguments, call IDs and the
+original caller namespace remain unchanged. Unknown, removed and ambiguous names
+still fail before dispatch; no prefix stripping or fuzzy matching is used.
+A `copilot_tool_rejected` record with `nameClass: declared_alias` from an older
+release identifies this former mapping refusal rather than an invented tool.
+
 ## What a session is made of
 
 One-shot requests and live sessions are built the same way, so a fallback never changes

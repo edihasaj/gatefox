@@ -1,5 +1,6 @@
 import type { ChatToolSelection, InferenceEvent, OpenAITool, OpenAIToolCall, Usage, UsageAccounting } from "../protocol/types.js";
 import { nativeCatalog } from "./copilot-render.js";
+import { claudeToolBindings } from "./claude-tool-names.js";
 import { record } from "./copilot-rpc.js";
 import { copilotContextFailure } from "./context-errors.js";
 import { ProviderError } from "./provider.js";
@@ -15,10 +16,13 @@ export const nativeToolMap = (tools: OpenAITool[]): Map<string, OpenAITool> => n
 export function nativeCopilotCalls(value: unknown, tools: OpenAITool[] | Map<string, OpenAITool>): OpenAIToolCall[] {
   if (!Array.isArray(value)) throw invalidCall("malformed_tool_call", "Copilot returned invalid tool requests");
   const names = tools instanceof Map ? tools : nativeToolMap(tools);
+  // Resolve only exact, unique spellings of this request's declared identities.
+  // A model can return the caller alias shown in instructions instead of its native wire name.
+  const bindings = claudeToolBindings([...new Set(names.values())]);
   const ids = new Set<string>();
   return value.map(raw => {
     const call = record(raw);
-    const definition = typeof call.name === "string" ? names.get(call.name)?.function : undefined;
+    const definition = typeof call.name === "string" ? bindings.get(call.name)?.function : undefined;
     if (!definition) {
       telemetry("copilot_tool_rejected", { reason: "unknown_tool", nameClass: copilotUnknownNameClass(call.name, names.values()),
         catalogCount: names.size, callCount: value.length });
