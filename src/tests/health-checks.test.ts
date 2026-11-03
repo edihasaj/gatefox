@@ -211,3 +211,12 @@ test("a lagging service names what moves it: the forced restart with Claude comp
   assert.equal(waiting[0]?.level, "info"); assert.match(waiting[0]?.reason ?? "", /gateway activity/);
   assert.equal(upgradeFindings(undefined, ["service@1.5.1"], [])[0]?.level, "info", "an unreadable plan names no forced restart");
 });
+
+test("a service whose controller moved live is not blamed on Claude Desktop and names the host's drain", () => {
+  const claude = { version: 1, config: "/c.json", components: [{ id: "claude-adapter", kind: "claude-adapter", command: "/bin/true", args: [] }] } as unknown as Parameters<typeof upgradeFindings>[0];
+  const live = upgradeFindings(claude, ["service@1.5.2"], [], "1.5.3", "1.5.3");
+  assert.equal(live[0]?.level, "info"); assert.match(live[0]?.reason ?? "", /moved live/);
+  assert.equal(upgradeFindings(claude, ["service@1.5.2"], [], "1.5.2", "1.5.3")[0]?.level, "warn", "a controller that did not move still needs the forced restart");
+  assert.equal(statusFields({ controllerRelease: "1.5.3", components: [] }).controllerRelease, "1.5.3");
+  assert.equal(statusFields({ controllerRelease: "../x", components: [] }).controllerRelease, undefined);
+});

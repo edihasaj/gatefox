@@ -77,13 +77,14 @@ export function componentFindings(result: VersionsResult, now: number, since?: n
 }
 
 /**
- * Why a service behind the installed release has not moved, and what moves it. A configured Claude Desktop component makes the
- * supervisor refuse every automatic restart (`claude_busy`), so that service never moves on its own: on 2026-11-03 one Mac kept
- * the previous release until an operator ran the forced restart. Any other lagging service waits for a moment with no running
- * turn; `gateway activity` lists the chats it is waiting on. Fixed phrases only.
+ * Why a service behind the installed release has not moved, and what moves it. A service whose controller already runs the
+ * installed release moved live: only its bootstrap stays until a natural start, and its execution host moves once its chats
+ * drain (no running turn), so that is information, not a fault. A service whose controller did not move with a configured
+ * Claude Desktop component refuses every automatic restart (`claude_busy`) and needs the forced restart. Fixed phrases only.
  */
-export function upgradeFindings(plan: ServicePlan | undefined, lagging: string[], stale: string[]): Finding[] {
+export function upgradeFindings(plan: ServicePlan | undefined, lagging: string[], stale: string[], controllerRelease?: string, installed?: string | null): Finding[] {
   if (![...lagging, ...stale].some(name => name.startsWith("service@"))) return [];
+  if (installed && controllerRelease === installed) return [{ level: "info", reason: "service moved live; its execution host follows once chats drain: see gateway activity" }];
   if (plan?.components.some(component => isClaudeComponent(component))) {
     return [{ level: "warn", reason: "service upgrade blocked by Claude Desktop components: run gateway service restart --force when Claude is idle" }];
   }
@@ -104,6 +105,8 @@ export interface ServiceStatus {
   pid?: number;
   updatedAt?: string;
   runningRelease?: string;
+  /** The release whose controller the service runs; differs from `runningRelease` after a live controller update. */
+  controllerRelease?: string;
   stopping?: boolean;
   published: boolean;
 }
@@ -126,6 +129,7 @@ export function statusFields(value: unknown): ServiceStatus {
     ...(Number.isSafeInteger(row.pid) && Number(row.pid) > 0 ? { pid: Number(row.pid) } : {}),
     ...(typeof row.updatedAt === "string" && Number.isFinite(Date.parse(row.updatedAt)) ? { updatedAt: row.updatedAt } : {}),
     ...(typeof row.runningRelease === "string" && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.[0-9]$/.test(row.runningRelease) ? { runningRelease: row.runningRelease } : {}),
+    ...(typeof row.controllerRelease === "string" && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.[0-9]$/.test(row.controllerRelease) ? { controllerRelease: row.controllerRelease } : {}),
     ...(row.stopping === true ? { stopping: true } : {}) };
 }
 

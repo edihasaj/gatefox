@@ -5,7 +5,7 @@ import { executionHostHome, hostFailureReason, startExecutionHost } from "./exec
 import { telemetry } from "./telemetry.js";
 import { reportException } from "./error-report.js";
 import type { HostProbeReason, SdkBaseline } from "./service-host-probe.js";
-import { deterministicFailures, hostProbeStrikes, hostRetryDelayMs, type HostRestartReason, type SupervisorHealing } from "./service-heal.js";
+import { deterministicFailures, hostProbeStrikes, hostRetryDelayMs, upgradeGraceMs, upgradeQuietMs, type HostRestartReason, type SupervisorHealing } from "./service-heal.js";
 
 export type ExecutionHost = Awaited<ReturnType<typeof startExecutionHost>>;
 /** The `executionHost` block of the service status file. */
@@ -71,13 +71,40 @@ export class ServiceHostKeeper {
   private registrationChecking = 0;
   private pendingContext?: HostKeeperContext;
   private releaseUpdatePending = false;
+  /** When the pending release move was staged (monotonic), the last quiet attempt, and the quiet reasons already logged. */
+  private releaseUpdateSince?: number;
+  private lastQuietAttempt = Number.NEGATIVE_INFINITY;
+  private quietWaits = new Set<string>();
   /** Stage new host policy until every old keeper operation has finished. Active engines remain untouched. */
   adoptRuntime(next: ServiceHostKeeper): void { this.pendingContext = next.context; this.applyPendingRuntime(); }
   private applyPendingRuntime(): void {
     if (!this.pendingContext || !this.canHandover()) return;
     this.context = this.pendingContext; this.pendingContext = undefined;
-    this.releaseUpdatePending = true;
+    this.releaseUpdatePending = true; this.releaseUpdateSince ??= performance.now();
     if (this.executionState?.state === "running" && !this.hostRestartReason) this.hostRestartReason = "release_update";
+  }
+  /**
+   * The host's own drain rule for a release move after a live controller update. The strict idle gate (no adapter lease, no
+   * loaded chat) never passes while an app stays connected, so after the grace the host also moves when quiet: no turn running
+   * or waiting for an approval or input in any engine, no background terminal, and no turn ended within the quiet time. Only
+   * the host restarts; inference, tunnels, the relay and Claude components keep running, so the Claude restart guard does not
+   * apply. Loaded chats re-attach on their next request, as after any host restart. Never for an unhealthy or relay restart.
+   */
+  private async quietReady(host: ExecutionHost): Promise<boolean> {
+    if (this.hostRestartReason !== "release_update" || this.releaseUpdateSince === undefined || !host.prepareQuietStop) return false;
+    const heal = this.context.heal; const now = performance.now();
+    if (now - this.releaseUpdateSince < (heal.hostQuietGraceMs ?? upgradeGraceMs())) return false;
+    if (now - this.lastQuietAttempt < (heal.hostQuietRetryMs ?? 60_000)) return false;
+    this.lastQuietAttempt = now;
+    const result = await host.prepareQuietStop(heal.hostQuietMs ?? upgradeQuietMs()).catch(() => undefined);
+    if (result && "loadedChats" in result) {
+      // The gate is closed now. A reason that changed while the check ran (an unhealthy host, a relay registration) keeps its
+      // own strict rule, and a stop closes the host itself: reopen the gate and let that path decide.
+      if (this.hostRestartReason !== "release_update" || this.context.stopping()) { host.resume(); return false; }
+      telemetry("execution_host_quiet_upgrade", { loadedChats: result.loadedChats }); return true;
+    }
+    if (result && "wait" in result && !this.quietWaits.has(result.wait)) { this.quietWaits.add(result.wait); telemetry("execution_host_upgrade_waiting", { reason: result.wait }); }
+    return false;
   }
   /** Starts the host of a plan that shares executors or native chats, then its kick watcher and probe. Throws on a mismatched state. */
   async start(): Promise<void> {
@@ -131,7 +158,7 @@ export class ServiceHostKeeper {
       await starting;
       if (this.hostFailures) telemetry("execution_host_recovered", { failures: this.hostFailures });
       this.hostFailures = 0; this.hostFailureDeterministic = false; this.hostOwnsRelay = owns; this.hostUnhealthy = undefined; this.hostRestartReason = undefined; this.sdkBaseline = {};
-      this.hostGeneration++; this.hostProbeFailures = 0; this.releaseUpdatePending = false;
+      this.hostGeneration++; this.hostProbeFailures = 0; this.releaseUpdatePending = false; this.releaseUpdateSince = undefined; this.quietWaits.clear();
       execution.state = "running"; await this.context.publish();
       // The relay was registered while this start was in the air without the host knowing: ask again now it is running.
       if (!owns) void this.restartForRegistration();
@@ -237,7 +264,9 @@ export class ServiceHostKeeper {
     this.hostRestarting = true; let closed = false;
     try {
       const host: ExecutionHost | undefined = await starting?.catch(() => undefined);
-      if (!host || this.context.stopping() || !await host.prepareStop().catch(() => false)) return;
+      if (!host || this.context.stopping()) return;
+      // Strict idle first; a pending release move may also go when quiet (see quietReady).
+      if (!await host.prepareStop().catch(() => false) && !await this.quietReady(host)) return;
       // A stop that came during the idle check closes the host itself; this is no restart.
       if (this.context.stopping()) return;
       execution.state = "starting"; this.hostLastStart = performance.now(); await this.context.publish();

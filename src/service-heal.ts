@@ -62,6 +62,11 @@ export interface SupervisorHealing {
   kickGapMs: number;
   healthSchedule: (stateDirectory: string, configPath: string) => () => void;
   releaseState: () => ReleaseState | undefined;
+  /**
+   * How long a live-updated controller waits for the strict idle host move before the quiet rule may move only the host, the
+   * quiet time it needs, and the least time between two quiet attempts. Defaults: `upgradeGraceMs`, `upgradeQuietMs`, 60 s.
+   */
+  hostQuietGraceMs?: number; hostQuietMs?: number; hostQuietRetryMs?: number;
 }
 export const defaultHealing: SupervisorHealing = { probeHost: probeExecutionHost, hostProbeMs: 60_000, watchKick: (home, onKick) => watchHostKick(home, onKick), kickGapMs: 5000, healthSchedule: scheduleServiceHealth,
   releaseState: () => releaseState() };
