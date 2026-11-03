@@ -111,13 +111,22 @@ export class ExecutionEngine {
    * checked that binary, so it must not spawn it for a descriptor that names no runtime.
    */
   constructor(readonly descriptor: ExecutionDescriptor, private identity: HostIdentity, hostHome: string, private readonly resolveRuntime: () => Promise<GatewaySdkRuntime | undefined> = gatewaySdkRuntime,
-    private readonly codexValidated = true) {
+    private readonly codexValidated = true,
+    /**
+     * The installed release a forwarded generation runs (per-chat rollout). Its engine home is written by this older host's
+     * code and kept by `preserveConfig`, so it lives in a folder of its own: once the service moves to that release, the same
+     * revision starts in the ordinary folder with a configuration that release writes. Chats live in the shared native
+     * `sessions` folder either way.
+     */
+    private readonly forwardRelease?: string) {
     this.record = { revision: descriptor.revision, socketPath: resolve(hostHome, `e-${descriptor.revision.slice(0, 16)}.sock`), aliases: [...descriptor.aliases], defaultCwd: process.cwd() };
     this.owner = { revision: descriptor.revision, socketPath: this.record.socketPath, pid: 0 };
     this.fingerprint = descriptorFingerprint(descriptor);
   }
   async start(config: GatewayConfig, changed: () => Promise<void>): Promise<void> {
-    const descriptor = this.descriptor; const directory = resolve(config.stateDirectory, "desktop-generations", `shared-v1-${descriptor.revision}`);
+    const descriptor = this.descriptor;
+    if (this.forwardRelease !== undefined && !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(this.forwardRelease)) throw new Error("Execution generation requires a valid installed release");
+    const directory = resolve(config.stateDirectory, "desktop-generations", `shared-v1-${descriptor.revision}${this.forwardRelease ? `-forward-${this.forwardRelease}` : ""}`);
     const runtime = descriptor.gatewaySdkSha256 ? await this.resolveRuntime() : undefined;
     if (descriptor.gatewaySdkSha256) {
       if (!runtime) throw new Error("Execution generation requires a matching installed gateway SDK; its ownership was preserved");

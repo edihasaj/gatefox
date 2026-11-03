@@ -777,6 +777,11 @@ rule and its maintenance window. Each move is logged as `self_upgrade` with `mod
 
 ## Release skew: a newer adapter beside an older host
 
+Since 1.5.2 an older host normally serves a newer adapter on the installed release's
+SDK instead ([per-chat rollout](#per-chat-rollout-newer-adapters-run-on-the-installed-releases-sdk)).
+The refusal below remains for an installed release whose own verifier is unavailable or
+does not confirm its SDK.
+
 On 2026-10-18 an operator installed 0.4.7 while Studio's service ran 0.4.6. Agents kept
 turns running, so neither the idle rule nor the quiet rule (no turn ended in the last 5
 minutes) ever fired. Studio's ChatGPT restarted and its adapter came up on 0.4.7, the
@@ -839,6 +844,46 @@ The host now says what is happening, and the service moves promptly:
 4. **The reverse case.** Once the service has moved, an adapter of the older release
    that asks for a generation gets the `adapter_older` message above, recorded as
    `adapter_older`. Nothing else changes: that adapter moves when the app restarts.
+
+## Per-chat rollout: newer adapters run on the installed release's SDK
+
+Since 1.5.2 an older service no longer refuses an adapter of the installed release.
+When a generation request names the installed (pending) release's gateway SDK, as
+read from that release's `gateway-sdk/build.json`, the host imports that release's own
+`dist/gateway-sdk-runtime.js` and lets it verify its SDK. The rules match the live
+supervisor loader: only a regular, owned file inside the release `current` names. The
+host spawns the generation on that SDK only when the verified checksum equals both the
+receipt and the descriptor. It holds a retention lease on that release for as long as
+the engine runs, so the installer cannot prune it. The move is logged as
+`execution_generation_forward` with `to`, the release. A verifier that is missing,
+fails or answers with another SDK leaves the release skew refusal below unchanged.
+
+Forwarding also requires that both releases prepare an engine the same way. The
+forwarded engine is set up by the older host's code, so the installed release's
+feature schema, its normalization and engine-home modules (`preparationFiles` in
+`src/installed-release-runtime.ts`) must be byte-identical to the running release's.
+Its SDK must also match the host's Code Mode support, because the descriptor's
+tools were normalized against it. A release that changes either keeps the refusal
+and moves under the rules above. A forwarded generation keeps its engine home in
+`desktop-generations/shared-v1-<revision>-forward-<release>`. The service that later
+moves to that release starts the same revision in the ordinary folder, with a
+configuration it writes itself.
+
+Chats then move one at a time, without a restart:
+
+```text
+service on release N (unchanged, keeps running)
+ ├─ generation on SDK N     chats already loaded here stay until they unload
+ └─ generation on SDK N+1   new chats, and chats resumed after unloading
+ old generation with no loaded chat and no adapter lease → retired by maintenance
+```
+
+`execution/find` still attaches a loaded chat to the engine that holds it, whatever
+its release, so a running or viewed chat is never moved or cut. The service moves to
+the new release later, under the idle and quiet rules above; until then nothing waits
+on it. Code Mode normalization still follows the host's own SDK, so a release that
+changes Code Mode availability takes effect for new generations only after the
+service moves.
 
 ## An app update while the service runs
 

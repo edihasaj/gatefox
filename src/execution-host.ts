@@ -16,6 +16,8 @@ import { engineActivity } from "./execution-host-activity.js";
 import { engineBusy, skewWatch } from "./execution-host-skew.js";
 import { pendingGatewaySdkReader, type PendingGatewaySdk } from "./self-update.js";
 import { telemetry } from "./telemetry.js";
+import { installedReleaseRuntime, type InstalledReleaseRuntime } from "./installed-release-runtime.js";
+import type { ReleaseLease } from "./release-retention.js";
 import { executableRunsCodeMode } from "./codex-native-rows.js";
 import { normalizeExecutionTools } from "./execution-host-tools.js";
 import { executionHostIdentity, type ExecutionHostIdentity } from "./execution-host-attestation.js";
@@ -28,6 +30,12 @@ export interface ExecutionHostOptions { config: GatewayConfig; configPath: strin
   maintenance?: { intervalMs?: number; candidateLimit?: number; probeConcurrency?: number };
   /** The installed release that is newer than this process, with its gateway SDK checksum; defaults to reading the installed release. A stand-in for tests. */
   pendingRelease?: () => Promise<PendingGatewaySdk | undefined>;
+  /**
+   * Verifies the installed (newer) release's gateway SDK with that release's own verifier, so a newer adapter's generation
+   * runs on it instead of being refused (see installed-release-runtime.ts). Defaults to importing the installed release; a
+   * stand-in for tests. Returning undefined keeps the release skew refusal.
+   */
+  installedRuntime?: (release: string) => Promise<InstalledReleaseRuntime | undefined>;
   /**
    * Called with a release made urgent by a refused newer adapter, the moment no turn is running in any engine (and no approval,
    * input or background terminal waits), so the supervisor can try the move before the next turn starts (see execution-host-skew.ts). */
@@ -253,7 +261,27 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     const sdkState = native ? native.closed ? "exited" : native.owner.pid > 0 ? "running" : "starting" : "idle";
     writes = writes.catch(() => undefined).then(async () => { await nativeLease?.publish(snapshot.native, snapshot.state === "stopped", sdkState); await publishOwner(home, snapshot); }); return writes;
   };
-  const remove = async (engine: ExecutionEngine) => { await engine.stop(); if (engines.get(engine.record.revision) === engine) engines.delete(engine.record.revision); await publish(); };
+  // Generations that run the installed (newer) release's SDK, and the lease that keeps that release's files while they run.
+  const loadInstalled = options.installedRuntime ?? ((release: string) => installedReleaseRuntime(release));
+  const forward = new Map<ExecutionEngine, ReleaseLease>();
+  const remove = async (engine: ExecutionEngine) => {
+    await engine.stop(); if (engines.get(engine.record.revision) === engine) engines.delete(engine.record.revision);
+    forward.get(engine)?.release(); forward.delete(engine); await publish();
+  };
+  /**
+   * A descriptor that names the installed release's SDK while this host runs an older one: the per-chat rollout. The newer
+   * release verifies its own SDK, and only a match with both the pending release's receipt and the descriptor is used.
+   */
+  const forwardRuntime = async (sha: string): Promise<InstalledReleaseRuntime | undefined> => {
+    if (!runtime || sha === runtime.binarySha256) return;
+    const pending = await readPendingRelease().catch(() => undefined);
+    if (!pending || pending.gatewaySdkSha256 !== sha) return;
+    const loaded = await loadInstalled(pending.release).catch(() => undefined);
+    if (!loaded) return;
+    // The descriptor was normalized against this host's Code Mode contract; a runtime that differs from it is not offered.
+    if (loaded.release !== pending.release || loaded.runtime.binarySha256 !== sha || loaded.runtime.codeModeHost !== runtime.codeModeHost) { loaded.lease.release(); return; }
+    return loaded;
+  };
   const leased = (engine: ExecutionEngine) => [...leases.values()].some(values => values.has(engine.record.revision));
   let maintenanceTimer: NodeJS.Timeout | undefined; let maintenance: Promise<void> | undefined; let maintenanceRequested = false; let maintenanceCursor = 0;
   const maintenancePass = async (): Promise<void> => {
@@ -332,8 +360,17 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     // replaced package must arrive through a fresh host, never change an
     // existing host's Code Mode contract between descriptor normalization and
     // spawn.
-    const engine = new ExecutionEngine(descriptor, owner, home, selectedRuntime, !runtime); engines.set(descriptor.revision, engine);
-    try { await engine.start(options.config, publish); await publish(); return engine.record; }
+    // The one exception to that: a descriptor naming the installed release's SDK runs on it, verified by that release.
+    const ahead = descriptor.gatewaySdkSha256 ? await forwardRuntime(descriptor.gatewaySdkSha256) : undefined;
+    if (stopping) { ahead?.lease.release(); throw new Error("Execution host is closing"); }
+    const resolver = ahead ? async () => ahead.runtime : selectedRuntime;
+    const engine = new ExecutionEngine(descriptor, owner, home, resolver, !runtime, ahead?.release); engines.set(descriptor.revision, engine);
+    if (ahead) forward.set(engine, ahead.lease);
+    try {
+      await engine.start(options.config, publish); await publish();
+      if (ahead) telemetry("execution_generation_forward", { to: ahead.release });
+      return engine.record;
+    }
     catch (error) { await remove(engine); if (error instanceof ReleaseSkewError) throw new ReleaseSkewError(error.adapterSha256, await noteSkew(error.adapterSha256).catch(() => "adapter_older" as const)); throw error; }
   };
   // The native home is claimed at start, or, while another live owner holds it (a desktop's private native engine that ran
@@ -529,7 +566,13 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     stopping = true; skew.stop(); if (maintenanceTimer) clearInterval(maintenanceTimer); await probe?.close(); for (const socket of sockets.clients) socket.terminate();
     const stoppedServer = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeAllConnections();
-    const results = await Promise.allSettled([...engines.values()].map(engine => engine.stop()).concat(native ? [native.stop()] : []));
+    const stoppedEngines = [...engines.values()];
+    const results = await Promise.allSettled(stoppedEngines.map(engine => engine.stop()).concat(native ? [native.stop()] : []));
+    // A release is given back only for an engine that really stopped: one whose stop failed may still run that release's code.
+    stoppedEngines.forEach((engine, index) => {
+      if (results[index].status !== "fulfilled") return;
+      forward.get(engine)?.release(); forward.delete(engine);
+    });
     await maintenance?.catch(() => undefined);
     await serial.catch(() => undefined); await writes.catch(() => undefined); await stoppedServer; sockets.close();
     if (results.some(result => result.status === "rejected")) throw new Error("An execution generation did not stop; its ownership record was preserved");
