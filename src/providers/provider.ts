@@ -21,7 +21,7 @@ export type InferenceRequestKind = "turn" | "compaction" | "prewarm" | "memory";
 export interface ProviderCacheUsage { inputTokens?: number; inputTokensLowerBound?: number; cachedTokens?: number; cacheWriteTokens?: number }
 /** Caller routing identifiers and the gateway-selected ingress protocol; never request content. */
 export interface InferenceContext {
-  /** The Gateway SDK advertises its corrected active-context compaction accounting. */
+  /** Legacy SDK capability retained for wire compatibility; never authorizes cache-driven compaction. */
   cacheRecovery?: true;
   observeCacheUsage?: (usage: ProviderCacheUsage) => void;
   sessionId?: string; threadId?: string; turnId?: string; windowId?: string; requestKind?: InferenceRequestKind;

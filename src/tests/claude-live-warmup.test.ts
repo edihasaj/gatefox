@@ -307,3 +307,31 @@ test("replay retirement keeps warmup counts, and an adopted open session continu
     assert.equal(warmupCompletions(sessionRegistry(), key("kept")), 1, "mode_replay retires sessions but preserves warmup progress");
   } finally { await teardown(fixture); }
 });
+
+test("default large-history resume seeds live once, then reuses the cache without compaction", { timeout: 30000 }, async () => {
+  const { fixture, since } = await setup({ cache: true, replies: [{ text: "one" }, { text: "two" }, { text: "three" }] });
+  try {
+    const subscription = provider(), context = { threadId: "large-resume" };
+    const input = [user("large preserved history ".repeat(15000))];
+    const first = await turn(subscription, input, context);
+    const second = [...input, ...first.output, user("continue")];
+    const next = await turn(subscription, second, context);
+    await turn(subscription, [...second, ...next.output, user("continue")], context);
+    assert.deepEqual(await starts(fixture), ["live"], "no one-shot warmup followed by a second full-history seed");
+    await flushTelemetry();
+    const sessions = (await readTelemetry(fixture.directory, since)).filter(event => event.event === "claude_session");
+    assert.deepEqual(sessions.map(event => event.outcome), ["spawned", "continued", "continued"]);
+    assert.ok(typeof sessions[0].cacheWriteTokens === "number" && sessions[0].cacheWriteTokens >= 65536);
+    assert.ok(typeof sessions[1].cacheReadTokens === "number" && sessions[1].cacheReadTokens >= 65536);
+    assert.ok(![...first.events, ...next.events].some(event => event.type === "native-item" && event.item.type === "compaction"));
+    assert.equal(input[0].type, "message");
+  } finally { await teardown(fixture); }
+});
+
+test("explicit warmup policy still governs large histories", { timeout: 30000 }, async () => {
+  const { fixture } = await setup({ replies: [{ text: "one" }] });
+  try {
+    await turn(provider({ warmup: 1 }), [user("large history ".repeat(25000))], { threadId: "explicit-large-warmup" });
+    assert.deepEqual(await starts(fixture), ["oneshot"]);
+  } finally { await teardown(fixture); }
+});

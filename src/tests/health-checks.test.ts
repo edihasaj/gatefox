@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appFindings, componentFindings, errorFindings, inferenceFindings, minorDistance, nativePaused, serviceFindings, smokeFindings, statusFields } from "../health-checks.js";
+import { appFindings, componentFindings, errorFindings, inferenceFindings, minorDistance, nativePaused, serviceFindings, smokeFindings, statusFields, upgradeFindings } from "../health-checks.js";
 import { exitCodeFor, staleLagMs, staleServiceLagMs, verdictOf, type AppInfo, type InferenceProbe } from "../health-types.js";
 import { emptySignals, type TelemetrySignals } from "../health-telemetry.js";
 import type { VersionsResult } from "../versions.js";
@@ -196,4 +196,18 @@ test("smoke verdicts: a failing phase is the loudest finding", () => {
   assert.deepEqual(smokeFindings("fail", "startup"), [{ level: "fail", reason: "smoke failed at startup" }]);
   // A recorded phase that is not a phase name is still a failure, but it does not get quoted.
   assert.deepEqual(smokeFindings("fail", "/tmp/gw-fast-abc:611:7 boom"), [{ level: "fail", reason: "smoke failed at unknown" }]);
+});
+
+test("a lagging service names what moves it: the forced restart with Claude components, otherwise the activity it waits on", () => {
+  const component = (kind: "inference" | "claude-adapter", id = kind) => ({ id, kind, command: "/bin/true", args: [] });
+  const plain = { version: 1, config: "/c.json", components: [component("inference")] } as unknown as Parameters<typeof upgradeFindings>[0];
+  const claude = { version: 1, config: "/c.json", components: [component("inference"), component("claude-adapter")] } as unknown as Parameters<typeof upgradeFindings>[0];
+  assert.deepEqual(upgradeFindings(claude, ["desktop-adapter@1.5.1"], []), [], "only the service's own lag is judged");
+  assert.deepEqual(upgradeFindings(claude, [], []), []);
+  const blocked = upgradeFindings(claude, ["service@1.5.1"], []);
+  assert.equal(blocked[0]?.level, "warn"); assert.match(blocked[0]?.reason ?? "", /gateway service restart --force/);
+  assert.equal(upgradeFindings(claude, [], ["service@1.5.1"])[0]?.level, "warn", "a stale service too");
+  const waiting = upgradeFindings(plain, ["service@1.5.1"], []);
+  assert.equal(waiting[0]?.level, "info"); assert.match(waiting[0]?.reason ?? "", /gateway activity/);
+  assert.equal(upgradeFindings(undefined, ["service@1.5.1"], [])[0]?.level, "info", "an unreadable plan names no forced restart");
 });

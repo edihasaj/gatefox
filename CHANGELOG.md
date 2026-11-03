@@ -114,6 +114,10 @@
   their bindings. Thanks to Edi Hasaj for requesting code-enforced routing and
   identifying the duplicated instruction policy.
 
+- `gateway health` says why a lagging service has not moved: with Claude
+  Desktop components it warns that only `gateway service restart --force`
+  moves it; otherwise it points at `gateway activity` for the turns it waits on.
+
 - Per-chat rollout: after a release is installed, the running service serves
   newer adapters on that release's own verified gateway SDK instead of refusing
   them with "This Mac's gateway service is moving to the newer release". New and

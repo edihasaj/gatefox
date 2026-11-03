@@ -45,22 +45,22 @@ legacy write after that handoff stays conservative until real idle is observed.
 Provider, model and caller identity remain
 the scope. No new user turn, reconnect or provider reseed alone resets the guard.
 
-The client receives a final HTTP 400, or a terminal stream error, explaining the
-cache problem and how to compact or start a fresh chat on the same model.
-It must not reconnect and repeat unchanged inference. Gateway never truncates,
-compacts, changes the model, changes permissions or executes caller tools.
+A cache failure receives a final HTTP 400 or terminal stream error explaining
+that cache/session continuity needs repair. It never reports
+`context_length_exceeded`, marks a client's context full, or instructs automatic
+compaction. Real provider context overflows retain their normal context-limit
+code. Unchanged reconnects cannot repeat costly inference. Legacy
+`x-harness-cache-recovery: 1` headers remain accepted for compatibility but do not
+authorize compaction or bypass the budget.
 
-An identified SDK normal turn advertising `x-harness-cache-recovery: 1` gets one bounded recovery notification per blocked
-episode: `context_length_exceeded`, with diagnostic `cache_recovery_required`.
-No provider call runs for that notification. The verified SDK marks its context
-full, so the next explicit user turn can compact and continue in the same chat
-using its selected model. An unchanged retry receives the ordinary final refusal;
-reconnecting or changing the turn ID cannot repeatedly offer recovery. Compaction
-requests keep their separate bounded budget and never receive this notification,
-because SDK compaction can otherwise trim and retry repeatedly. Unclassified
-clients and native Messages clients retain the existing explicit-compaction path.
-Only the corrected, marked Gateway SDK advertises this capability. Older SDKs
-cannot consume a recovery offer before they have the accounting fix.
+Claude's default live policy avoids a redundant one-shot warmup for identified
+histories whose serialized conversation is at least 256 KiB: it seeds the live
+CLI directly, so the next request can append to that same native history. This
+is a transport-size heuristic, not a tokenizer or context-window limit. Explicit
+`claudeSessions.warmup` choices remain authoritative. Small requests, standalone
+compaction/prewarm/memory requests, replay mode, capacity checks and preserved-
+session refusals retain their existing behavior. No extra cache miss or hidden
+inference retry is allowed.
 
 The guard is scoped to the provider binding, model and stable caller thread or
 session. Anonymous requests share their binding/model budget. Count-only state
@@ -94,10 +94,11 @@ is patched by this feature.
 
 Run `node scripts/e2e-cache-recovery.mjs --package INSTALLED_PACKAGE --code CHECKOUT
 --root TASK_DIRECTORY` after building the checkout. The isolated real SDK must
-allow two measured cold calls, stop the third before provider execution, then
-compact once and complete a reduced continuation in the same thread and model.
-The fixture uses synthetic inference and no account. `--sdk ABSOLUTE_CANDIDATE`
-qualifies a newly built Gateway SDK before packaging. An older SDK reproduces
-failure to compact when cumulative billing totals hide the active context size.
-The Gateway-only SDK patch preserves those cumulative totals while marking the
-active context full; unmarked native runtimes keep their original behavior.
+allow two measured cold calls and stop the third without reporting context
+exhaustion. An unchanged retry must remain blocked without automatic compaction
+or another provider call. A separate explicit caller compaction command may then
+compact once and continue with smaller input in the same chat and model. The
+fixture uses synthetic inference and no account. `--sdk ABSOLUTE_CANDIDATE`
+qualifies a newly built Gateway SDK before packaging.
+The existing Gateway-only SDK accounting fix remains available for genuine
+context overflows. Cache safety no longer invokes that context-full marker.

@@ -302,3 +302,44 @@ test("an effort change the CLI never confirmed is forgotten when the request end
     assert.ok((await kinds(h)).includes("crashed:unattended_output"), (await kinds(h)).join(","));
   } finally { await h.restore(); }
 });
+
+
+test("developer messages interleaved with pending outputs continue the same Copilot session exactly once", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    const provider = adapter(), first = [user("go [tools:2]")];
+    const a = await turn(provider, first);
+    const results = outputFor(a.output, id => "result " + id);
+    assert.ok(results.length >= 2);
+    const developer = (text: string) => ({ type: "message" as const, role: "developer" as const, content: text });
+    const b = await turn(provider, [...first, ...a.output, results[0], developer("first developer update"), ...results.slice(1), developer("second developer update")]);
+    assert.match(b.text, /^answer/);
+    const entries = await h.log(), delivered = entries.filter(e => e.op === "deliver"), steered = entries.filter(e => e.op === "steering");
+    assert.equal(entries.filter(e => e.op === "create").length, 1, "no replacement or full-history replay");
+    assert.equal(delivered.length, results.length);
+    assert.equal(steered.length, 2);
+    assert.match(String(steered[0].prompt), /first developer update/);
+    assert.match(String(steered[1].prompt), /second developer update/);
+    assert.ok(steered.every(e => String(e.prompt).includes("developer")), "caller roles remain visible");
+    assert.equal(entries.filter(e => e.op === "continuation").length, 1);
+    assert.ok(entries.findIndex(e => e.op === "steering") < entries.findIndex(e => e.op === "deliver"));
+    await turn(provider, [...first, ...a.output, results[0], developer("first developer update"), ...results.slice(1), developer("second developer update"), ...b.output, user("continue")]);
+    assert.equal((await h.log()).filter(e => e.op === "create").length, 1, "the accepted chronological ledger stays reusable");
+  } finally { await h.restore(); }
+});
+
+test("interleaved continuation still preserves missing or duplicate pending outputs without replay", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    const provider = adapter(), first = [user("go [tools:2]")];
+    const a = await turn(provider, first), results = outputFor(a.output, "result");
+    const message = { type: "message" as const, role: "developer" as const, content: "update" };
+    for (const tail of [[results[0], message], [results[0], message, results[0], ...results.slice(1)]]) {
+      await assert.rejects(turn(provider, [...first, ...a.output, ...tail]), error => error instanceof ProviderError && /preserved/.test(error.message));
+    }
+    assert.equal((await h.log()).filter(e => e.op === "create").length, 1);
+    assert.equal((await h.log()).filter(e => e.op === "deliver").length, 0);
+    await turn(provider, [...first, ...a.output, ...results]);
+    assert.equal((await h.log()).filter(e => e.op === "create").length, 1, "valid original pending results can still resume");
+  } finally { await h.restore(); }
+});

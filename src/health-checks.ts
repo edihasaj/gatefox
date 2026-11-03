@@ -1,6 +1,8 @@
 import type { VersionsResult } from "./versions.js";
 import { refusalFailThreshold, safePhase, safeToken, staleLagMs, staleServiceLagMs, type AppInfo, type Finding, type InferenceProbe } from "./health-types.js";
 import type { TelemetrySignals } from "./health-telemetry.js";
+import type { ServicePlan } from "./service-plan.js";
+import { isClaudeComponent } from "./service-claude-activity.js";
 
 /**
  * The checks behind `gateway health`, each a plain function from what was read to the
@@ -72,6 +74,20 @@ export function componentFindings(result: VersionsResult, now: number, since?: n
     ...lagging.map(name => ({ level: "warn" as const, reason: `lagging ${name}` })),
     ...stale.map(name => ({ level: "fail" as const, reason: `stale ${name}` })),
   ] };
+}
+
+/**
+ * Why a service behind the installed release has not moved, and what moves it. A configured Claude Desktop component makes the
+ * supervisor refuse every automatic restart (`claude_busy`), so that service never moves on its own: on 2026-11-03 one Mac kept
+ * the previous release until an operator ran the forced restart. Any other lagging service waits for a moment with no running
+ * turn; `gateway activity` lists the chats it is waiting on. Fixed phrases only.
+ */
+export function upgradeFindings(plan: ServicePlan | undefined, lagging: string[], stale: string[]): Finding[] {
+  if (![...lagging, ...stale].some(name => name.startsWith("service@"))) return [];
+  if (plan?.components.some(component => isClaudeComponent(component))) {
+    return [{ level: "warn", reason: "service upgrade blocked by Claude Desktop components: run gateway service restart --force when Claude is idle" }];
+  }
+  return [{ level: "info", reason: "service upgrade waits for no running turn: see gateway activity" }];
 }
 
 /** A new app build is news, not a fault: the smoke run is what decides whether it broke. */
