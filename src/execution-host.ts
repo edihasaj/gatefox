@@ -364,7 +364,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     const ahead = descriptor.gatewaySdkSha256 ? await forwardRuntime(descriptor.gatewaySdkSha256) : undefined;
     if (stopping) { ahead?.lease.release(); throw new Error("Execution host is closing"); }
     const resolver = ahead ? async () => ahead.runtime : selectedRuntime;
-    const engine = new ExecutionEngine(descriptor, owner, home, resolver, !runtime, ahead?.release); engines.set(descriptor.revision, engine);
+    const engine = new ExecutionEngine(descriptor, owner, home, resolver, !runtime, ahead?.release, ahead?.preparation); engines.set(descriptor.revision, engine);
     if (ahead) forward.set(engine, ahead.lease);
     try {
       await engine.start(options.config, publish); await publish();

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fix chats that would not open after a Codex SDK update on a busy Mac. An older
+  service refused every newer adapter whenever the release changed the feature
+  schema data, which every SDK update does, and the urgent move then waited for a
+  moment with no turn running that a Mac with back-to-back agents never has. A
+  forwarded generation is now prepared by the installed release's own modules, so a
+  schema change alone no longer blocks it. This takes effect from the release after
+  the one that ships it.
+
 - Opt-in mid-turn model changes from the desktop picker: with
   `"midTurnModelSwitch": true`, a model change made while a gateway turn runs also
   reaches that turn's next inference step, when the tokenizer recount and the SDK's

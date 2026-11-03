@@ -13,17 +13,44 @@ import type { GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
  * only a regular, owned module inside the very release `current` names, held by a retention lease so the installer never
  * prunes code a running engine came from. The verifier then hashes and checks that release's SDK as its own service would.
  */
-export interface InstalledReleaseRuntime { release: string; runtime: GatewaySdkRuntime; lease: ReleaseLease }
+/**
+ * How a forwarded generation is prepared: the installed release's own engine-home writer and spawn-argument trim, so its
+ * settings are cut to that release's feature schema rather than this older host's. See `preparationFiles`.
+ */
+export interface ReleasePreparation {
+  engineHome: (state: string, settings: Record<string, unknown>, options: { nativeHome?: string; sharedWriterLocks?: boolean; preserveConfig?: boolean }) => Promise<string>;
+  trimArgs: (input: string[], settings: Record<string, unknown>) => string[];
+}
+export interface InstalledReleaseRuntime { release: string; runtime: GatewaySdkRuntime; lease: ReleaseLease; preparation: ReleasePreparation }
 type RuntimeModule = { gatewaySdkRuntime?: (packageDirectory?: string) => Promise<GatewaySdkRuntime | undefined> };
 
 /**
- * The compiled modules and data that turn a descriptor into an engine's settings and configuration file. The forwarded engine
- * is prepared by this older host's copies, so forwarding requires the installed release's copies to be byte-identical: a
- * release that changes the feature schema or its normalization keeps the release skew refusal instead of running its SDK
- * with settings trimmed to another schema.
+ * The compiled modules that turn a descriptor into an engine's settings and configuration file. A forwarded engine is prepared
+ * by the installed release's own copies of them, imported from that release, so its settings are trimmed to the schema its
+ * SDK accepts. The code must still be byte-identical to this host's, which keeps the interface this host calls unchanged; a
+ * release that changes that code keeps the release skew refusal. The schema data (`schemaDataFile`) may differ: it changes
+ * with every SDK update, and the imported modules read the installed release's own copy.
  */
-export const preparationFiles = ["gateway-feature-schema-data.json", "gateway-feature-schema.js", "gateway-feature-fields.js",
+export const preparationFiles = ["gateway-feature-schema.js", "gateway-feature-fields.js",
   "gateway-feature-toml.js", "codex-feature-compat.js", "gateway-engine-home.js", "executor-identity.js"] as const;
+export const schemaDataFile = "gateway-feature-schema-data.json";
+type PreparationModules = {
+  engine: { gatewayEngineHome?: unknown };
+  schema: { trimGatewayFeatureArgs?: unknown; trimmedGatewayFeatures?: unknown };
+  compat: { normalizeCodexFeatureArgs?: unknown };
+};
+/** The installed release's preparation, from its own modules; undefined when any of them is missing its export. */
+async function releasePreparation(installedDist: string): Promise<ReleasePreparation | undefined> {
+  if (!await readRegularFile(resolve(installedDist, schemaDataFile), 4 * 1024 * 1024, false)) return;
+  const load = (name: string) => import(pathToFileURL(resolve(installedDist, name)).href);
+  const modules: PreparationModules = { engine: await load("gateway-engine-home.js"), schema: await load("gateway-feature-schema.js"), compat: await load("codex-feature-compat.js") };
+  const { gatewayEngineHome } = modules.engine; const { trimGatewayFeatureArgs, trimmedGatewayFeatures } = modules.schema; const { normalizeCodexFeatureArgs } = modules.compat;
+  if (typeof gatewayEngineHome !== "function" || typeof trimGatewayFeatureArgs !== "function" || typeof trimmedGatewayFeatures !== "function" || typeof normalizeCodexFeatureArgs !== "function") return;
+  return {
+    engineHome: (state, settings, options) => gatewayEngineHome(state, settings, options) as Promise<string>,
+    trimArgs: (input, settings) => trimmedGatewayFeatures("spawn", (stats: unknown) => trimGatewayFeatureArgs(normalizeCodexFeatureArgs(input, settings), stats)) as string[],
+  };
+}
 
 async function samePreparation(runningDist: string, installedDist: string): Promise<boolean> {
   for (const name of preparationFiles) {
@@ -47,7 +74,9 @@ export async function installedReleaseRuntime(release: string, moduleUrl = impor
       const candidate = await import(pathToFileURL(file).href) as RuntimeModule;
       const runtime = typeof candidate.gatewaySdkRuntime === "function" ? await candidate.gatewaySdkRuntime(resolve(releases, release, "package")) : undefined;
       if (!runtime) { lease.release(); return; }
-      return { release, runtime, lease };
+      const preparation = await releasePreparation(dirname(file));
+      if (!preparation) { lease.release(); return; }
+      return { release, runtime, lease, preparation };
     } catch { lease.release(); return; }
   } catch { return; }
 }

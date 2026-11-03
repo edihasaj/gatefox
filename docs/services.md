@@ -871,13 +871,21 @@ the engine runs, so the installer cannot prune it. The move is logged as
 `execution_generation_forward` with `to`, the release. A verifier that is missing,
 fails or answers with another SDK leaves the release skew refusal below unchanged.
 
-Forwarding also requires that both releases prepare an engine the same way. The
-forwarded engine is set up by the older host's code, so the installed release's
-feature schema, its normalization and engine-home modules (`preparationFiles` in
-`src/installed-release-runtime.ts`) must be byte-identical to the running release's.
-Its SDK must also match the host's Code Mode support, because the descriptor's
-tools were normalized against it. A release that changes either keeps the refusal
-and moves under the rules above. A forwarded generation keeps its engine home in
+Forwarding also requires that both releases prepare an engine the same way. Since
+1.5.7 the forwarded engine's home and spawn arguments are written by the installed
+release's own modules, imported from that release, so its settings are trimmed to the
+feature schema its SDK accepts. The code of those modules (`preparationFiles` in
+`src/installed-release-runtime.ts`) must still be byte-identical to the running
+release's, which keeps the interface the older host calls unchanged. The schema data
+(`gateway-feature-schema-data.json`) may differ: it changes with every Codex SDK update,
+and before 1.5.7 that alone kept every newer adapter refused. On a Mac whose agents
+never leave a second with no turn running, unloaded chats then stayed unopenable until
+a forced restart (3 Nov 2026, 1.5.4 to 1.5.6). Trim counts of a forwarded engine are
+not recorded, because the imported modules run without this host's telemetry. Its SDK
+must also match the host's Code Mode support, because the descriptor's tools were
+normalized against it. A release that changes either keeps the refusal and moves under
+the rules above. The fix applies from the release after the one that ships it, because
+the older host's own code decides whether to forward. A forwarded generation keeps its engine home in
 `desktop-generations/shared-v1-<revision>-forward-<release>`. The service that later
 moves to that release starts the same revision in the ordinary folder, with a
 configuration it writes itself.
