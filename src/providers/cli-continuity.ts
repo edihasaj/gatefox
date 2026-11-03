@@ -4,7 +4,7 @@ import { ProviderError } from "./provider.js";
 export class CliContinuityUnavailable extends ProviderError {
   constructor(provider: "Claude" | "Copilot" | "Grok", reason: string) {
     super("invalid_request", provider === "Grok" && reason === "persistent_session_unqualified"
-      ? "Grok's current subscription transport supports standalone requests only. Gateway stopped before replaying this conversation. Persistent Grok sessions have not passed the required tool-isolation and auxiliary-inference checks; select another model for continued work."
+      ? "Grok's one-shot mode (grokSessions.mode: oneshot) supports standalone requests only. Gateway stopped before replaying this conversation. Set grokSessions.mode to live (the default) to continue a conversation with tools, or select another model."
       : `${provider} session continuation is unavailable (${reason}). Gateway stopped without automatically replaying the conversation. Retry after the provider is available, finish the other active turn, or start a fresh chat.`,
       400, { code: "session_continuity_unavailable", event: "gateway.session" });
   }
