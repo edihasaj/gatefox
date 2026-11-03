@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readMeasuredUsage } from "../compaction-rollout.js";
-import { switchFactor, switchOverflow, switchOverflowMessage, tokenFamily } from "../compaction-switch-guard.js";
+import { catalogFamilies, switchFactor, switchOverflow, switchOverflowMessage, tokenFamily } from "../compaction-switch-guard.js";
 import { GatewayCompaction } from "../gateway-compaction.js";
 import { CompactionRecoveryError } from "../compaction-recovery.js";
 
@@ -89,4 +89,21 @@ test("small histories, same-tokenizer switches and compacted chats start normall
   assert.deepEqual((await guard([session, turn(terra), counts(300000)], sonnet)).result, { intercepted: false });
   assert.deepEqual((await guard(incident, sol, sol)).result, { intercepted: false });
   assert.deepEqual((await guard([...incident, { timestamp: at(6), type: "compacted", payload: {} }, turn(terra, 7), counts(33000, 8)], sonnet)).result, { intercepted: false });
+});
+
+test("a catalog's published families decide the switch, not the alias text", () => {
+  // Regression: `fixture/large` -> `fixture/small` read as families "large" and "small" and refused a same-family switch.
+  const measured = { lastTokens: 40_010, model: "fixture/large", emittedAtMs: 0 };
+  const rows = [{ slug: "fixture/large", tokenizer_family: "mock" }, { slug: "fixture/small", tokenizer_family: "mock" }];
+  assert.equal(switchOverflow(measured, "fixture/small", 45_000, catalogFamilies(rows)), undefined, "one family needs no recount");
+  assert.ok(switchOverflow(measured, "fixture/small", 45_000), "without published families the alias text still decides");
+  const cross = [{ slug: "fixture/large", tokenizer_family: "qwen3" }, { slug: "fixture/small", tokenizer_family: "anthropic" }];
+  assert.equal(switchOverflow(measured, "fixture/small", 45_000, catalogFamilies(cross))?.estimatedTokens, Math.ceil(40_010 * 1.7));
+});
+
+test("a row without a usable published family falls back to the alias text", () => {
+  const families = catalogFamilies([{ slug: "a/claude-sonnet-5-5" }, { slug: "b/x", tokenizer_family: "Not Valid!" }, { slug: 7, tokenizer_family: "openai" }]);
+  assert.equal(families("a/claude-sonnet-5-5"), "anthropic");
+  assert.equal(families("b/x"), "x");
+  assert.equal(families("missing/gpt-6"), "openai");
 });

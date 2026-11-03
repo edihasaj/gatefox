@@ -7,6 +7,7 @@ import { readClientToken, unscopedAliasCount, validateAliasesAgainstNative, writ
 import { object, type Message } from "./app-server-connection.js";
 import { publicServiceTierFields, readPublicServiceTierMetadata } from "./model-service-tiers.js";
 import { executorNativeRow, executorRunsCodeMode, noReviewers, nodeReplFallback, upstreamSlugField, withFallback, withNativeRow } from "./codex-native-rows.js";
+import { tokenizerFamilyField } from "./compaction-switch-guard.js";
 import { readAutoReviewAdvertisement } from "./auto-review.js";
 import { telemetry } from "./telemetry.js";
 
@@ -51,6 +52,9 @@ function publicModels(value: unknown, native: Message[]): Message[] {
     result.model_messages = { instructions_template: "" };
     const upstream = model[upstreamSlugField];
     if (typeof upstream === "string" && upstream && upstream.length <= 1024 && !upstream.includes("\0")) result[upstreamSlugField] = upstream;
+    // The upstream model's tokenizer family, for the switch guard (docs/app-server-compaction.md); a short plain name only.
+    const family = model[tokenizerFamilyField];
+    if (typeof family === "string" && /^[a-z0-9]{1,64}$/.test(family)) result[tokenizerFamilyField] = family;
     const policy = object(model.truncation_policy);
     if (typeof policy.mode === "string" && typeof policy.limit === "number") result.truncation_policy = { mode: policy.mode, limit: policy.limit };
     if (Array.isArray(model.experimental_supported_tools) && model.experimental_supported_tools.every(tool => typeof tool === "string")) result.experimental_supported_tools = model.experimental_supported_tools;

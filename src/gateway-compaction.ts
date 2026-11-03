@@ -5,7 +5,7 @@ import { CompactionRecovery, CompactionRecoveryError } from "./compaction-recove
 import { CompactionStateStore } from "./compaction-state.js";
 import { readCompactionUsage, readMeasuredUsage } from "./compaction-rollout.js";
 import { CompactionPolicy } from "./compaction-policy.js";
-import { largestSwitchFactor, switchOverflow, switchOverflowMessage } from "./compaction-switch-guard.js";
+import { catalogFamilies, largestSwitchFactor, switchOverflow, switchOverflowMessage } from "./compaction-switch-guard.js";
 import { telemetry } from "./telemetry.js";
 
 export interface GatewayCompactionOptions {
@@ -160,7 +160,7 @@ export class GatewayCompactionSession {
       if (typeof model !== "string" || !this.options.aliases.has(model)) return;
       const limit = this.policy.target(threadId, model)?.effectiveContextWindow; if (!limit) return;
       const measured = await readMeasuredUsage(this.nativeHome, threadId, thread.path); if (!measured) return;
-      overflow = switchOverflow(measured, model, limit);
+      overflow = switchOverflow(measured, model, limit, catalogFamilies(this.options.models));
     } catch { return; }
     if (!overflow) return;
     telemetry("compaction_switch_refused", { sourceFamily: overflow.sourceFamily, targetFamily: overflow.targetFamily,

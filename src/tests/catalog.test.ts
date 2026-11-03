@@ -48,6 +48,16 @@ test("account groups stay in configuration order despite conflicting upstream pr
   assert.deepEqual(catalog.models.map(m => m.display_name), ["Claude · b", "Claude · a", "Codex 2 · b"]);
 });
 
+test("every row publishes the tokenizer family of its upstream model, not of its alias text", () => {
+  const catalog = modelCatalog({ version: 1, port: 0, stateDirectory: ".", providers: [
+    { id: "team", type: "claude-subscription", label: "Team", models: { "team/large": "claude-opus-5-5", "team/small": "claude-sonnet-5-5" } },
+    { id: "codex", type: "codex-subscription", label: "Codex 2", models: { "codex/fast": "gpt-6.1-sol" } },
+    { id: "local", type: "openai-compatible", label: "Local", baseUrl: "http://127.0.0.1:1/v1", models: { "qwen/worker": "qwen3.8-flash-next" } },
+  ] } as never);
+  assert.deepEqual(Object.fromEntries(catalog.models.map(m => [m.slug, m.tokenizer_family])),
+    { "team/large": "anthropic", "team/small": "anthropic", "codex/fast": "openai", "qwen/worker": "qwen3" });
+});
+
 function worker(mode: string) {
   return spawn(process.execPath, ["--input-type=module", "-e", `
     import {createInterface} from 'node:readline';
