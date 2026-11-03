@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFi
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
-import { providerCommand, providerToolContract, providerToolTree } from "../provider-tool-runtime.js";
+import { providerCommand, providerTool, providerToolContract, providerToolTree } from "../provider-tool-runtime.js";
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "provider-tool-")));
@@ -33,6 +33,8 @@ test("verified private dependency tree selects the immutable executable", async 
   assert.equal(await providerCommand("claude", f.root), f.executable);
   assert.equal(await providerCommand("claude", f.root), f.executable);
   assert.equal(await providerCommand("copilot", f.root), "copilot");
+  assert.deepEqual(await providerTool("claude", f.root), { command: f.executable, version: "2.1.3" });
+  assert.deepEqual(await providerTool("copilot", f.root), { command: "copilot" }, "a PATH CLI has no known version");
 });
 test("changed dependencies invalidate a cached verification even when the entrypoint stays unchanged", async t => {
   const f = await fixture(t); await providerCommand("claude", f.root);

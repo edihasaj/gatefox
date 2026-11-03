@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Copilot 1.0.103 and later start again: the CLI retired `--no-remote` and exits
+  when it is given, which blocked provider maintenance. A verified managed
+  installation from 1.0.103 omits it (remote hosting there needs explicit flags
+  the gateway never passes); older or unknown versions keep it.
+
 - No forced restart after a release: once a live-updated service's chats drain
   (no running turn for 5 minutes), its execution host moves to the new release by
   itself, without touching inference, tunnels or Claude Desktop components. `gateway

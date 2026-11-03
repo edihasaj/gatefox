@@ -22,7 +22,7 @@ export async function validateProviderCli(kind, release, directory, checkout) {
     ? ['--tools', '--mcp-config', '--input-format', '--output-format', '--allowedTools']
     : ['--no-auto-update', '--disable-builtin-mcps', '--no-custom-instructions'];
   if (flags.some(flag => !help.includes(flag))) throw Error('Required provider CLI flags changed');
-  await runValidation(process.execPath, [join(checkout, 'scripts/probe-provider-cli.mjs'), kind, command, checkout, directory],
+  await runValidation(process.execPath, [join(checkout, 'scripts/probe-provider-cli.mjs'), kind, command, checkout, directory, release.version],
     { cwd: directory, env, timeoutMs: 30_000 });
   // Keep upstream terms with the private candidate. These packages are never redistributed.
   const manifest = JSON.parse(readFileSync(join(directory, 'node_modules', release.package, 'package.json'), 'utf8'));

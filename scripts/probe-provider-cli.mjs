@@ -4,11 +4,11 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const [kind, executable, checkout, directory] = process.argv.slice(2);
+const [kind, executable, checkout, directory, version] = process.argv.slice(2);
 if (kind === 'copilot') {
-  const { CopilotRPC } = await import(pathToFileURL(join(checkout, 'dist/providers/copilot-rpc.js')));
-  const child = spawn(executable, ['--headless', '--stdio', '--no-auto-update', '--disable-builtin-mcps',
-    '--no-custom-instructions', '--no-remote', '--no-remote-export', '--log-dir', directory],
+  // The gateway's own command line for this verified version, so the probe proves exactly what production launches.
+  const { CopilotRPC, copilotCliArgs } = await import(pathToFileURL(join(checkout, 'dist/providers/copilot-rpc.js')));
+  const child = spawn(executable, copilotCliArgs(directory, version),
   { cwd: directory, env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
   const rpc = new CopilotRPC(process.env, directory, child);
   try { if ((await rpc.request('connect')).protocolVersion !== 3) throw Error('Unsupported Copilot protocol'); }

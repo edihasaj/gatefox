@@ -57,16 +57,21 @@ export async function providerToolTree(directory: string): Promise<string> {
 
 /** Resolve only a new process. A running live session keeps its original executable and immutable installation. */
 export async function providerCommand(kind: ProviderTool, root = providerToolsRoot()): Promise<string> {
+  return (await providerTool(kind, root)).command;
+}
+
+/** The command and, for a verified managed installation, its exact version; a CLI from PATH has no known version. */
+export async function providerTool(kind: ProviderTool, root = providerToolsRoot()): Promise<{ command: string; version?: string }> {
   try {
     const current = join(root, "current.json");
     const info = await lstat(current).catch(error => { if (error.code === "ENOENT") return undefined; throw error; });
-    if (!info) return kind;
+    if (!info) return { command: kind };
     await privateDirectory(root); root = await realpath(root); await privateDirectory(join(root, "installs"));
     if (!info.isFile() || info.isSymbolicLink() || !owned(info.uid) || (info.mode & 0o077) || info.size > 16_384) throw invalid();
     const manifest = JSON.parse(await readFile(current, "utf8"));
     if (manifest.schemaVersion !== 1 || manifest.contract !== providerToolContract || !manifest.providers || typeof manifest.providers !== "object") throw invalid();
     const tool = manifest.providers[kind];
-    if (tool === undefined) return kind;
+    if (tool === undefined) return { command: kind };
     if (!/^\d+\.\d+\.\d+$/.test(tool.version) || !hashPattern.test(tool.treeSha256) ||
         typeof tool.installation !== "string" || !new RegExp(`^${kind}-[0-9.]+-[a-f0-9]{64}(?:-[a-f0-9-]{36})?$`).test(tool.installation) ||
         typeof tool.executable !== "string" || isAbsolute(tool.executable) || tool.executable.split(/[\\/]/).some((part: string) => part === "..")) throw invalid();
@@ -76,6 +81,6 @@ export async function providerCommand(kind: ProviderTool, root = providerToolsRo
     const binary = await lstat(path);
     if (!binary.isFile() || binary.isSymbolicLink() || !(binary.mode & 0o100)) throw invalid();
     if (await providerToolTree(modules) !== tool.treeSha256) throw invalid();
-    return path;
+    return { command: path, version: tool.version };
   } catch { throw invalid(); }
 }

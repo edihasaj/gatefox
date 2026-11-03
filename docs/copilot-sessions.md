@@ -244,8 +244,13 @@ ends the request normally; the session then closes (`idle_missing`).
   any other name, a sub-agent event, BYOK usage, another model or output with no request
   attached kills the session and fails the request. The gateway still answers no host
   request, and the CLI is spawned with `--no-auto-update`, `--disable-builtin-mcps`,
-  `--no-custom-instructions`, `--no-remote` and `--no-remote-export`, and the session
-  store off.
+  `--no-custom-instructions` and `--no-remote-export`, and the session store off.
+  Copilot 1.0.103 retired `--no-remote` (the CLI exits when it is given) and made remote
+  hosting opt-in through explicit `--host-*` flags, which the gateway never passes. The
+  gateway therefore adds `--no-remote` only for a verified managed installation older
+  than 1.0.103, and for a CLI from PATH, whose version it does not know: an old one
+  stays without incoming remote control, and a new one refuses to start rather than
+  start without that guarantee. Provider maintenance probes the same command line.
 - The session store stays off, so no session rows or session folders are added to
   `~/.copilot`, and the CLI's configuration folder is private. The CLI does write a log of
   the conversation, including prompts and tool results, to `session-state/<id>/events.jsonl`
