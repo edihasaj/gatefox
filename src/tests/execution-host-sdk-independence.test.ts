@@ -110,6 +110,27 @@ test("a signed derivative keeps the real executable hash for a combined native a
   } finally { await client?.close(); await host?.close(); await f.clean(); }
 });
 
+test("an app update that signs the host's original runtime still admits new generations", { timeout: 30000 }, async () => {
+  // 2026-11-03: a host started while the app carried an older signed SDK pinned the plain release SDK; the app update then
+  // brought a signed derivative of that same SDK, and every new generation was refused until the service restarted.
+  const f = await fixture(); let host; let client;
+  try {
+    const original = f.runtime.executable;
+    const signed = join(f.directory, "signed-gateway-codex");
+    await writeFile(signed, `${await readFile(original, "utf8")}\n// signed fixture\n`, { mode: 0o700 });
+    let selected: GatewaySdkRuntime = f.runtime;
+    host = await startExecutionHost({ ...f.options, gatewayRuntime: async () => selected });
+    client = await control(join(f.hostHome, "host.sock"));
+    assert.equal((await client.request<ExecutionRecord>("execution/acquire", { descriptor: f.descriptor() })).revision, "a".repeat(64));
+    selected = { ...f.runtime, executable: signed, executableSha256: (await sdkIdentity(signed)).sdkSha256, identityExecutable: original };
+    assert.equal((await client.request<ExecutionRecord>("execution/acquire", { descriptor: f.descriptor(true, "b") })).revision, "b".repeat(64));
+    assert.equal(await readFile(join(f.directory, "engine-b.state"), "utf8"), "runtime");
+    // A signed SDK built from some other original is still refused.
+    selected = { ...selected, identityExecutable: join(f.directory, "other-gateway-codex") };
+    await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(true, "c") }), /^Error: Execution operation failed \(sdk_invalid\);/);
+  } finally { await client?.close(); await host?.close(); await f.clean(); }
+});
+
 test("a verified gateway runtime does not gain Code Mode from an adjacent added helper", { timeout: 30000 }, async () => {
   const f = await fixture(); let host; let client;
   try {

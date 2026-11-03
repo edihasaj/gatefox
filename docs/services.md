@@ -840,6 +840,34 @@ The host now says what is happening, and the service moves promptly:
    that asks for a generation gets the `adapter_older` message above, recorded as
    `adapter_older`. Nothing else changes: that adapter moves when the app restarts.
 
+## An app update while the service runs
+
+The service selects its gateway SDK once, at start. When the installed Harness
+Gateway.app carries a signed derivative of the release's SDK, the service selects that
+signed executable; otherwise it selects the release's own `gateway-sdk/gateway-codex`.
+Every new generation re-verifies that selection and accepts either form of the same SDK:
+the same release hash, and the signed executable's receipt naming the executable the
+service started on (or the reverse).
+
+On 2026-11-03 a service started while the app was one release behind, so it selected the
+plain SDK. The app then updated and brought a signed derivative of that very SDK. The
+re-verification accepted only a move from signed to plain, not from plain to signed, so
+every new chat and every chat needing a new generation failed with the masked refusal
+below until the service restarted, while chats on generations already running kept
+working. Both directions are accepted now; a signed SDK built from another original is
+still refused.
+
+## Masked execution failures
+
+The host passes a fixed list of its own refusals through unchanged (release skew, a
+quiescing or closing host, generation limits, native ownership). Any other error may
+carry a path or a value, so the adapter is told only "Execution operation failed
+(`reason`); managed chat ownership was preserved", where `reason` is the fixed class
+`execution_host_failed` also uses (`sdk_invalid`, `identity_changed`, `io_error`, …).
+The host records the same class with the method as `execution_request_failed`
+([diagnostics](diagnostics.md)). Earlier releases showed the text without a class
+and recorded nothing, so the cause was visible nowhere.
+
 # Shared native session ownership
 
 Native sharing has a separate `sharedNativeExecutor` setting. It does not enable
