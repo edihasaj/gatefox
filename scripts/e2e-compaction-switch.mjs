@@ -36,7 +36,9 @@ const { WebSocket } = createRequire(join(packageDirectory, 'package.json'))('ws'
 assert.ok(!root.startsWith(resolve(homedir(), '.codex')));
 if (process.platform === 'darwin') execFileSync('/usr/bin/codesign', ['--verify', '--strict', sdk], { stdio: 'pipe' });
 const sdkVersion = execFileSync(sdk, ['--version'], { encoding: 'utf8' }).trim();
-assert.equal(sdkVersion, 'codex-cli 0.162.0-alpha.17.2');
+// The SDK must be the version the package's own verified receipt names, not a literal that goes stale with each pin.
+const receipt = JSON.parse(await readFile(join(packageDirectory, 'gateway-sdk/build.json'), 'utf8'));
+assert.equal(sdkVersion, `codex-cli ${receipt.codexVersion}`);
 await mkdir(root, { recursive: true, mode: 0o700 }); const run = await mkdtemp('/tmp/gw-compact-switch-');
 const home = join(run, 'native'), work = join(run, 'work'), isolatedHome = join(run, 'home');
 await mkdir(home, { mode: 0o700 }); await mkdir(work, { mode: 0o700 }); await mkdir(isolatedHome, { mode: 0o700 });
