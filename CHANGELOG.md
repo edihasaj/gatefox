@@ -114,6 +114,11 @@
   their bindings. Thanks to Edi Hasaj for requesting code-enforced routing and
   identifying the duplicated instruction policy.
 
+- No forced restart after a release: once a live-updated service's chats drain
+  (no running turn for 5 minutes), its execution host moves to the new release by
+  itself, without touching inference, tunnels or Claude Desktop components. `gateway
+  health` no longer reports a live-moved service as lagging or blocked by Claude.
+
 - `gateway health` says why a lagging service has not moved: with Claude
   Desktop components it warns that only `gateway service restart --force`
   moves it; otherwise it points at `gateway activity` for the turns it waits on.

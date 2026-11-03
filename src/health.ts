@@ -72,13 +72,27 @@ export interface HealthDeps {
 const owned = (path: string) => access(path, constants.F_OK).then(() => true, () => false);
 
 /** A supervisor's own frozen release wins only when its snapshot still belongs to the inspected service process. */
-function reconcileServiceRelease(versions: VersionsResult, status: ServiceStatus): VersionsResult {
-  if (!status.runningRelease || !status.pid || !status.updatedAt) return versions;
+/** The lagging names plus the service's bootstrap release when only its controller moved, so the live move is reported. */
+function laggingWithService(lagging: string[], versions: VersionsResult, status: ServiceStatus): string[] {
+  const row = trustedSnapshot(versions, status) ? versions.processes.find(process => process.role === "service" && process.pid === status.pid) : undefined;
+  return row && row.release !== versions.installed && !lagging.some(name => name.startsWith("service@")) ? [...lagging, `service@${row.release}`] : lagging;
+}
+
+/** Whether the status snapshot belongs to the live service row: same PID, published after that process started. */
+function trustedSnapshot(versions: VersionsResult, status: ServiceStatus): boolean {
+  if (!status.runningRelease || !status.pid || !status.updatedAt) return false;
   const updatedAt = Date.parse(status.updatedAt);
   const row = versions.processes.find(process => process.role === "service" && process.pid === status.pid);
   const startedAt = row ? Date.parse(row.startedAt) : Number.NaN;
-  if (!row || !Number.isFinite(updatedAt) || !Number.isFinite(startedAt) || updatedAt < startedAt) return versions;
-  const processes = versions.processes.map(process => process === row ? { ...process, release: status.runningRelease! } : process);
+  return !!row && Number.isFinite(updatedAt) && Number.isFinite(startedAt) && updatedAt >= startedAt;
+}
+
+function reconcileServiceRelease(versions: VersionsResult, status: ServiceStatus): VersionsResult {
+  if (!trustedSnapshot(versions, status)) return versions;
+  const row = versions.processes.find(process => process.role === "service" && process.pid === status.pid)!;
+  // A controller that moved live to the installed release is that release's service: only the bootstrap layer stays.
+  const release = status.controllerRelease && status.controllerRelease === versions.installed ? status.controllerRelease : status.runningRelease!;
+  const processes = versions.processes.map(process => process === row ? { ...process, release } : process);
   return { ...versions, processes, lagging: processes.filter(process => process.release !== versions.installed).length };
 }
 
@@ -173,7 +187,7 @@ export async function runHealth(options: HealthOptions, deps: HealthDeps = {}): 
     .catch(() => ({ outcome: { ran: false, result: "unavailable" } as SmokeOutcome }));
   const components = componentFindings(reconcileServiceRelease(versions, status), now, switched);
   const findings: Finding[] = [
-    ...appFindings(app, change.changed), ...components.findings, ...upgradeFindings(plan, components.lagging, components.stale),
+    ...appFindings(app, change.changed), ...components.findings, ...upgradeFindings(plan, laggingWithService(components.lagging, versions, status), components.stale, trustedSnapshot(versions, status) ? status.controllerRelease : undefined, versions.installed),
     ...serviceFindings(status, signals), ...relayFindings(status, relay, now), ...inferenceFindings(inference, versions.installed),
     ...errorFindings(signals, nativePaused(status)), ...desktop, ...smokeFindings(smoke.outcome.result, smoke.outcome.phase),
     ...unreadable,

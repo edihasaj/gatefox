@@ -115,6 +115,64 @@ test("the host adopts the new implementation automatically only after its strict
  }finally{await old.stop();await f.cleanup();}
 });
 
+test("with an app still connected the host moves to the new implementation once its chats drain, never mid-turn", {timeout:15000}, async()=>{
+ // 2026-11-03: every Mac kept its host on the previous release until a forced restart, because the strict idle gate needs no
+ // connected app and no loaded chat. After the grace the host also moves when quiet; only the host restarts.
+ const f=await setup();const schedules={active:0,maximum:0};let oldCloses=0;let newStarts=0;const quietAsked:number[]=[];
+ let quiet:{wait:string}|{loadedChats:number}={wait:"running"};
+ const relay=fixtureComponent(f.root,"native","native","setInterval(()=>{},1000)");
+ relay.args.push("--","--daemon","--codex",join(f.root,"sdk"),"--native-home",join(f.root,"native"),"--relay-home",join(f.root,"relay"));
+ const plan:ServicePlan={version:1,config:f.config,sharedExecutors:true,components:[relay]};
+ const oldHost=async()=>({close:async()=>{oldCloses++;},prepareStop:async()=>false,prepareQuietStop:async(ms:number)=>{quietAsked.push(ms);return quiet;},resume:()=>{}});
+ const newHost=async()=>{newStarts++;return {close:async()=>{},prepareStop:async()=>false,resume:()=>{}};};
+ const quietHealing={hostQuietGraceMs:0,hostQuietRetryMs:0,hostQuietMs:1234};
+ const old=new ServiceSupervisor(plan,f.root,10,oldHost as never,unregistered,undefined,undefined,{...healing("1.1.8",schedules),...quietHealing});
+ try{
+  await old.start();const next=new ServiceSupervisor(plan,f.root,10,newHost as never,unregistered,undefined,undefined,{...healing("1.1.9",schedules),...quietHealing});
+  assert.equal(await old.handover(next),true);
+  const keeper=(next as unknown as {host:{restartHostWhenIdle():Promise<void>}}).host;
+  await until(()=>quietAsked.length>0);await keeper.restartHostWhenIdle();
+  assert.equal(oldCloses,0,"a running turn holds the host back");assert.equal(newStarts,0);
+  assert.ok(quietAsked.every(ms=>ms===1234),"the quiet check gets the configured quiet time");
+  quiet={loadedChats:3};
+  await keeper.restartHostWhenIdle();await until(()=>newStarts===1);
+  assert.equal(oldCloses,1,"the drained host closed once and the new implementation started");
+  assert.ok((await f.state()).components.every(component=>component.restarts===0),"no other component restarted");
+ }finally{await old.stop();await f.cleanup();}
+});
+
+test("an unhealthy or relay host restart never takes the quiet path", {timeout:15000}, async()=>{
+ const { ServiceHostKeeper } = await import("../service-host-keeper.js");const { defaultHealing } = await import("../service-heal.js");
+ let quietAsked=0;let closes=0;
+ const context={plan:{version:1,config:"/tmp/fixture.json",components:[]},state:"/tmp/fixture",retryBaseMs:10,startHost:(async()=>{throw Error("no start expected");}) as never,
+  heal:{...defaultHealing,probeHost:async()=>undefined,kickGapMs:0,hostQuietGraceMs:0,hostQuietRetryMs:0},registered:async()=>true,stopping:()=>false,restarting:()=>false,publish:async()=>{},restartWhenIdle:async()=>false};
+ const keeper=new ServiceHostKeeper(context as never);
+ keeper.executionState={state:"running",home:"/tmp/fixture",pid:process.pid,sharedNativeExecutor:true,sharedGatewayExecutors:true};
+ keeper.executionStarting=Promise.resolve({close:async()=>{closes++;},prepareStop:async()=>false,prepareQuietStop:async()=>{quietAsked++;return {loadedChats:1};},resume:()=>{}} as never);
+ try{
+  const internals=keeper as unknown as {hostRestartReason:string;releaseUpdateSince?:number};
+  internals.releaseUpdateSince=performance.now()-1; // A staged release move, so only the reason keeps the quiet path closed.
+  for(const reason of ["status_failed","relay_registered"]){internals.hostRestartReason=reason;await keeper.restartHostWhenIdle();}
+  assert.equal(quietAsked,0);assert.equal(closes,0);
+ }finally{keeper.stopWatching();}
+});
+
+test("a restart reason that changes while the quiet check runs reopens the gate and does not close the host", {timeout:15000}, async()=>{
+ const { ServiceHostKeeper } = await import("../service-host-keeper.js");const { defaultHealing } = await import("../service-heal.js");
+ let closes=0;let resumes=0;
+ const context={plan:{version:1,config:"/tmp/fixture.json",components:[]},state:"/tmp/fixture",retryBaseMs:10,startHost:(async()=>{throw Error("no start expected");}) as never,
+  heal:{...defaultHealing,probeHost:async()=>undefined,kickGapMs:0,hostQuietGraceMs:0,hostQuietRetryMs:0},registered:async()=>true,stopping:()=>false,restarting:()=>false,publish:async()=>{},restartWhenIdle:async()=>false};
+ const keeper=new ServiceHostKeeper(context as never);const internals=keeper as unknown as {hostRestartReason:string;releaseUpdateSince?:number};
+ keeper.executionState={state:"running",home:"/tmp/fixture",pid:process.pid,sharedNativeExecutor:true,sharedGatewayExecutors:true};
+ keeper.executionStarting=Promise.resolve({close:async()=>{closes++;},prepareStop:async()=>false,
+  prepareQuietStop:async()=>{internals.hostRestartReason="status_failed";return {loadedChats:1};},resume:()=>{resumes++;}} as never);
+ try{
+  internals.hostRestartReason="release_update";internals.releaseUpdateSince=performance.now()-1;
+  await keeper.restartHostWhenIdle();
+  assert.equal(closes,0,"the changed reason keeps its own strict rule");assert.equal(resumes,1,"the closed gate was reopened");
+ }finally{keeper.stopWatching();}
+});
+
 test("changed plan during async staging refuses without retiring the old controller",{timeout:15000},async()=>{
  const f=await setup();const schedules={active:0,maximum:0};
  const plan:ServicePlan={version:1,config:f.config,components:[fixtureComponent(f.root,"claude-adapter","claude-adapter","setInterval(()=>{},1000)")]};

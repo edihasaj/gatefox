@@ -176,6 +176,17 @@ test("a matching supervisor snapshot reports its frozen service release after cu
   assert.equal(result.report.verdict, "fail");
 });
 
+test("a service whose controller moved live to the installed release is not stale, an hour later or more", async () => {
+  const status: ServiceStatus = { ...runningStatus, pid: 100, updatedAt: iso(), runningRelease: "0.5.5", controllerRelease: "0.5.6" };
+  const result = await check({}, {
+    versions: async () => versions("0.5.6", [["service", "0.5.5"]]), readStatus: async () => status,
+    switchedAt: async () => at - 3 * 60 * 60_000, probe: async () => ({ ...healthyProbe, release: "0.5.6" }),
+  });
+  assert.deepEqual(result.report.components.stale, []);
+  assert.notEqual(result.report.verdict, "fail");
+  assert.ok(result.report.findings.some(finding => finding.level === "info" && /moved live/.test(finding.reason)));
+});
+
 test("a stale or mismatched supervisor snapshot cannot override a service process", async () => {
   const current = () => versions("0.5.6", [["service", "0.5.6"]]);
   for (const status of [

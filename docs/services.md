@@ -83,11 +83,24 @@ change is not proof of complete rollout readiness, and the strict rollout gate
 continues to report those pending components.
 
 The retained host is offered the new implementation through its strict idle gate
-without restarting the supervisor or its other children. Adapter leases and
-loaded chats keep it pending; a window with no current turn is not necessarily
-strictly idle. Once that gate accepts, the host closes and starts under the new
-implementation. This path does not use the older quiet snapshot rule, which
-cannot atomically block a new turn on an existing engine socket.
+without restarting the supervisor or its other children. Once that gate accepts,
+the host closes and starts under the new implementation.
+
+Adapter leases and loaded chats keep the strict gate closed for as long as an app
+stays connected. So since 1.5.4, once the release move has waited the 15 minute
+grace (`upgradeGraceMs`), the host also moves when its chats drain. That uses the
+same quiet check the whole-service move uses: no turn running or waiting for an
+approval or input in any engine, no background terminal, and no turn ended in the
+last 5 minutes. The check runs at most once a minute, from the host probe. Only the
+execution host restarts. Inference, tunnels, the relay and Claude Desktop components
+keep running, so the Claude restart guard does not apply. Loaded chats re-attach on
+their next request, as after any host restart. As with the quiet service move, a turn
+that starts in the few milliseconds between the final check and the close is cut and
+continues from saved history. A restart for an unhealthy host or a relay registration
+still needs the strict gate. The move is logged as `execution_host_quiet_upgrade`
+with `loadedChats`, and each reason it waited is logged once per move as
+`execution_host_upgrade_waiting`. This policy lives in the retained host keeper, so a
+service that started before 1.5.4 gets it at its next natural start.
 
 Older already-running supervisors cannot acquire this loader by moving the
 `current` link. They need one initial natural login/reboot or an explicitly
