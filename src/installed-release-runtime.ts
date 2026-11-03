@@ -16,6 +16,23 @@ import type { GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 export interface InstalledReleaseRuntime { release: string; runtime: GatewaySdkRuntime; lease: ReleaseLease }
 type RuntimeModule = { gatewaySdkRuntime?: (packageDirectory?: string) => Promise<GatewaySdkRuntime | undefined> };
 
+/**
+ * The compiled modules and data that turn a descriptor into an engine's settings and configuration file. The forwarded engine
+ * is prepared by this older host's copies, so forwarding requires the installed release's copies to be byte-identical: a
+ * release that changes the feature schema or its normalization keeps the release skew refusal instead of running its SDK
+ * with settings trimmed to another schema.
+ */
+export const preparationFiles = ["gateway-feature-schema-data.json", "gateway-feature-schema.js", "gateway-feature-fields.js",
+  "gateway-feature-toml.js", "codex-feature-compat.js", "gateway-engine-home.js", "executor-identity.js"] as const;
+
+async function samePreparation(runningDist: string, installedDist: string): Promise<boolean> {
+  for (const name of preparationFiles) {
+    const [mine, theirs] = await Promise.all([readRegularFile(resolve(runningDist, name), 1024 * 1024, false), readRegularFile(resolve(installedDist, name), 1024 * 1024, false)]);
+    if (!mine || !theirs || !mine.bytes.equals(theirs.bytes)) return false;
+  }
+  return true;
+}
+
 export async function installedReleaseRuntime(release: string, moduleUrl = import.meta.url): Promise<InstalledReleaseRuntime | undefined> {
   try {
     if (releaseState(moduleUrl)?.installed !== release) return;
@@ -23,6 +40,7 @@ export async function installedReleaseRuntime(release: string, moduleUrl = impor
     const file = realpathSync(resolve(releases, "../current/package/dist/gateway-sdk-runtime.js"));
     if (file !== resolve(releases, release, "package/dist/gateway-sdk-runtime.js")) return;
     if (!await readRegularFile(file, 256 * 1024, false)) return;
+    if (!await samePreparation(realpathSync(dirname(fileURLToPath(moduleUrl))), dirname(file))) return;
     const lease = retainRunningRelease(pathToFileURL(file).href);
     if (lease.releaseName !== release) { lease.release(); return; }
     try {

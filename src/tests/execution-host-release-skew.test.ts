@@ -104,7 +104,7 @@ test("a newer adapter's generation runs on the installed release's SDK, verified
   const f = await fixture(); let host; let client; let released = 0;
   try {
     const newer = join(f.directory, "newer-gateway-codex");
-    await writeFile(newer, `${await readFile(join(f.directory, "gateway-codex"), "utf8")}\n// newer release\n`, { mode: 0o700 });
+    await writeFile(newer, `${(await readFile(join(f.directory, "gateway-codex"), "utf8")).replace("'runtime'", "'newer'")}\n// newer release\n`, { mode: 0o700 });
     const newerSha = (await sdkIdentity(newer)).sdkSha256;
     let verified: GatewaySdkRuntime = { executable: newer, binarySha256: newerSha, selectedModelCompaction: true, executorIdentity: true, codeModeHost: false };
     const loads: string[] = [];
@@ -112,7 +112,11 @@ test("a newer adapter's generation runs on the installed release's SDK, verified
       installedRuntime: async release => { loads.push(release); return { release, runtime: verified, lease: { releaseName: release, release: () => { released++; } } }; } });
     client = await control(join(f.hostHome, "host.sock"));
     assert.equal((await client.request<ExecutionRecord>("execution/acquire", { descriptor: f.descriptor(newerSha) })).revision, "a".repeat(64));
-    assert.equal(await readFile(join(f.directory, "engine-a.state"), "utf8"), "runtime", "the newer SDK was spawned");
+    assert.equal(await readFile(join(f.directory, "engine-a.state"), "utf8"), "newer", "the newer SDK was spawned");
+    const generations = join(f.options.config.stateDirectory, "desktop-generations");
+    assert.ok((await readFile(join(generations, `shared-v1-${"a".repeat(64)}-forward-1.6.0`, "execution-generation.json"), "utf8")).includes(newerSha),
+      "a forwarded generation keeps its engine home apart, so the moved service writes a fresh one for the same revision");
+    await assert.rejects(readFile(join(generations, `shared-v1-${"a".repeat(64)}`, "execution-generation.json"), "utf8"), { code: "ENOENT" });
     assert.deepEqual(loads, ["1.6.0"]); assert.equal(released, 0, "the release is retained while its engine runs");
     assert.deepEqual(await f.events(), [], "nothing was refused"); assert.equal(host.skewRefused?.("1.6.0"), false);
     // The host's own SDK still runs beside it, and never loads the newer verifier.
@@ -122,8 +126,12 @@ test("a newer adapter's generation runs on the installed release's SDK, verified
     verified = { ...verified, binarySha256: thirdSha };
     await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(newerSha, "c") }), error => (error as Error).message === releaseSkewMessages.adapter_newer);
     assert.equal(released, 1, "the refused load gave its lease back");
+    // A runtime whose Code Mode differs from the host's contract (the descriptor was normalized against it) is not offered.
+    verified = { ...verified, binarySha256: newerSha, codeModeHost: true };
+    await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(newerSha, "d") }), error => (error as Error).message === releaseSkewMessages.adapter_newer);
+    assert.equal(released, 2);
     await client.close(); client = undefined; await host.close(); host = undefined;
-    assert.equal(released, 2, "closing the host releases the running engine's lease");
+    assert.equal(released, 3, "closing the host releases the running engine's lease");
   } finally { await client?.close(); await host?.close(); await f.clean(); }
 });
 

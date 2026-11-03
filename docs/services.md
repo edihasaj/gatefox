@@ -858,6 +858,17 @@ the engine runs, so the installer cannot prune it. The move is logged as
 `execution_generation_forward` with `to`, the release. A verifier that is missing,
 fails or answers with another SDK leaves the release skew refusal below unchanged.
 
+Forwarding also requires that both releases prepare an engine the same way. The
+forwarded engine is set up by the older host's code, so the installed release's
+feature schema, its normalization and engine-home modules (`preparationFiles` in
+`src/installed-release-runtime.ts`) must be byte-identical to the running release's.
+Its SDK must also match the host's Code Mode support, because the descriptor's
+tools were normalized against it. A release that changes either keeps the refusal
+and moves under the rules above. A forwarded generation keeps its engine home in
+`desktop-generations/shared-v1-<revision>-forward-<release>`. The service that later
+moves to that release starts the same revision in the ordinary folder, with a
+configuration it writes itself.
+
 Chats then move one at a time, without a restart:
 
 ```text

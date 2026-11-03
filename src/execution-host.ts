@@ -278,7 +278,8 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     if (!pending || pending.gatewaySdkSha256 !== sha) return;
     const loaded = await loadInstalled(pending.release).catch(() => undefined);
     if (!loaded) return;
-    if (loaded.release !== pending.release || loaded.runtime.binarySha256 !== sha) { loaded.lease.release(); return; }
+    // The descriptor was normalized against this host's Code Mode contract; a runtime that differs from it is not offered.
+    if (loaded.release !== pending.release || loaded.runtime.binarySha256 !== sha || loaded.runtime.codeModeHost !== runtime.codeModeHost) { loaded.lease.release(); return; }
     return loaded;
   };
   const leased = (engine: ExecutionEngine) => [...leases.values()].some(values => values.has(engine.record.revision));
@@ -363,7 +364,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     const ahead = descriptor.gatewaySdkSha256 ? await forwardRuntime(descriptor.gatewaySdkSha256) : undefined;
     if (stopping) { ahead?.lease.release(); throw new Error("Execution host is closing"); }
     const resolver = ahead ? async () => ahead.runtime : selectedRuntime;
-    const engine = new ExecutionEngine(descriptor, owner, home, resolver, !runtime); engines.set(descriptor.revision, engine);
+    const engine = new ExecutionEngine(descriptor, owner, home, resolver, !runtime, ahead?.release); engines.set(descriptor.revision, engine);
     if (ahead) forward.set(engine, ahead.lease);
     try {
       await engine.start(options.config, publish); await publish();
@@ -565,9 +566,13 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     stopping = true; skew.stop(); if (maintenanceTimer) clearInterval(maintenanceTimer); await probe?.close(); for (const socket of sockets.clients) socket.terminate();
     const stoppedServer = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeAllConnections();
-    const results = await Promise.allSettled([...engines.values()].map(engine => engine.stop()).concat(native ? [native.stop()] : []));
-    for (const lease of forward.values()) lease.release();
-    forward.clear();
+    const stoppedEngines = [...engines.values()];
+    const results = await Promise.allSettled(stoppedEngines.map(engine => engine.stop()).concat(native ? [native.stop()] : []));
+    // A release is given back only for an engine that really stopped: one whose stop failed may still run that release's code.
+    stoppedEngines.forEach((engine, index) => {
+      if (results[index].status !== "fulfilled") return;
+      forward.get(engine)?.release(); forward.delete(engine);
+    });
     await maintenance?.catch(() => undefined);
     await serial.catch(() => undefined); await writes.catch(() => undefined); await stoppedServer; sockets.close();
     if (results.some(result => result.status === "rejected")) throw new Error("An execution generation did not stop; its ownership record was preserved");
