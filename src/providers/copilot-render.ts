@@ -88,13 +88,16 @@ async function stage(directory: string, { label, image }: ClaudeImages[number]):
  * `stopped` is asked before each image is written: once it says yes the rendering fails as cancelled, so a request that ended
  * (and whose folder is about to be removed) never keeps writing into it.
  */
-export async function copilotPrompts(conversation: ClaudeConversation, images: ClaudeImages, from: number, line: string | undefined, directory: string, catalog: NativeTool[], stopped: () => boolean = () => false): Promise<Prompt[]> {
+export async function copilotPrompts(conversation: ClaudeConversation, images: ClaudeImages, from: number, line: string | undefined, directory: string, catalog: NativeTool[], stopped: () => boolean = () => false, selected?: readonly number[]): Promise<Prompt[]> {
   const owned = imagesByItem(images);
   const bindings = claudeToolBindings(catalog.map(({ tool }) => tool));
   const prompts: Prompt[] = [];
-  for (const [offset, item] of conversation.slice(from).entries()) {
+  // Selected indices retain their original item numbers and image ownership.
+  const indices = selected ?? conversation.slice(from).map((_, offset) => from + offset);
+  for (const index of indices) {
+    const item = conversation[index];
     const attachments: Attachment[] = [];
-    for (const image of owned.get(from + offset) || []) {
+    for (const image of owned.get(index) || []) {
       if (stopped()) throw new ProviderError("cancelled", "Request cancelled", 499);
       attachments.push(await stage(directory, image));
     }
@@ -104,7 +107,7 @@ export async function copilotPrompts(conversation: ClaudeConversation, images: C
       const tool = bindings.get(call.function.name);
       return tool ? { ...call, function: { ...call.function, name: claudeToolName(tool) } } : call;
     }) } : item;
-    prompts.push({ prompt: itemText(replay, from + offset + 1), ...(attachments.length ? { attachments } : {}) });
+    prompts.push({ prompt: itemText(replay, index + 1), ...(attachments.length ? { attachments } : {}) });
   }
   if (!prompts.length) prompts.push({ prompt: "(the conversation has no items)" });
   if (line) prompts[prompts.length - 1].prompt += `\n${line}`;

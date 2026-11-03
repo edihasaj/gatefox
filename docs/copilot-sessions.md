@@ -49,6 +49,18 @@ refusal instead of silently switching to one-shot. See [provider reuse](provider
 | `parkMinutes` | 30 | Idle time before a session closes (5–240). Copilot's prompt cache lasted 30 minutes for `gpt-6-luna` and 5 minutes for `claude-haiku-5.5` in the measurements; a session parked longer still continues, at about the price of a reseed, and keeps its native history |
 | `toolWaitMinutes` | 25 | How long a session waits for Codex to run a tool before it closes (1–25). The wait is the smaller of this and `parkMinutes`: with `parkMinutes: 10` a session waiting for tools closes after 10 minutes |
 
+## Messages interleaved with pending results
+
+Developer/user messages and agent reports may arrive before, between or after
+pending tool results. The gateway continues the same live session only when the
+history contains every pending result exactly once and all new caller messages
+are fully accounted for. It acknowledges those messages as steering, then
+releases the results once. Original roles, item numbers and image ownership stay
+associated with their messages; tool results never render as caller text.
+Missing/duplicate results, new tool calls, edited history and other mismatches
+retain the preserved-session refusal. No full-history replay or compaction is
+introduced by this recovery.
+
 ## Caller tool identity
 
 Copilot may return a caller-visible alias instead of the generated native tool

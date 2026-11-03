@@ -22,6 +22,7 @@ import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveModule, type ClaudeL
 import { telemetry } from "../telemetry.js";
 import { claudeReplayBudget, ClaudeReplayBlocked, type ClaudeReplayBudget } from "./claude-replay-budget.js";
 import { providerCommand } from "../provider-tool-runtime.js";
+import { claudeLiveWarmup } from "./claude-cache-warmup.js";
 import { CliContinuityUnavailable, standaloneCliReasons, unidentifiedCliHistory } from "./cli-continuity.js";
 
 export function claudeEffort(config: ProviderConfig | undefined, request: ResponsesRequest): string | undefined {
@@ -215,7 +216,7 @@ export class ClaudeSubscription implements Provider {
     let outcome: ClaudeLiveOutcome;
     let complete = () => {};
     try {
-      const live = module.claudeLive({ max: settings.max, parkMinutes: settings.parkMinutes, warmup: settings.warmup });
+      const live = module.claudeLive({ max: settings.max, parkMinutes: settings.parkMinutes, warmup: claudeLiveWarmup(this.config, conversation, settings.warmup) });
       complete = () => live.complete?.(this.scope(), conversationId);
       outcome = await live.attach({
         replayBudget: run.replayBudget,

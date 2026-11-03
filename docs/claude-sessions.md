@@ -88,7 +88,12 @@ finishes normally, then the session closes instead of remaining parked in replay
 - **Warmup** (no session): a thread must complete `warmup` ordinary requests before
   its first live CLI starts. Until then, it runs one-shot with the `warmup` miss
   reason. This keeps composer prediction forks and one-request subagents from
-  occupying a parked CLI for an hour. The default of one is cheap: the promoted
+  occupying a parked CLI for an hour. With the default policy, identified histories
+  of at least 256 KiB of serialized conversation skip the one-shot warmup and
+  seed live directly. This avoids two large cache writes before the first native
+  continuation after a restart or cache expiry. Explicit `warmup` settings remain
+  authoritative; this does not raise the two-miss safety budget. For small requests,
+  the default of one is cheap: the promoted
   session seed reads the cache the one-shot request wrote and writes only its new
   content.
 - **Standalone requests:** explicitly identified compaction, prewarm and memory

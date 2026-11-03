@@ -2,7 +2,7 @@ import type { ProviderConfig } from "../config.js";
 import type { ChatToolSelection, InferenceEvent, OpenAITool, ResponsesRequest } from "../protocol/types.js";
 import { registerActivityProbe, registerShutdownHook } from "../runtime-activity.js";
 import { telemetry } from "../telemetry.js";
-import { decide, ledgerEntries, queuedToolContinuation, type LedgerEntry, type LedgerPhase } from "./claude-ledger.js";
+import { decide, ledgerEntries, interleavedToolContinuation, type LedgerEntry, type LedgerPhase } from "./claude-ledger.js";
 import type { ClaudeConversation, ClaudeImages } from "./claude-render.js";
 import { sessionKey } from "./claude-live-contract.js";
 import { CopilotLiveSession, SessionStartFailure, sessionLimits, type SessionEnd, type SessionState } from "./copilot-live-session.js";
@@ -65,7 +65,7 @@ interface Registry {
   retired?: Map<string, string>;
 }
 type Plan = Exclude<ReturnType<typeof decide>, { kind: "reseed" }> | { kind: "seed" }
-  | { kind: "continue_outputs_with_messages"; outputs: LedgerEntry[]; from: number };
+  | { kind: "continue_outputs_with_messages"; outputs: LedgerEntry[]; indices: number[] };
 const symbol = Symbol.for("harness-gateway/copilot-sessions/v1");
 const recentToolWait = 10 * 60 * 1000;
 const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
@@ -167,7 +167,7 @@ async function place(reg: Registry, settings: CopilotLiveSettings, key: string, 
     else if (session.window !== window) reason = "window_changed";
     else if (decision.kind === "reseed") {
       const queued = decision.reason === "unexpected_tail" && session.state === "awaiting_outputs"
-        ? queuedToolContinuation(entries, decision.divergedAt, session.pending, messages) : undefined;
+        ? interleavedToolContinuation(entries, decision.divergedAt, session.pending, messages) : undefined;
       if (queued && session.queuedInputVersion === 1 && messages === input.conversation.length && input.effort === session.effort) {
         outputs = toolResults(input, queued.outputs);
         if (!queued.outputs.every(entry => input.conversation[entry.first]?.role === "tool" && input.conversation[entry.first]?.tool_call_id === entry.callId)) reason = "unexpected_tail";
@@ -247,9 +247,9 @@ function toolResults(input: CopilotLiveInput, entries: LedgerEntry[]): Map<strin
 
 function start(reg: Registry, settings: CopilotLiveSettings, session: CopilotLiveSession, input: CopilotLiveInput, prefix: string[],
   plan: Plan, outputs: Map<string, string | ToolResult> | undefined, signal: AbortSignal, decision: Record<string, unknown>): AsyncIterable<InferenceEvent> {
-  const prompts = (from: number) => (directory: string, stopped: () => boolean) => copilotPrompts(input.conversation, input.images, from, choiceLine(input.choice, input.native), directory, input.native, stopped);
+  const prompts = (from: number, indices?: readonly number[]) => (directory: string, stopped: () => boolean) => copilotPrompts(input.conversation, input.images, from, choiceLine(input.choice, input.native), directory, input.native, stopped, indices);
   const begin = plan.kind === "continue_outputs" || plan.kind === "continue_outputs_with_messages"
-    ? { outputs: outputs ?? toolResults(input, plan.outputs), ...(plan.kind === "continue_outputs_with_messages" ? { prompts: prompts(plan.from) } : {}) }
+    ? { outputs: outputs ?? toolResults(input, plan.outputs), ...(plan.kind === "continue_outputs_with_messages" ? { prompts: prompts(0, plan.indices) } : {}) }
     : { prompts: prompts(plan.kind === "continue_user" ? plan.from : 0) };
   session.timers(settings.parkMinutes * 60000, settings.toolWaitMinutes * 60000);
   const turn = input.newTurn();

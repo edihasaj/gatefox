@@ -31,9 +31,8 @@ export async function* cacheGuardedInference(provider: Provider, request: Respon
   // cold compactions have their own bound rather than an unlimited exemption.
   const guardIdentity = context.requestKind === "compaction" ? JSON.stringify([identity ?? null, "compaction"]) : identity;
   const budget = contextCacheBudget(scope, guardIdentity, request.model, Buffer.byteLength(JSON.stringify(request.input)));
-  // A caller declaring a normal SDK turn can recover using its own compaction.
-  // Compaction itself and unclassified clients keep the final refusal, preventing trim/retry loops.
-  budget.beforeRequest("provider", context.cacheRecovery === true && context.requestKind === "turn" && !!context.turnId && !!context.threadId && context.clientProtocol !== "messages");
+  // Cache safety never impersonates a model context limit or asks the client to compact.
+  budget.beforeRequest("provider");
   const finishActivity = budget.track();
   let observed: CacheCounts | undefined;
   const observeCacheUsage = (value: ProviderCacheUsage) => {
