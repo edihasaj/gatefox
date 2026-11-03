@@ -126,7 +126,7 @@ if (values.test) {
     const result = /test result: ok\. (\d+) passed; 0 failed;/.exec(output);
     if (!result || Number(result[1]) !== count || output.includes('Skipping test')) throw Error(`Gateway SDK regression gate did not execute all ${name} cases`);
   };
-  passed(run(['-p', 'codex-model-provider-info', '--lib', 'gateway_executor']), 3, 'executor identity');
+  passed(run(['-p', 'codex-model-provider-info', '--lib', 'gateway_executor']), 4, 'executor identity');
   passed(withGatewaySdkCompactionTests(sdk, () => run(['-p', 'codex-core', '--test', 'all',
     'gateway_pre_sampling_compaction_stays_in_selected_user_turn'])), 6, 'compaction');
   passed(run(['-p', 'codex-queue-extension', '--test', 'queue_service', 'gateway_']), 2, 'queue preservation');

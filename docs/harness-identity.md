@@ -78,6 +78,13 @@ makes it. Turning the opt-in off again (remove the key, or set `"legacy"`, and r
 the desktop) keeps every `openai` chat working: every patched executor serves both ids.
 Releases before 0.4.7 ignore the key.
 
+Codex 0.166 refuses to resume a chat, or to take input on it, when its saved provider
+differs from the executor's configured one ("This chat uses subscription_gateway, but
+your current provider is openai"). Inside a marked gateway executor the executor patch
+treats the legacy id and the loopback `openai` alias as one provider in both checks
+(`same_gateway_executor_provider`), so a legacy chat still resumes under the id it was
+saved with. Every other pair, and every unmarked engine, keeps the SDK's strict check.
+
 ### How an executor serves `openai`
 
 A gateway executor is the pinned gateway SDK (`gateway-sdk/gateway-codex`) started by the

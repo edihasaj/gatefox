@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Gateway chats run on Codex 0.166.0 (from 0.163.0). Its experimental
+  `wake_on_agent_messages` feature lets an idle chat continue on its own when a
+  subagent finishes; set it under `[features]` in `~/.codex/config.toml`. The six
+  gateway SDK patches were ported, and two 0.166 checks now treat a legacy
+  `subscription_gateway` chat and the executor's `openai` alias as one gateway, so
+  legacy chats still resume.
+
+- Fix the model-switch guard refusing a switch between two aliases of one upstream
+  model family (for example `team/large` to `team/small`): it read the family from
+  the alias text. The catalog now publishes each row's `tokenizer_family`, computed
+  from the upstream model name.
+
 - Copilot 1.0.103 and later start again: the CLI retired `--no-remote` and exits
   when it is given, which blocked provider maintenance. A verified managed
   installation from 1.0.103 omits it (remote hosting there needs explicit flags

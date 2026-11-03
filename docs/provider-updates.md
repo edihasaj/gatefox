@@ -27,7 +27,7 @@ Normal gateway release and idle activation
 
 | Provider | Discovery | Compatibility gate |
 | --- | --- | --- |
-| Codex gateway SDK | Official stable GitHub release, tag resolved to its immutable commit | Archive SHA-256, sequential gateway patches, locked Rust build, all 33 identity/compaction/queue/client-tool/role-context/cache/background-completion regressions, release executable |
+| Codex gateway SDK | Official stable GitHub release, tag resolved to its immutable commit | Archive SHA-256, sequential gateway patches, locked Rust build, all 34 identity/compaction/queue/client-tool/role-context/cache/background-completion regressions, release executable |
 | Claude Code | Official npm `latest` stable release and exact-version metadata | SHA-512 archive integrity, private native installation, version, required public flags, actual stream-json control initialization using the gateway's complete CLI arguments |
 | GitHub Copilot | Official npm `latest` stable release and exact-version metadata | SHA-512 archive integrity, private installation, version, required public flags, actual gateway RPC framing and protocol 3 handshake |
 | API-only providers | No local provider executable | Existing translation and transport tests; caller models, endpoints and credentials stay unchanged |
