@@ -69,6 +69,8 @@ export interface ClaudeLiveInput {
   };
   /** Content blocks from conversation index `from`; `render(0)` includes block 0. */
   render(from: number): ContentBlock[];
+  /** Content blocks of exactly these conversation indices, in order (caller messages interleaved with tool outputs). */
+  renderAt?(indices: number[]): ContentBlock[];
   /** A parser for one request's events. */
   newStream(): ClaudeMessageStream;
   /** Per request: persists an observed subscription limit; never rejects. */

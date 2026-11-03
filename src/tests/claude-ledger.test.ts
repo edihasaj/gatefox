@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decide, echoDigests, ledgerEntries, messagesAfterTools, partialDigest } from "../providers/claude-ledger.js";
+import { decide, echoDigests, interleavedToolContinuation, ledgerEntries, messagesAfterTools, partialDigest } from "../providers/claude-ledger.js";
 import { normalizeResponsesTools, responsesToChatRequest } from "../protocol/request.js";
 import { restoreReasoning } from "../protocol/reasoning-state.js";
 import type { OpenAIToolCall, ResponsesInputItem, ResponsesRequest } from "../protocol/types.js";
@@ -24,6 +24,17 @@ test("steering recovery requires every pending output exactly once before only c
   for (const tail of [[output("c1"), user("Missing")], [output("c1"), output("c1"), user("Duplicate")],
     [output("c1"), output("c2"), assistant("Foreign answer")], [output("c1"), user("Interleaved"), output("c2")],
     [output("c1"), output("c2")]]) assert.equal(classify(tail), false);
+});
+
+test("interleaved recovery takes every pending output once, with caller messages anywhere, and renders only the messages", () => {
+  const output = (id: string): ResponsesInputItem => ({ type: "function_call_output", call_id: id, output: "result" });
+  const classify = (input: ResponsesInputItem[]) => { const built = entries(input); return interleavedToolContinuation(built.entries, 0, ["c1", "c2"], built.messages); };
+  const steered = classify([user("Steer"), output("c2"), user("Between"), output("c1"), user("After")]);
+  assert.deepEqual(steered?.outputs.map(entry => entry.callId), ["c1", "c2"], "outputs in pending order");
+  assert.deepEqual(steered?.indices, [0, 2, 4], "only the caller messages render, never an output");
+  for (const tail of [[user("Only messages")], [output("c1"), output("c2")], [user("Missing"), output("c1")],
+    [output("c1"), output("c1"), output("c2"), user("Duplicate")], [output("c1"), assistant("Foreign"), output("c2"), user("x")],
+    [output("c1"), output("c2"), output("c9"), user("Unknown output")]]) assert.equal(classify(tail), undefined);
 });
 
 test("canonical entries ignore transport fields and match what Codex replays for each emitted item", () => {

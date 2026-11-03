@@ -149,3 +149,28 @@ export function queuedToolContinuation(entries: LedgerEntry[], from: number, pen
   if (tail.reduce((count, entry) => count + entry.count, 0) !== messages - first) return;
   return { outputs: entries.slice(from, from + pending.length), from: first };
 }
+
+/**
+ * Every pending output exactly once, with caller messages before, between or after them. Codex records a message the user
+ * sends while a tool runs (a steer) where it arrived, which is before the tool's output, and a subagent's report after it;
+ * 2026-11-03 a chat waiting on `wait_agent` received both and was refused as `unexpected_tail` until its session expired.
+ * The tail must cover the rest of the conversation with no gap, contain no assistant text and no new call. Returns the
+ * outputs in pending order and the conversation indices of the messages, which render after the outputs: the CLI needs the
+ * tool results before any new text.
+ */
+export function interleavedToolContinuation(entries: LedgerEntry[], from: number, pending: readonly string[], messages: number): { outputs: LedgerEntry[]; indices: number[] } | undefined {
+  const waiting = new Map(pending.map(id => [id, undefined as LedgerEntry | undefined]));
+  if (!waiting.size || waiting.size !== pending.length) return;
+  const tail = entries.slice(from); const indices: number[] = [];
+  if (!tail.length) return;
+  let next = tail[0].first;
+  for (const entry of tail) {
+    if (entry.first !== next) return; // A skipped item would render without a ledger entry.
+    next = entry.first + entry.count;
+    if (entry.kind === "o" && entry.callId && waiting.has(entry.callId) && !waiting.get(entry.callId)) waiting.set(entry.callId, entry);
+    else if (entry.kind === "m" && !entry.assistant) for (let index = entry.first; index < next; index++) indices.push(index);
+    else return;
+  }
+  if (next !== messages || !indices.length || [...waiting.values()].some(entry => !entry)) return;
+  return { outputs: pending.map(id => waiting.get(id)!), indices };
+}

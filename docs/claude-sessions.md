@@ -49,9 +49,16 @@ finishes normally, then the session closes instead of remaining parked in replay
   user or developer messages, the gateway queues only those new messages on the
   existing CLI. An empty-settings control acknowledgment orders that input before
   Gateway releases the waiting MCP results. This acknowledgment does not start
-  another inference. Caller roles remain in the rendered message blocks. Missing,
-  duplicate or interleaved tool results,
-  edited prefixes and appended assistant output keep their existing checks.
+  another inference. Caller roles remain in the rendered message blocks.
+  The messages may also come before or between the results: Codex records a
+  message sent while a tool runs (a steer) where it arrived, which is before the
+  tool's output, and a subagent's report after it. Every pending result must
+  still appear exactly once, the tail must cover the rest of the conversation,
+  and only those caller messages render, after the results; tool results never
+  render as text. On 2026-11-03 a chat waiting on `wait_agent` got both and was
+  refused as `unexpected_tail` until its session expired an hour later. Missing
+  or duplicate tool results, a new call, edited prefixes and appended assistant
+  output keep their existing checks.
   Older adopted instances without queued-input support reseed once through
   `messages_after_tools`. A rejected or timed-out acknowledgment, cancellation
   during the handoff, or CLI/relay failure during the steered request closes the

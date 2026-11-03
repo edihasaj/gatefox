@@ -51,6 +51,42 @@ test("tool results followed by user and developer updates continue the same nati
   }
 });
 
+test("a steer recorded before the tool output and a subagent report after it continue the same CLI", { timeout: 30000 }, async () => {
+  // 2026-11-03: a parent chat waited on `wait_agent`; the user's mid-turn message was recorded before the output and the
+  // subagent's report after it. The session refused the request as `unexpected_tail` until it expired an hour later.
+  const fixture = await installClaudeFixture({ replies: [
+    { calls: [{ tool: "read", input: {} }] },
+    { text: "Both received" },
+  ] });
+  configureTelemetry(fixture.directory, "test");
+  const since = Date.now();
+  const provider = new ClaudeSubscription({ id: `interleaved-${process.pid}`, type: "claude-subscription", models: { fixture: "fixture" }, claudeSessions: { mode: "live", warmup: 0 } });
+  const turn = async (input: ResponsesInputItem[]) => {
+    const writer = new ResponsesWriter("fixture", () => {});
+    for await (const event of provider.infer({ model: "fixture", input, tools }, new AbortController().signal, { threadId: "interleaved" })) writer.accept(event);
+    return writer.result().output as ResponsesInputItem[];
+  };
+  try {
+    const first = [user("Start")]; const a = await turn(first);
+    const call = a.find(item => item.type === "function_call") as { call_id: string } | undefined;
+    assert.ok(call);
+    const report = { type: "agent_message", author: "worker", recipient: "root", content: "Subagent finished" } as unknown as ResponsesInputItem;
+    const b = await turn([...first, ...a, user("Also check the docs"), { type: "function_call_output", call_id: call.call_id, output: "tool result" }, report]);
+    assert.ok(b.some(item => item.type === "message"));
+    const capture = await fixture.capture();
+    assert.deepEqual(capture.flatMap(entry => entry.start ? [entry.start] : []), ["live"], "the same CLI continues");
+    assert.ok(capture.some(entry => entry.toolResult === "tool result"), "the output is relayed as the tool result");
+    const queued = capture.filter(entry => entry.user !== undefined).at(-1);
+    assert.equal(queued?.heads?.filter(head => /^<<item \d+ user>>$/.test(head)).length, 2, "the steer and the report follow, never the output as text");
+    await flushTelemetry();
+    const events = (await readTelemetry(fixture.directory, since)).filter(event => event.event === "claude_session");
+    assert.equal(events.some(event => event.outcome === "preserved" || event.outcome === "reseeded" || event.outcome === "fallback"), false);
+  } finally {
+    await claudeLive({ max: 6, parkMinutes: 60 }).stop();
+    await flushTelemetry(); await fixture.restore();
+  }
+});
+
 for (const mode of ["rejected", "cancelled", "crashed", "timed-out"] as const) test(`${mode} steering handoff never delivers tool results or replays`, { timeout: 30000 }, async () => {
   const cancel = mode === "cancelled";
   const fixture = await installClaudeFixture({ replies: [{ calls: [{ tool: "read", input: {} }] }, { text: "Must not run" }],

@@ -16,7 +16,7 @@ import { claudeUsageEvent, systemPrefixOnly, type ClaudeLimit } from "./claude-u
 import { claudeCliModel } from "./claude-models.js";
 import { claudeCliArgs, claudeEnv, claudeMcpCatalog, claudeSystemPrompt, userLine } from "./claude-control.js";
 import { ClaudeMessageStream, resultWindows, type ClaudeStreamEnd, type ClaudeTokens } from "./claude-stream.js";
-import { choiceBlock, leadingInstructions, markCustomCalls, renderConversation, renderItems, type ClaudeConversation, type ClaudeImages, type ReplayFormat } from "./claude-render.js";
+import { choiceBlock, leadingInstructions, markCustomCalls, renderConversation, renderItems, renderSelected, type ClaudeConversation, type ClaudeImages, type ReplayFormat } from "./claude-render.js";
 import { compactionCheckpoint, retireScope } from "./claude-session-registry.js";
 import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveModule, type ClaudeLiveOutcome } from "./claude-live-contract.js";
 import { telemetry } from "../telemetry.js";
@@ -228,6 +228,7 @@ export class ClaudeSubscription implements Provider {
         spawn: { args: (mcpPath, systemPath) => claudeCliArgs({ mcpPath, systemPath, model, effort, fast, thinkingDisplay: true, live: true }),
           env: claudeEnv(this.config?.authDirectory, true, run.requestedEffort, mcpCatalog), mcpCatalog, systemPrompt },
         render: from => from === 0 ? renderConversation(conversation, images, format) : renderItems(conversation, images, from, format),
+        renderAt: indices => renderSelected(conversation, images, indices, format),
         newStream: () => new ClaudeMessageStream({ tools, summaryVisible }),
         onUsage: async limit => { await this.onUsage?.(limit).catch(() => {}); },
         onContextWindow: (name, window) => this.onContextWindow?.(name, window),
