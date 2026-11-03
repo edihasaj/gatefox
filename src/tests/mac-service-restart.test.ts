@@ -88,3 +88,11 @@ test("--interrupt restarts through launchd without the maintenance window, and s
   assert.deepEqual(await restartUnifiedService(withClaude, 100, true, tools, true), { pid: 400, restart: "interrupted" });
   assert.deepEqual(calls, ["kickstart"], "the window that holds --force never runs");
 });
+
+test("--interrupt also passes the client-only inference guard that holds --force", async () => {
+  const { tools, calls } = fakeTools({ next: 500, moveOn: "kickstart" });
+  tools.configuredClientOnly = true;
+  await assert.rejects(restartUnifiedService(plain, 100, true, tools), /client-only/);
+  assert.deepEqual(await restartUnifiedService(plain, 100, true, tools, true), { pid: 500, restart: "interrupted" });
+  assert.deepEqual(calls, ["maintenance", "kickstart"].slice(1), "only the interrupted restart ran, without the window");
+});

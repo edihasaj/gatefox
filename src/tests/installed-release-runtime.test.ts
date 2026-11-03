@@ -122,6 +122,45 @@ test("a release with this host's forward contract prepares its own engines whate
   } finally { await h.remove(); }
 });
 
+test("a contract module whose imports are symlinked out of the release or writable is never imported", async () => {
+  const importing = `import { tag } from "./helper.js";\nexport const forwardContract = ${forwardContract};\nexport const forwardPreparation = { engineHome: async state => state + tag, trimArgs: input => [...input, tag] };\n`;
+  for (const damage of ["symlink", "writable", "missing", "comment", "template", "mjs"]) {
+    const f = await fixture(verifier());
+    try {
+      const dist = join(f.directory, "releases/1.1.9/package/dist");
+      await writeFile(join(dist, forwardModuleFile), importing, { mode: 0o600 });
+      const outside = async (name: string) => { await writeFile(join(f.directory, "outside.js"), "export const tag = 'outside';\n", { mode: 0o600 }); await symlink(join(f.directory, "outside.js"), join(dist, name)); };
+      if (damage === "comment") { await writeFile(join(dist, forwardModuleFile), importing.replace('from "./helper.js"', 'from /* c */ "./helper.js"'), { mode: 0o600 }); await outside("helper.js"); }
+      else if (damage === "template") {
+        await writeFile(join(dist, forwardModuleFile), `const { tag } = await import(\`./helper.js\`);\n${importing.split("\n").slice(1).join("\n")}`, { mode: 0o600 }); await outside("helper.js");
+      } else if (damage === "mjs") {
+        await writeFile(join(dist, "helper.js"), "export { tag } from './deep.mjs';\n", { mode: 0o600 });
+        await writeFile(join(dist, "deep.mjs"), "export { tag } from './deeper.js';\n", { mode: 0o600 }); await outside("deeper.js");
+      } else if (damage === "symlink") { await writeFile(join(f.directory, "outside.js"), "export const tag = 'outside';\n", { mode: 0o600 }); await symlink(join(f.directory, "outside.js"), join(dist, "helper.js")); }
+      else if (damage === "writable") { await writeFile(join(dist, "helper.js"), "export const tag = 'writable';\n", { mode: 0o600 }); await chmod(join(dist, "helper.js"), 0o666); }
+      const loaded = await installedReleaseRuntime("1.1.9", f.source);
+      assert.deepEqual(loaded?.preparation.trimArgs(["x"], {}), ["x", "1.1.9"], `${damage}: the contract module is skipped for the byte-identical rule`);
+      loaded?.lease.release();
+    } finally { await f.remove(); }
+  }
+  const g = await fixture(verifier());
+  try {
+    const dist = join(g.directory, "releases/1.1.9/package/dist");
+    await writeFile(join(dist, forwardModuleFile), importing, { mode: 0o600 });
+    await writeFile(join(dist, "helper.js"), "export const tag = '-safe';\n", { mode: 0o600 });
+    assert.deepEqual((await installedReleaseRuntime("1.1.9", g.source))?.preparation.trimArgs(["x"], {}), ["x", "-safe"], "a safe tree is used");
+  } finally { await g.remove(); }
+});
+
+test("a verifier whose own imports are unsafe is never imported", async () => {
+  const f = await fixture(`import "./elsewhere.js";\n${verifier()}`);
+  try {
+    await writeFile(join(f.directory, "outside.js"), "\n", { mode: 0o600 });
+    await symlink(join(f.directory, "outside.js"), join(f.directory, "releases/1.1.9/package/dist/elsewhere.js"));
+    assert.equal(await installedReleaseRuntime("1.1.9", f.source), undefined);
+  } finally { await f.remove(); }
+});
+
 test("this release's own contract module answers with the shape older hosts call", () => {
   // Changing this shape needs a new forwardContract number: older hosts call exactly these two functions.
   assert.equal(forwardContract, 1);

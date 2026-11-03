@@ -125,6 +125,7 @@ test("newer-adapter refusals fail health until a real service move answers them"
   assert.equal(summarizeHealthEvents([refused], { now }).skewRefusals, 16);
   assert.equal(summarizeHealthEvents([refused, { event: "self_upgrade", component: "service", mode: "live", at: now - 30_000 } as HealthEvent], { now }).skewRefusals, 16);
   assert.equal(summarizeHealthEvents([refused, { event: "self_upgrade", component: "service", mode: "skew", at: now - 30_000 } as HealthEvent], { now }).skewRefusals, 0);
+  assert.equal(summarizeHealthEvents([refused], { now, markers: [now - 10_000] }).skewRefusals, 0, "a service start after the refusal (a restart) answers it");
   const parsed = parseHealthEvent(JSON.stringify({ at: new Date(now).toISOString(), event: "release_skew_refused", direction: "adapter_newer", count: 3 }));
   assert.deepEqual([parsed?.direction, parsed?.count], ["adapter_newer", 3]);
 });

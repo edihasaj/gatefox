@@ -173,9 +173,12 @@ export async function runHealth(options: HealthOptions, deps: HealthDeps = {}): 
   // Only once it has stayed up that long, so a service that crashes and restarts cannot keep resetting the verdict.
   const serviceStarts = versions.processes.filter(row => row.role === "service").map(row => Date.parse(row.startedAt))
     .filter(started => Number.isFinite(started) && now - started >= refusalOngoingMs);
+  // A service already on the installed release answers release skew at once, however recently it started.
+  const skewMarkers = versions.processes.filter(row => row.role === "service" && !!versions.installed && row.release === versions.installed)
+    .map(row => Date.parse(row.startedAt)).filter(started => Number.isFinite(started));
   const signals = await note("telemetry", async () => summarizeHealthEvents(deps.telemetry
     ? await deps.telemetry(options.stateDirectory)
-    : await readHealthTelemetry(options.stateDirectory, { readFile, now: () => now, windowMs: deps.windowMs, ...(deps.now ? { until: now } : {}) }), { now, markers: serviceStarts }), emptySignals());
+    : await readHealthTelemetry(options.stateDirectory, { readFile, now: () => now, windowMs: deps.windowMs, ...(deps.now ? { until: now } : {}) }), { now, markers: serviceStarts, skewMarkers }), emptySignals());
   const desktop = await note<Finding[]>("desktop", () => desktopFindings(options.stateDirectory, app.path, { readFile, exec: deps.exec }), []);
   // A probe that could not run at all says so about itself; one that ran and got no answer says so about inference.
   const inference: InferenceProbe = options.clientOnly

@@ -286,7 +286,11 @@ export async function runRollout(verify: boolean, explicitConfig?: string, deps:
     // A lagging service that is also refusing chats of the installed release is not catching up by itself fast enough: chats
     // do not open. That is blocked, not a pending move to wait out (docs/rollout.md).
     const rows = await (deps.telemetry ?? (state => readHealthTelemetry(state)))(config.stateDirectory).catch(() => [] as HealthEvent[]);
-    if (unansweredSkewRefusals(rows) > 0) return result("blocked", "release_skew", base);
+    // Only a lagging service refuses: an adapter or listener that lags is the app's to reopen. A service that started after a
+    // refusal is the replacement that answered it.
+    const service = versions.processes.find(process => process.role === "service" && process.release !== versions.installed);
+    const started = Date.parse(service?.startedAt ?? "");
+    if (service && unansweredSkewRefusals(rows, Number.isFinite(started) ? [started] : []) > 0) return result("blocked", "release_skew", base);
     return result("pending", "process_version_pending", base);
   }
   const sharingPending = async (): Promise<boolean> => {

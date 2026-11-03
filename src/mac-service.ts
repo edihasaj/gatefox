@@ -209,7 +209,8 @@ const claudeRestartRefusal = "Claude Desktop components are configured, so the s
 export async function restartUnifiedService(plan: ServicePlan, pid: number, force: boolean, tools: UnifiedRestartTools, interrupt = false): Promise<Record<string, unknown>> {
   // A forced stop has no supervisor idle guard behind it, so the window's inference probe must not be skipped while the
   // running plan still serves inference: a config edited to client-only would otherwise stop busy inference unchecked.
-  if (force && tools.configuredClientOnly && plan.components.some(component => component.kind === "inference")) {
+  // An explicit interruption stops busy inference by intent, so the guard that protects it does not apply.
+  if (force && !interrupt && tools.configuredClientOnly && plan.components.some(component => component.kind === "inference")) {
     throw new Error("The configuration is client-only but the running service still serves inference, so its idle state cannot be checked; the service was not restarted");
   }
   if (!interrupt) await tools.maintenance();

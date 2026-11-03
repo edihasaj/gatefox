@@ -168,3 +168,14 @@ test("an exit is explained within the window and not past it, and each kind keep
   assert.deepEqual(counts([upgrade(upgraded), exit(upgraded), exit(upgraded + 5 * minute)]).explainedExits, { inference: 1 });
   assert.equal(counts([upgrade(upgraded), exit(upgraded, "native")]).nativeExited, false);
 });
+
+test("release skew refusals fail until a service on the installed release starts, which answers them at once", async () => {
+  const skew = { event: "release_skew_refused", direction: "adapter_newer", count: 23, at: at("07:30:00") } as HealthEvent;
+  const lagging: VersionsResult = { installed: "0.4.4", lagging: 1, processes: [{ role: "service", pid: 10, startedAt: new Date(at("06:00:00")).toISOString(), release: "0.4.3" }] };
+  const stuck = await check([skew], { versions: async () => lagging });
+  assert.equal(stuck.report.verdict, "fail");
+  assert.ok(stuck.reasons.some(finding => /chats refused 23x/.test(finding.reason)));
+  // Restarted a minute ago onto the installed release: younger than the five minutes ordinary refusals wait for.
+  const restarted = await check([skew], { versions: async () => versions(now - minute) });
+  assert.equal(restarted.reasons.some(finding => /chats refused/.test(finding.reason)), false);
+});

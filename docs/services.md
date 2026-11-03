@@ -262,7 +262,7 @@ Use it to adopt an installed release when Claude components hold the automatic m
 then confirm with `gateway rollout --verify`.
 
 `gateway service restart --interrupt` is the same launchd restart without the
-maintenance window: it runs while ChatGPT is open, remote chats are connected or
+maintenance window or the client-only inference guard: it runs while ChatGPT is open, remote chats are connected or
 inference is busy, ends every running turn, and reports `restart: "interrupted"`. It is
 the way out of a service that cannot find an idle moment while chats are refused
 (`gateway rollout` says `blocked: release_skew`); a release that forwards never needs it.
@@ -884,7 +884,13 @@ release ships a **forward contract** module (`dist/forward-preparation.js`, sour
 `src/forward-preparation.ts`): its engine-home writer and spawn-argument trim, cut to its
 own feature schema. An older host imports that module from the installed release and uses
 it whenever its `forwardContract` number equals the host's own, so a release can change any
-preparation code or schema without an older host refusing it. Bump `forwardContract` only
+preparation code or schema without an older host refusing it. Everything imported from the installed
+release (the SDK verifier, the contract module and all they import, in any syntax,
+including JSON, `.mjs`, CommonJS and packages) passes through Node's resolver hook
+(`src/foreign-release-loader.ts`) before it runs: it may resolve only to a builtin or to a
+regular file inside that release's `package/` that you own, with one link, no symlink and
+no folder others can write. Anything else fails the import, and forwarding falls back as
+for a release without the module. Bump `forwardContract` only
 when the shape or meaning of `forwardPreparation` changes. An installed release without
 the module, or with another number, is forwarded only under the earlier rule: its
 preparation code (`preparationFiles` in `src/installed-release-runtime.ts`) must be

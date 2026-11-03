@@ -112,6 +112,11 @@ export interface SummarizeOptions {
   now?: number;
   /** Instants that mark a recovery the telemetry cannot show, such as the service process's own start. */
   markers?: number[];
+  /**
+   * Starts of a service that already runs the installed release, whatever their age: such a service serves chats of that
+   * release itself, so they answer every earlier newer-adapter refusal. Falls back to `markers`.
+   */
+  skewMarkers?: number[];
 }
 
 /**
@@ -135,11 +140,12 @@ const relapsed = (recovered: HealthEvent, rows: HealthEvent[]): boolean =>
   rows.some(row => row.at > recovered.at && (row.event === "execution_host_failed" || row.event === "execution_host_restarted"));
 
 /**
- * Newer-adapter refusals that no service move has answered yet. A `self_upgrade` of the service answers them, except a `live`
- * one: that swaps only the supervisor's controller and leaves the execution host, which refuses, on the older release.
+ * Newer-adapter refusals that no service move has answered yet. A `self_upgrade` of the service or a later service start (a
+ * restart, passed in `markers`) answers them, except a `live` self_upgrade: that swaps only the supervisor's controller and leaves the execution host, which refuses, on the older release.
  */
-export function unansweredSkewRefusals(rows: HealthEvent[]): number {
-  const moved = Math.max(0, ...rows.filter(row => row.event === "self_upgrade" && row.component === "service" && row.mode !== "live").map(row => row.at));
+export function unansweredSkewRefusals(rows: HealthEvent[], markers: number[] = []): number {
+  // `markers` are moves the telemetry cannot show, such as the service process's own start after a manual restart.
+  const moved = Math.max(0, ...markers, ...rows.filter(row => row.event === "self_upgrade" && row.component === "service" && row.mode !== "live").map(row => row.at));
   return rows.filter(row => row.event === "release_skew_refused" && row.direction === "adapter_newer" && row.at > moved)
     .reduce((total, row) => total + (typeof row.count === "number" && row.count > 0 ? row.count : 1), 0);
 }
@@ -179,7 +185,7 @@ export function summarizeHealthEvents(rows: HealthEvent[], options: SummarizeOpt
   signals.refusalsOngoing = recent.length > 0;
   signals.ongoingMethods = [...new Set(recent.map(refusal => refusal.method))].sort();
   // A retry that still ends in a refusal is the one config-load failure worth alerting on, while that refusal is ongoing.
-  signals.skewRefusals = unansweredSkewRefusals(rows);
+  signals.skewRefusals = unansweredSkewRefusals(rows, [...(options.markers ?? []), ...(options.skewMarkers ?? [])]);
   signals.retriedThenRefused = signals.refusalsOngoing ? active.filter(refusal => retries.some(retry => refusal.at >= retry)).length : 0;
   return signals;
 }

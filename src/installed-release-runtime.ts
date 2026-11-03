@@ -6,6 +6,7 @@ import { releaseState } from "./self-update.js";
 import { retainRunningRelease, type ReleaseLease } from "./release-retention.js";
 import type { GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 import { forwardContract, type ForwardPreparation } from "./forward-preparation.js";
+import { allowForeignRelease } from "./foreign-release-loader.js";
 
 /**
  * The gateway SDK of the installed (newer) release, verified by that release's own `gateway-sdk-runtime.js`. A running host
@@ -58,7 +59,7 @@ async function releasePreparation(installedDist: string): Promise<ReleasePrepara
 export const forwardModuleFile = "forward-preparation.js";
 async function contractPreparation(installedDist: string): Promise<ReleasePreparation | undefined> {
   const file = resolve(installedDist, forwardModuleFile);
-  if (!await readRegularFile(file, 256 * 1024, false)) return;
+  if (!await readRegularFile(file, 256 * 1024, false).catch(() => undefined)) return;
   const module = await import(pathToFileURL(file).href) as { forwardContract?: unknown; forwardPreparation?: Partial<ReleasePreparation> };
   const preparation = module.forwardPreparation;
   if (module.forwardContract !== forwardContract || !preparation || typeof preparation.engineHome !== "function" || typeof preparation.trimArgs !== "function") return;
@@ -84,6 +85,9 @@ export async function installedReleaseRuntime(release: string, moduleUrl = impor
     const file = realpathSync(resolve(releases, "../current/package/dist/gateway-sdk-runtime.js"));
     if (file !== resolve(releases, release, "package/dist/gateway-sdk-runtime.js")) return;
     if (!await readRegularFile(file, 256 * 1024, false)) return;
+    // Everything imported from that release, the verifier and the preparation modules and all they import, is held to the
+    // foreign-release import policy by Node's resolver before it runs (src/foreign-release-loader.ts).
+    allowForeignRelease(resolve(releases, release, "package"));
     const lease = retainRunningRelease(pathToFileURL(file).href);
     if (lease.releaseName !== release) { lease.release(); return; }
     try {
