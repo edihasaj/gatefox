@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- An older SSH listener now retires within about two minutes of being asked instead of
+  declining indefinitely. A listener declines a request to retire when the connected app
+  sent anything in the last 30 seconds, and the proxy's checks fell in step with the app's
+  own timer, so on macbook-server every check landed right after the app's traffic. A
+  declined request is now repeated after 35 seconds and again after 50 seconds, and the
+  regular checks wait a random extra delay of up to 30 seconds.
+
 - A Mac that another Mac's ChatGPT reaches over SSH now finishes an update by itself. The
   app keeps its connection open and reconnects through the running listener, so an older
   listener never became idle and kept the old release until someone signalled it. The

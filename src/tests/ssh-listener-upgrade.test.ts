@@ -71,7 +71,7 @@ test("a decline stops being trusted after a while, so an idle listener is asked 
 test("the proxy keeps checking the listener it reached, not the one a later bootstrap put behind the socket", async () => {
   let current: SshListenerOwner = older;
   const d = deps({ owner: async () => current });
-  const stop = watchStaleListener("/home", "/sock", { firstMs: 20, everyMs: 5 }, d.value);
+  const stop = watchStaleListener("/home", "/sock", { firstMs: 20, everyMs: 5, jitterMs: 0, followUpsMs: [] }, d.value);
   current = { release: "1.6.3", pid: 5151, startedAtMs: startedAt }; // Swapped in after this connection opened.
   try {
     for (let i = 0; i < 200 && !d.signals.length; i++) await delay(5);
@@ -82,7 +82,7 @@ test("the proxy keeps checking the listener it reached, not the one a later boot
 test("the proxy keeps checking for the whole connection and stops when it ends", async () => {
   let calls = 0; let installed = "1.6.2";
   const d = deps({ installed: () => installed, activity: async () => { calls++; return { pid: 4242, startedAt, busy: false }; } });
-  const stop = watchStaleListener("/home", "/sock", { firstMs: 5, everyMs: 5 }, d.value);
+  const stop = watchStaleListener("/home", "/sock", { firstMs: 5, everyMs: 5, jitterMs: 0, followUpsMs: [] }, d.value);
   try {
     let checks = 0; const counting = d.value.installed;
     d.value.installed = () => { checks++; return counting(); };
@@ -107,4 +107,28 @@ test("the ownership record names the listener's release and pid only while it de
     assert.equal(owner?.release, "1.6.2"); assert.equal(owner?.pid, process.pid); assert.equal(typeof owner?.startedAtMs, "number");
     assert.equal(await sshListenerOwner(join(folder.directory, "missing.sock")), undefined);
   } finally { controller.abort(); await serving.catch(() => {}); await folder.remove(); }
+});
+
+test("a declined request is followed up out of step with the regular checks, then the regular checks resume", async () => {
+  // The listener declines every request: each one leaves its record busy with a decline at least as recent as the request.
+  let record: ListenerRecord = { pid: 4242, startedAt, busy: false };
+  const asked: number[] = [];
+  const d = deps({ activity: async () => record });
+  d.value.signal = () => { asked.push(Date.now()); record = { pid: 4242, startedAt, busy: true, declinedAt: Date.now() }; };
+  const stop = watchStaleListener("/home", "/sock", { firstMs: 5, everyMs: 400, jitterMs: 0, followUpsMs: [30, 60] }, d.value);
+  try {
+    for (let i = 0; i < 100 && asked.length < 3; i++) await delay(5);
+    assert.equal(asked.length, 3, "the first request and both follow-ups are sent although the record reads busy from the declines");
+    assert.ok(asked[1]! - asked[0]! >= 25 && asked[2]! - asked[1]! >= 55, "each follow-up waits its own delay");
+    await delay(150);
+    assert.equal(asked.length, 3, "after the follow-ups, a record busy from a recent decline is trusted until the regular check");
+  } finally { stop(); }
+});
+
+test("a listener busy with its own work before any request is not asked at all", async () => {
+  const asked: number[] = [];
+  const d = deps({ record: { pid: 4242, startedAt, busy: true } }); // A turn or an approval, and no decline recorded.
+  d.value.signal = () => { asked.push(Date.now()); };
+  const stop = watchStaleListener("/home", "/sock", { firstMs: 5, everyMs: 20, jitterMs: 0, followUpsMs: [20, 20] }, d.value);
+  try { await delay(120); assert.equal(asked.length, 0); } finally { stop(); }
 });
