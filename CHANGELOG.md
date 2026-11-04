@@ -114,6 +114,14 @@
   their bindings. Thanks to Edi Hasaj for requesting code-enforced routing and
   identifying the duplicated instruction policy.
 
+- A Mac that another Mac's ChatGPT reaches over SSH now finishes an update by itself. The
+  app keeps its connection open and reconnects through the running listener, so an older
+  listener never became idle and kept the old release until someone signalled it. The
+  connection's proxy now checks every 2 minutes whether its listener runs another release
+  than the installed one, and if so asks it to retire when idle (the same request `gateway
+  native install` sends); the app then reconnects through a listener on the installed
+  release. A busy listener declines and is asked again later.
+
 - ChatGPT no longer restarts when the execution host restarts while it is idle. The
   desktop adapter used to end its session when the host's connection closed; it now
   rejoins the restarted host's engine as the same session, replays the app's

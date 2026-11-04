@@ -21,6 +21,7 @@ import { ListenerActivity } from "./ssh-listener-activity.js";
 import { runtimeBusy } from "./runtime-activity.js";
 import { appServerIndex, isAppServerSession } from "./codex-invocation.js";
 import { deviceKey } from "./device-key.js";
+import { watchStaleListener } from "./ssh-listener-upgrade.js";
 import { sshProxyDeviceHeader } from "./ssh-proxy-header.js";
 
 export { appServerIndex } from "./codex-invocation.js";
@@ -111,8 +112,20 @@ export async function codexShim(argv: string[]): Promise<void> {
   if (!decorate) {
     if (command === "proxy" && controlHome) {
       const device = await proxyDevice(values.config);
-      const [code, signal] = await proxyNative(executable, forwarded, { ...process.env, CODEX_HOME: controlHome }, process.stdin, device);
-      process.exitCode = typeof code === "number" ? code : signal === "SIGINT" ? 130 : 1; return;
+      // An older listener behind this connection is asked to retire when idle, so the app reconnects to the installed release.
+      // Only a proxy to the managed socket is watched (one with options of its own may name another), and the watch is optional:
+      // nothing in it may stop the proxy from starting.
+      let stopWatching = () => {};
+      if (forwarded.length === appIndex + 2) {
+        try {
+          if (stateDirectory) configureTelemetry(stateDirectory, "adapter");
+          stopWatching = watchStaleListener(controlHome, resolve(controlHome, "app-server-control/app-server-control.sock"));
+        } catch { /* The proxy runs without the watch. */ }
+      }
+      try {
+        const [code, signal] = await proxyNative(executable, forwarded, { ...process.env, CODEX_HOME: controlHome }, process.stdin, device);
+        process.exitCode = typeof code === "number" ? code : signal === "SIGINT" ? 130 : 1; return;
+      } finally { stopWatching(); }
     }
     const child = spawn(executable, forwarded, { stdio: "inherit", ...(command === "proxy" && controlHome ? { env: { ...process.env, CODEX_HOME: controlHome } } : {}) });
     child.once("error", () => { process.stderr.write("gateway: Original Codex executable is unavailable\n"); });

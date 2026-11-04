@@ -135,6 +135,22 @@ export async function repairSshLease(path: string): Promise<boolean> {
   return await repairInterruptedSwap(leasePath, lease, info) !== undefined;
 }
 
+/** The listener that owns the alias at a socket path: its release and the writer stamp it bound with. */
+export interface SshListenerOwner { release?: string; pid?: number; startedAtMs?: number }
+/**
+ * Who serves the socket at `path` now, from its ownership record, but only when that record describes the alias as it is
+ * (same private socket, inode and device). Anything else, including a swap in progress, is undefined. Never changes anything.
+ */
+export async function sshListenerOwner(path: string): Promise<SshListenerOwner | undefined> {
+  try {
+    const info = await lstat(path, { bigint: true });
+    const lease = await readLease(path + ".gateway-lease");
+    if (!privateSocket(info) || String(info.ino) !== lease.inode || String(info.dev) !== lease.device) return undefined;
+    return { ...(lease.release !== undefined ? { release: lease.release } : {}), ...(lease.pid !== undefined ? { pid: lease.pid } : {}),
+      ...(lease.startedAtMs !== undefined ? { startedAtMs: lease.startedAtMs } : {}) };
+  } catch { return undefined; }
+}
+
 async function inspectSshSocket(path: string, state: ReleaseState | undefined): Promise<SshSocketReuse> {
   const info = await lstat(path, { bigint: true }).catch(error => { if (error.code === "ENOENT") return undefined; throw error; });
   if (!info) return { reused: false };
