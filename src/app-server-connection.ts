@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { StringDecoder } from "node:string_decoder";
 import type { Readable } from "node:stream";
 import { telemetry } from "./telemetry.js";
@@ -170,6 +169,56 @@ export class AppServerConnection {
   }
 }
 
+const clientDisconnected = (error: unknown): boolean => {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return code === "EPIPE" || code === "ERR_STREAM_DESTROYED";
+};
+type ClientOutputWaiter = { resolve: () => void; reject: (error: Error) => void };
+type ClientOutputState = { closed: boolean; waiters: Set<ClientOutputWaiter> };
+const clientOutputs = new WeakMap<NodeJS.WriteStream, ClientOutputState>();
+
+/** Guard each output object for its lifetime: late completions stay handled without latching a replacement stream closed. */
+function watchClientOutput(output: NodeJS.WriteStream): ClientOutputState {
+  const existing = clientOutputs.get(output);
+  if (existing) return existing;
+  const state: ClientOutputState = { closed: false, waiters: new Set() };
+  const release = () => { for (const waiter of state.waiters) waiter.resolve(); state.waiters.clear(); };
+  const close = () => { state.closed = true; release(); };
+  const onError = (error: Error) => {
+    if (clientDisconnected(error)) { close(); return; }
+    // Match the old drain wait: a pending emit rejects so its caller can report
+    // the failure. With no pending caller, keep an unrelated late error fatal.
+    if (state.waiters.size) {
+      for (const waiter of state.waiters) waiter.reject(error);
+      state.waiters.clear();
+      return;
+    }
+    throw error;
+  };
+  clientOutputs.set(output, state);
+  output.on("error", onError);
+  output.on("close", close);
+  output.on("drain", release);
+  return state;
+}
+
+/** A disconnected stdio client is not an engine failure. Keep the guard for late write completions. */
 export async function emitMessage(message: Message): Promise<void> {
-  if (!process.stdout.write(JSON.stringify(message) + "\n")) await once(process.stdout, "drain");
+  const output = process.stdout;
+  const state = watchClientOutput(output);
+  if (state.closed || output.destroyed) return;
+  const frame = JSON.stringify(message) + "\n";
+  await new Promise<void>((resolve, reject) => {
+    const waiter: ClientOutputWaiter = {
+      resolve: () => { state.waiters.delete(waiter); resolve(); },
+      reject: error => { state.waiters.delete(waiter); reject(error); },
+    };
+    // Register before writing: even a synchronous close must release a backpressured emit.
+    state.waiters.add(waiter);
+    try { if (output.write(frame) || state.closed) waiter.resolve(); }
+    catch (error) {
+      if (clientDisconnected(error)) { state.closed = true; for (const pending of state.waiters) pending.resolve(); }
+      else { state.waiters.delete(waiter); reject(error); }
+    }
+  });
 }
