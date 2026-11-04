@@ -9,6 +9,7 @@ import { ClaudeSession, SessionStartFailure, sweepSessionDirectories, type Sessi
 import { closeSessions, evictable, idleMs, pinReplay, recordWarmupCompletion, rememberEnd, replayPinned, sessionRegistry, slotsTaken, warmupCompletions, type SessionRegistry } from "./claude-session-registry.js";
 import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveInput, type ClaudeLiveOutcome, type ClaudeMissReason } from "./claude-live-contract.js";
 import { systemPrefixOnly } from "./claude-usage.js";
+import { fingerprintChange, fingerprintParts, type FingerprintChange, type FingerprintParts } from "./claude-fingerprint-parts.js";
 
 /**
  * Live Claude sessions: one long-lived CLI process per identified conversation, loaded
@@ -25,6 +26,8 @@ type Plan = Exclude<LedgerDecision, { kind: "reseed" }> | { kind: "seed" }
   | { kind: "continue_outputs_with_messages"; outputs: LedgerEntry[]; from: number; indices?: number[] };
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+/** What each live session's fingerprint was made of, so a fingerprint reseed can report which part changed (diagnostics only). */
+const sessionParts = new WeakMap<ClaudeSession, FingerprintParts>();
 // Bump when rendered replay semantics change so adopted sessions reseed safely once.
 const replayContractRevision = 2;
 const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
@@ -99,12 +102,14 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
   if (signal.aborted) throw cancelled();
   const { entries, messages } = ledgerEntries(input.request, input.tools, input.leading);
   const fingerprint = sha(JSON.stringify({ replayContractRevision, model: input.model, thinking: input.effort !== undefined, fast: input.fast, instructions: input.instructionsDigest, tools: input.toolsDigest }));
+  const parts = fingerprintParts({ model: input.model, effort: input.effort, fast: input.fast, instructionsDigest: input.instructionsDigest, mcpCatalog: input.spawn.mcpCatalog });
+  let change: FingerprintChange | undefined;
   const window = input.windowId ?? "";
   let reason: ReseedReason | undefined; let divergedAt: number | undefined; let plan: Plan | undefined; let parkedMs: number | undefined;
   if (session && session.state !== "closed") {
     parkedMs = Date.now() - session.lastUse;
     const decision = decide(session.ledger, entries, messages, session.state as LedgerPhase, session.pending);
-    if (session.fingerprint !== fingerprint) reason = "fingerprint_changed";
+    if (session.fingerprint !== fingerprint) { reason = "fingerprint_changed"; change = fingerprintChange(sessionParts.get(session), parts); }
     else if (session.window !== window) reason = "window_changed";
     else if (parkedMs >= idleMs) reason = "idle_expired";
     else if (decision.kind === "reseed") {
@@ -183,7 +188,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
       if (signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw cancelled();
       return { kind: "fallback", reason: error instanceof SessionStartFailure ? error.reason : "spawn_failed" };
     }
-    registry.sessions.set(key, session); registry.ended.delete(key); registry.replayUntil.delete(key);
+    registry.sessions.set(key, session); registry.ended.delete(key); registry.replayUntil.delete(key); sessionParts.set(session, parts);
     plan = { kind: "seed" }; parkedMs = undefined;
   }
   // A continued session records its scope too: a registry adopted from an earlier release had none,
@@ -193,7 +198,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
   session.compacted = false;
   const events = start(registry, settings, session, input, entries.map(entry => entry.digest), plan, signal, {
     outcome: plan.kind === "seed" ? reason ? "reseeded" : "spawned" : "continued", missReason: reason, divergedAt, parkedMs, threadKey: key.slice(0, 8),
-    afterWarmup: plan.kind === "seed" && !reason && admission.afterWarmup || undefined,
+    afterWarmup: plan.kind === "seed" && !reason && admission.afterWarmup || undefined, ...(change ?? {}),
   });
   // Scope changes must also retire a CLI whose initialization was still pending.
   // Start the accepted turn first so retirement drains it rather than interrupting it.
