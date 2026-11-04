@@ -48,7 +48,7 @@ export const declineTrustMs = 10 * 60_000;
  * from the record and from its own activity record, both against the process list), so a reused pid is never signalled.
  */
 export async function askStaleListenerToRetire(home: string, owner: SshListenerOwner | undefined, deps: StaleListenerDeps = realStaleListenerDeps,
-  now = Date.now()): Promise<{ outcome: StaleListenerOutcome; from?: string; to?: string }> {
+  now = Date.now(), followUpOf?: number): Promise<{ outcome: StaleListenerOutcome; from?: string; to?: string }> {
   const installed = deps.installed();
   if (!installed || !releasePattern.test(installed)) return { outcome: "unknown" };
   if (!owner) return { outcome: "unknown" };
@@ -58,13 +58,23 @@ export async function askStaleListenerToRetire(home: string, owner: SshListenerO
   if (!record) return { outcome: "unknown" };
   const started = await deps.startMs(owner.pid).catch(() => undefined);
   if (started === undefined || Math.abs(started - record.startedAt) > startSlackMs || Math.abs(started - owner.startedAtMs) > startSlackMs) return { outcome: "unknown" };
-  if (record.busy && (record.declinedAt === undefined || now - record.declinedAt < declineTrustMs)) return { outcome: "busy" };
+  // `followUpOf` is when this proxy last asked: a busy record that only answers that request (its decline is at least that
+  // recent) is asked once more, because a decline also comes from mere traffic in the last 30 s. A listener that started work
+  // since cannot be told apart here; it declines again, which is safe, and the follow-ups are at most two per request.
+  const ownDecline = followUpOf !== undefined && record.declinedAt !== undefined && record.declinedAt >= followUpOf - startSlackMs;
+  if (record.busy && !ownDecline && (record.declinedAt === undefined || now - record.declinedAt < declineTrustMs)) return { outcome: "busy" };
   try { deps.signal(owner.pid); } catch { return { outcome: "unknown" }; }
   return { outcome: "asked", from: owner.release ?? "unknown", to: installed };
 }
 
-export interface StaleListenerTiming { firstMs: number; everyMs: number }
-export const staleListenerTiming: StaleListenerTiming = { firstMs: 60_000, everyMs: 120_000 };
+/**
+ * `firstMs` and `everyMs` are the regular checks; each waits up to `jitterMs` longer, chosen at random, so they never stay
+ * in step with a client that sends something on its own fixed timer (a listener declines after any traffic in the last 30 s).
+ * After a request is declined, it is asked again after each of `followUpsMs` in turn, then the regular checks resume. With a
+ * client that is quiet for at least half a minute out of every minute, one of those requests lands in a quiet moment.
+ */
+export interface StaleListenerTiming { firstMs: number; everyMs: number; jitterMs: number; followUpsMs: number[] }
+export const staleListenerTiming: StaleListenerTiming = { firstMs: 60_000, everyMs: 120_000, jitterMs: 30_000, followUpsMs: [35_000, 50_000] };
 
 /**
  * Checks the listener this proxy's connection reached after `firstMs` and then every `everyMs`, until the returned stop is
@@ -81,15 +91,27 @@ export function watchStaleListener(home: string, socketPath: string, timing: Sta
   let stopped = false; let timer: NodeJS.Timeout | undefined; let logged = false;
   const pinned: Promise<SshListenerOwner | undefined> = deps.owner(socketPath).catch(() => undefined);
   let owner: SshListenerOwner | undefined;
+  // The follow-ups still due after the last request, when that request was made, and whether the next check is a follow-up.
+  let followUps: number[] = []; let askedAt: number | undefined; let followUp = false;
   const check = async () => {
     if (stopped) return;
     owner ??= await pinned ?? await deps.owner(socketPath).catch(() => undefined);
-    const result = await askStaleListenerToRetire(home, owner, deps).catch(() => ({ outcome: "unknown" as const }));
+    const now = Date.now();
+    const result = await askStaleListenerToRetire(home, owner, deps, now, followUp ? askedAt : undefined).catch(() => ({ outcome: "unknown" as const }));
     if (result.outcome === "asked" && !logged) { logged = true; telemetry("ssh_listener_upgrade_requested", { from: result.from, to: result.to }); }
+    if (stopped) return;
+    if (result.outcome === "asked") {
+      // A regular request starts the follow-ups and each follow-up uses one up. A listener that retires ends this proxy anyway.
+      if (!followUp) followUps = [...timing.followUpsMs];
+      askedAt = now;
+      const next = followUps.shift();
+      if (next !== undefined) { followUp = true; schedule(next, 0); return; }
+    }
+    followUp = false; followUps = []; askedAt = undefined;
     // A listener that is current now can fall behind at the next install, so the check goes on for the whole connection.
-    if (!stopped) schedule(timing.everyMs);
+    schedule(timing.everyMs, timing.jitterMs);
   };
-  const schedule = (ms: number) => { timer = setTimeout(() => { void check(); }, ms); timer.unref(); };
-  schedule(timing.firstMs);
+  const schedule = (ms: number, jitter: number) => { timer = setTimeout(() => { void check(); }, ms + Math.floor(Math.random() * jitter)); timer.unref(); };
+  schedule(timing.firstMs, timing.jitterMs);
   return () => { stopped = true; if (timer) clearTimeout(timer); };
 }
