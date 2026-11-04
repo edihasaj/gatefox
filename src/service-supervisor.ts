@@ -58,6 +58,23 @@ function within(done: Promise<unknown> | undefined, ms: number): Promise<unknown
   let timer: NodeJS.Timeout | undefined;
   return Promise.race([done, new Promise<void>(resolve => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
 }
+/** How often, and how far apart, a live swap refused for brief host work is tried again within one upgrade attempt. */
+const handoverRetries = (): number => Number(process.env.GATEWAY_HANDOVER_RETRIES) || 15;
+const handoverRetryMs = (): number => Number(process.env.GATEWAY_HANDOVER_RETRY_MS) || 2000;
+/**
+ * Tries a live swap and, while it is refused only for brief work (`busy`), again every `waitMs`, at most `retries` times in
+ * all. True once it swapped; "busy" when the last refusal was still that brief work; false for any other refusal.
+ */
+export async function swapWhenFree(swap: () => Promise<boolean>, busy: () => boolean, retries = handoverRetries(), waitMs = handoverRetryMs(),
+  wait: (ms: number) => Promise<unknown> = delay): Promise<boolean | "busy"> {
+  for (let attempt = 1; ; attempt++) {
+    if (await swap()) return true;
+    if (!busy()) return false;
+    if (attempt >= retries) return "busy";
+    await wait(waitMs);
+  }
+}
+
 export class ServiceSupervisor {
   private stopping = false;
   private retired = false;
@@ -65,7 +82,9 @@ export class ServiceSupervisor {
   private ownership: { current: ServiceSupervisor; leases: ReleaseLease[]; writes: Promise<void> } = { current: this, leases: [], writes: Promise.resolve() };
   private controllerRelease?: string;
   private controlLease?: ReleaseLease;
-  private controlUpdate?: () => Promise<boolean>;
+  private controlUpdate?: (pending?: PendingRelease) => Promise<boolean>;
+  /** Pending releases whose live swap already logged `handover_busy`, so each is logged once. */
+  private handoverWaits = new Set<string>();
   private get inactive(): boolean { return this.stopping || this.retired; }
   current(): ServiceSupervisor { return this.ownership.current; }
   private track(operation: () => Promise<unknown>): void {
@@ -365,7 +384,7 @@ export class ServiceSupervisor {
   async restartWhenIdle(): Promise<boolean> { return "loadedChats" in await this.restartAfter(async (host): Promise<RestartResult> => await host.prepareStop() ? { loadedChats: 0 } : {}); }
   /** Installed services swap compatible controllers. Legacy direct instances retain their old idle/quiet restart policy. */
   private async upgrade(pending: PendingRelease): Promise<UpgradeOutcome | false> {
-    if (this.controlUpdate) return await this.controlUpdate() ? { mode: "live" } : false;
+    if (this.controlUpdate) return await this.controlUpdate(pending) ? { mode: "live" } : false;
     // An urgent move (a newer adapter is refused by this host) is the quiet check without its waits: no grace, and a turn that
     // ended moments ago does not hold it back, because that adapter cannot run anything until the service has moved. The strict
     // idle check is a subset of it, so it is not tried first.
@@ -423,7 +442,7 @@ export class ServiceSupervisor {
   /** Enables the immutable installed-release loader only in the app-owned outer lifecycle. */
   enableLiveUpdates(): void {
     if (!this.controlLease) { this.controlLease = this.acquireCodeLease(); this.ownership.leases.push(this.controlLease); }
-    this.controlUpdate = async () => {
+    this.controlUpdate = async (pending?: PendingRelease) => {
       const selected = releaseState()?.installed;
       const plan = await readServicePlan(this.state);
       if (!plan || JSON.stringify(plan) !== JSON.stringify(this.plan)) return false;
@@ -431,15 +450,28 @@ export class ServiceSupervisor {
       if (candidate?.supervisorRuntimeVersion !== supervisorRuntimeVersion) return false;
       try {
         const next = candidate.createSupervisor(plan, this.state);
-        return await this.handover(next, async () => {
+        const unchanged = async () => {
           const latest = await readServicePlan(this.state);
           return !!latest && JSON.stringify(latest) === JSON.stringify(plan) && releaseState()?.installed === selected;
-        });
+        };
+        // A swap refused only because a host probe, start or restart check is in the air retries within seconds. Both run on
+        // one-minute timers started together, so waiting for the next minute could lose to the same probe every time.
+        const swapped = await swapWhenFree(() => this.handover(next, unchanged), () => this.handoverBusy() && !next.inactive);
+        if (swapped === true) return true;
+        if (swapped === "busy" && pending && !this.handoverWaits.has(pending.to)) {
+          this.handoverWaits.add(pending.to);
+          telemetry("self_upgrade_waiting", { component: "service", from: pending.from, to: pending.to, reason: "handover_busy" });
+        }
+        return false;
       } finally { candidate.release(); }
 
     };
   }
   private acquireCodeLease(): ReleaseLease { return retainRunningRelease(import.meta.url); }
+  /** Whether a handover was refused only for work that ends within seconds: a host probe, start or restart check, or a slot start. */
+  private handoverBusy(): boolean {
+    return !this.inactive && (this.restarting || this.controlInFlight > 0 || this.registrationChecking || !this.host.canHandover() || this.slots.some(slot => !!slot.starting));
+  }
   /** Version-one controller handover retains ownership, exit observers, queues, children and host verbatim. */
   async handover(next: ServiceSupervisor, unchanged: () => Promise<boolean> = async () => true): Promise<boolean> {
     if (next === this || next.inactive || next.heartbeat || next.slots.some(slot => slot.child || slot.starting || slot.timer)

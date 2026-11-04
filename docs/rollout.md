@@ -17,7 +17,15 @@ gateway rollout --json
 gateway rollout --verify
 ```
 
-`ready` means all of the following agree on one installed release:
+`ready` means all of the following agree on one installed release. Since 1.5.8 two
+processes may keep an older release label, by design of the no-restart move, and are
+reported as `versions.retained`: the service root, only while its live controller
+(`runtime.controllerRelease`) already runs the installed release, and the native relay,
+only while its binary is byte-identical to the one the installed release ships (every
+release since 1.5.0 reuses the 1.5.0 relay). Both change at the next natural start.
+Everything below still has to be current, including the execution host and its canary.
+A live-moved service whose host still runs the older release and refuses chats of the
+installed one is `blocked: release_skew`.
 
 1. Each relevant loaded gateway process has a known immutable release and it
    matches the installed release.

@@ -1,5 +1,6 @@
 import { readHealthTelemetry, unansweredSkewRefusals, type HealthEvent } from "./health-telemetry.js";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -55,7 +56,8 @@ export interface RolloutReport {
   reason: RolloutReason;
   checkedAt: string;
   installed: string | null;
-  versions: { total: number; current: number; pending: number; unknown: number };
+  /** `retained`: processes that keep an older release label by design after a live move (see `retainedProcesses`). */
+  versions: { total: number; current: number; pending: number; unknown: number; retained?: number };
   service?: { pid: number; runningRelease: string };
   inference?: { status: number; release: string };
   host?: { pid: number; startedAtMs: number; runningRelease: string; capabilities: string[] };
@@ -75,6 +77,8 @@ export interface RolloutDeps {
   componentLiveness?: (component: ServicePlan["components"][number], pid: number, startedAt: string) => Promise<boolean>;
   nativeSharingPending?: (state: string) => Promise<boolean>;
   claudeConsolidationPending?: (state: string) => Promise<boolean>;
+  /** Whether the native relay of release `running` is byte-identical to the installed release's. */
+  sameRelay?: (running: string, installed: string) => Promise<boolean>;
   /** This Mac's recent telemetry, read for release skew refusals. */
   telemetry?: (state: string) => Promise<HealthEvent[]>;
 }
@@ -240,7 +244,7 @@ export async function componentLiveness(component: ServicePlan["components"][num
 }
 
 async function requiredComponentPending(plan: ServicePlan, rawStatus: unknown, versions: VersionsResult,
-  externalLiveness: (component: ServicePlan["components"][number], pid: number, startedAt: string) => Promise<boolean>): Promise<boolean> {
+  externalLiveness: (component: ServicePlan["components"][number], pid: number, startedAt: string) => Promise<boolean>, retained: ReadonlySet<number> = new Set()): Promise<boolean> {
   const status = componentStatuses(rawStatus);
   for (const component of plan.components) {
     const row = status.find(entry => entry.id === component.id && entry.kind === component.kind);
@@ -266,9 +270,37 @@ async function requiredComponentPending(plan: ServicePlan, rawStatus: unknown, v
     }
     const role = component.kind === "inference" ? "inference" : "native-relay";
     if (!versions.processes.some(process => process.role === role && process.pid === pid
-      && process.release === versions.installed && startsTogether(process.startedAt, startedAt))) return true;
+      && (process.release === versions.installed || retained.has(process.pid)) && startsTogether(process.startedAt, startedAt))) return true;
   }
   return false;
+}
+
+/** The native relay binary of a release, hashed; undefined when it cannot be read. */
+async function relayDigest(root: string, release: string): Promise<string | undefined> {
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.[0-9]$/.test(release)) return;
+  try { return createHash("sha256").update(await readFile(resolve(root, "releases", release, "package/native/gateway-native-relay"))).digest("hex"); }
+  catch { return; }
+}
+async function sameRelayBinary(running: string, installed: string): Promise<boolean> {
+  const root = locateInstall().roots[0]; if (!root) return false;
+  const [mine, theirs] = await Promise.all([relayDigest(root, running), relayDigest(root, installed)]);
+  return !!mine && mine === theirs;
+}
+/**
+ * Processes that keep an older release label by design once a release moved without a restart (docs/rollout.md): the
+ * service root, only while its live controller already runs the installed release, and the native relay, only while its
+ * binary is byte-identical to the one the installed release ships. Both change at the next natural start. Everything else
+ * (inference, adapters, listeners, the execution host and its canary) must still be current.
+ */
+async function retainedProcesses(versions: VersionsResult, controllerRelease: string | undefined, sameRelay: (running: string, installed: string) => Promise<boolean>): Promise<Set<number>> {
+  const retained = new Set<number>();
+  if (!versions.installed || controllerRelease !== versions.installed) return retained;
+  for (const row of versions.processes) {
+    if (row.release === versions.installed || row.release === "unknown") continue;
+    if (row.role === "service") retained.add(row.pid);
+    else if (row.role === "native-relay" && await sameRelay(row.release, versions.installed).catch(() => false)) retained.add(row.pid);
+  }
+  return retained;
 }
 
 export async function runRollout(verify: boolean, explicitConfig?: string, deps: RolloutDeps = {}): Promise<RolloutReport> {
@@ -277,9 +309,12 @@ export async function runRollout(verify: boolean, explicitConfig?: string, deps:
   const configFile = await (deps.configPath ?? configPath)(explicitConfig);
   const config = await (deps.config ?? loadConfig)(configFile);
   const versions = await (deps.versions ?? (() => runVersions()))();
+  // The live controller's release is read before the counts: it decides which older labels are retained by design.
+  const early = await (deps.status ?? readStatus)(config.stateDirectory).then(value => statusFields(value), () => undefined);
+  const retained = await retainedProcesses(versions, early?.controllerRelease, deps.sameRelay ?? sameRelayBinary);
   const counts = { total: versions.processes.length, current: versions.processes.filter(row => row.release === versions.installed).length,
-    pending: versions.processes.filter(row => row.release !== versions.installed && row.release !== "unknown").length,
-    unknown: versions.processes.filter(row => row.release === "unknown").length };
+    pending: versions.processes.filter(row => row.release !== versions.installed && row.release !== "unknown" && !retained.has(row.pid)).length,
+    unknown: versions.processes.filter(row => row.release === "unknown").length, ...(retained.size ? { retained: retained.size } : {}) };
   const base = { checkedAt, installed: versions.installed, versions: counts };
   if (!versions.installed || !release.test(versions.installed)) return result("pending", "installed_unknown", base);
   if (counts.pending || counts.unknown) {
@@ -316,10 +351,11 @@ export async function runRollout(verify: boolean, explicitConfig?: string, deps:
     return result("pending", "service_identity_pending", base);
   }
   const serviceReport = { pid: service.pid, runningRelease: service.runningRelease };
-  if (service.runningRelease !== versions.installed || serviceRow.release !== versions.installed) {
+  const liveMoved = retained.has(serviceRow.pid) && service.controllerRelease === versions.installed;
+  if (!liveMoved && (service.runningRelease !== versions.installed || serviceRow.release !== versions.installed)) {
     return result("pending", "service_release_pending", { ...base, service: serviceReport });
   }
-  if (await requiredComponentPending(plan, rawStatus, versions, deps.componentLiveness ?? componentLiveness)) {
+  if (await requiredComponentPending(plan, rawStatus, versions, deps.componentLiveness ?? componentLiveness, retained)) {
     return result("pending", "component_pending", { ...base, service: serviceReport });
   }
 
@@ -336,6 +372,11 @@ export async function runRollout(verify: boolean, explicitConfig?: string, deps:
   const sameServiceStart = Math.floor(Date.parse(serviceRow.startedAt) / 1000) * 1000 === host.startedAtMs;
   if (!installedSource || hostRead.status.quiescing || host.hostPid !== service.pid || !sameServiceStart || host.runningRelease !== versions.installed
     || host.sourceCommit !== installedSource || !hostRead.status.compatible || !hostRead.status.capabilities.includes("gateway")) {
+    // A live-moved service whose host still runs the older release and refuses chats of the installed one is blocked, as above.
+    if (host.runningRelease !== versions.installed) {
+      const rows = await (deps.telemetry ?? (state => readHealthTelemetry(state)))(config.stateDirectory).catch(() => [] as HealthEvent[]);
+      if (unansweredSkewRefusals(rows, Number.isFinite(host.startedAtMs) ? [host.startedAtMs] : []) > 0) return result("blocked", "release_skew", { ...base, service: serviceReport, inference, host: hostReport });
+    }
     return result("pending", "host_status_pending", { ...base, service: serviceReport, inference, host: hostReport });
   }
   if (plan.sharedNativeExecutor && (!hostRead.status.capabilities.includes("native") || !hostRead.status.nativeHomeOwned)) {
