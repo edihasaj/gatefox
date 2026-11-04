@@ -114,6 +114,18 @@
   their bindings. Thanks to Edi Hasaj for requesting code-enforced routing and
   identifying the duplicated instruction policy.
 
+- ChatGPT no longer restarts when the execution host restarts while it is idle. The
+  desktop adapter used to end its session when the host's connection closed; it now
+  rejoins the restarted host's engine as the same session, replays the app's
+  initialization and resumes the native chats it had loaded. A restart during a running
+  native turn still ends the session as before.
+
+- Installing a release no longer restarts ChatGPT through the execution host either. The
+  host's quiet move to a new release closed every attached app's connection, which
+  ChatGPT 26.1029 does not survive; the move now waits while an app is attached, except
+  when the host refuses a newer adapter. Rollout accepts a held host on a release with the
+  installed SDK, verified against its own release.
+
 - Installing a release no longer crashes ChatGPT. The desktop adapter used to exit under
   the connected app once it was idle, which made ChatGPT 26.1029 restart with "hit a
   snag"; it now moves only for a release that changes the gateway SDK and otherwise

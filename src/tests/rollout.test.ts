@@ -343,3 +343,19 @@ test("a desktop adapter that shares the installed release's SDK waits for its ap
   const changed = await runRollout(false, undefined, base({ versions: cohort, sameSdk: async () => false }));
   assert.equal(changed.reason, "process_version_pending", "an adapter whose SDK differs still has to move");
 });
+
+test("a host held while an app is attached is ready on its own release when it shares the installed SDK", async () => {
+  const older = "0.5.9";
+  const cohort = async () => versions([{ role: "service", pid: 101, release: older }, { role: "inference", pid: 102, release: installed }]);
+  const status = async () => ({ version: 1, pid: 101, updatedAt: new Date(now).toISOString(), runningRelease: older, controllerRelease: installed, hostMoveHeld: true,
+    components: [{ id: "inference", kind: "inference", state: "running", pid: 102, startedAt: new Date(now - 30_000).toISOString() }] });
+  const host = async () => ({ status: { identity: { hostPid: 101, startedAtMs, runningRelease: older, sourceCommit, catalogFingerprint, sdkSha256 }, capabilities: ["gateway"], compatible: true, quiescing: false, activeWork: false, cachedProbe: probe({ hostPid: 101, runningRelease: older }) } });
+  const sources: string[] = [];
+  const held = await runRollout(false, undefined, base({ versions: cohort, status, host, sameSdk: async () => true, releaseSource: async release => { sources.push(release); return sourceCommit; } }));
+  assert.deepEqual([held.state, held.reason], ["ready", "ready"]); assert.deepEqual(sources, [older], "verified against the release the host runs");
+  const otherSdk = await runRollout(false, undefined, base({ versions: cohort, status, host, sameSdk: async () => false, telemetry: async () => [] }));
+  assert.equal(otherSdk.reason, "host_status_pending", "a held host on another SDK must still move");
+  const notHeld = await runRollout(false, undefined, base({ versions: cohort, host, sameSdk: async () => true, telemetry: async () => [],
+    status: async () => ({ ...(await status()), hostMoveHeld: undefined }) }));
+  assert.equal(notHeld.reason, "host_status_pending");
+});

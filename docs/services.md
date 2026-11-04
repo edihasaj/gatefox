@@ -808,6 +808,28 @@ continues from saved history after a resume. `gateway service restart` keeps the
 rule and its maintenance window. Each move is logged as `self_upgrade` with `mode`
 `idle`, `quiet` or `skew`, and for `quiet` and `skew` the number of chats still loaded.
 
+## The host waits while an app is attached
+
+The quiet host move (above) restarts the execution host, which closes every attached
+app's control connection: the adapter then ends its session, and ChatGPT 26.1029 restarts
+with "hit a snag" (MacBook Pro, 4 Nov 2026, at the 1.6.1 install). Since 1.6.2 the
+controller holds that move while an app is attached, meaning a desktop adapter or an SSH
+listener is running (one `ps` scan every 15 s; an unreadable list counts as attached). It
+does this by making the keeper's quiet grace never elapse, which keepers older than the
+controller already read, so it takes effect at the live controller swap without a
+restart. The host still moves when no app is attached (the strict idle move), at the next
+natural start, and at once when it refuses a newer adapter (the urgent skew move is never
+held). A held host is logged once per release as `execution_host_upgrade_waiting` with
+`reason: app_attached`, and the service status carries `hostMoveHeld: true`.
+`gateway rollout` then verifies the host against the release it runs, and counts it ready
+only while that release ships the installed release's gateway SDK. Host-side fixes in a
+release therefore reach a Mac when its apps disconnect or the Mac restarts.
+
+An attached app also survives a host restart that does happen (an unhealthy-host
+restart, a service restart, a crash) while none of its native turns is running: the
+adapter rejoins the restarted host's engine as the same session. See "Surviving a host
+restart" in `docs/engine-exits.md`.
+
 ## Desktop adapters wait for the app's next launch
 
 A desktop adapter is the process ChatGPT starts for its app-server connection. Before

@@ -20,6 +20,9 @@ import { reportGatewayFeatureTrim, trimGatewayFeatureArgs, trimGatewayFeatureCon
 import { gatewayFeatureArgs, nativeArguments, offersPriority } from "./gateway-engine-args.js";
 import { GatewayCompaction, type GatewayCompactionSession } from "./gateway-compaction.js";
 import { SharedNativeConnection, type NativeConnectionFactory, type NativeRpcConnection } from "./shared-native-connection.js";
+import { ReconnectingNativeConnection } from "./reconnecting-native-connection.js";
+import { hostLossGraceMs, reconnectNativeHost } from "./native-host-reconnect.js";
+import { setTimeout as delay } from "node:timers/promises";
 import { readServicePlan } from "./service-plan.js";
 import { gatewaySdkRuntime, type GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 import { nativeThreadAbsent } from "./native-thread-absence.js";
@@ -89,6 +92,8 @@ export class AppServerBackends {
   /** One automatic recovery per turn/socket loss; a second loss reports normally instead of retrying in a loop. */
   private readonly recoveringTurns = new BoundedIdSet(4096);
   private readonly nativeTurns = new NativeTurnTracker();
+  /** Native chats this session started, resumed or forked and still has loaded; a host reconnect resumes them on the new engine. */
+  private readonly nativeLoaded = new Set<string>();
   private readonly projectTrust = new WeakMap<RpcConnection, ProjectTrustPolicy>();
   private nativeExitPending?: Promise<void>;
   private leaseReleased?: Promise<void>;
@@ -141,7 +146,8 @@ export class AppServerBackends {
         return await privateNative(fallback).catch(refusal => { throw refusedFallback(fallback, error, refusal); });
       }
       if (plan.sharedExecutors && !client!.capabilities.includes("gateway")) throw new Error("The configured shared gateway executor is unavailable in this native host");
-      const acquire = () => client!.acquireNative(nativeArguments(normalizeCodexFeatureArgs(args, settings), overrides), dirname(nativeHome));
+      const acquireArgs = nativeArguments(normalizeCodexFeatureArgs(args, settings), overrides);
+      const acquire = () => client!.acquireNative(acquireArgs, dirname(nativeHome));
       let record: NativeLaunchRecord;
       try { record = await acquire(); }
       catch (error) {
@@ -158,13 +164,14 @@ export class AppServerBackends {
         if (joined) { client!.close(); client = undefined; return joined; }
         record = await acquire();
       }
+      // The socket follows the engine the host last handed out, so a reconnect after a host restart joins the new one.
+      const target = { socketPath: record.socketPath };
       backend = new AppServerBackends(executable, args, config, settings, overrides, catalog, emit, onNativeExit, configPath,
-        (_args, onMessage, onExit) => new SharedNativeConnection(record.socketPath, onMessage, onExit, process.cwd()));
+        (_args, onMessage, onExit) => new ReconnectingNativeConnection(exit => new SharedNativeConnection(target.socketPath, onMessage, exit, process.cwd()), onExit));
       const shared = backend; const control = client!;
       shared.nativeHost = { client: control, record }; shared.sharedGateway = plan.sharedExecutors === true;
-      // The host drops this connection's leases and its record of our native ownership when the control socket closes, and the
-      // engine may keep running without us. Nothing else watches that socket, so its close ends the session here.
-      void control.exited.then(() => shared.hostControlLost()).catch(() => {});
+      shared.watchHostControl(control);
+      (shared.native as ReconnectingNativeConnection).reconnect = replacement => shared.reconnectHost(replacement, target, acquireArgs, nativeHome);
       await backend.native.ready; return backend;
     } catch (error) {
       await backend?.stop(); client?.close();
@@ -241,14 +248,73 @@ export class AppServerBackends {
     this.nativeExitPending = this.nativeExited(connection).finally(() => { this.onNativeExit(); });
   }
   /**
-   * The execution host closed this session's control connection while its own process kept running. That connection is what
-   * the host keys our native ownership and generation leases to, so the session cannot continue: it ends exactly the way a
-   * native engine exit ends, so the app reconnects and the new session discovers and acquires a fresh client. Turns already
-   * running in the host-owned engine are not reported failed for this, because a lost control socket, like a lost engine
-   * socket, is not proof that the SDK died (see `nativeExited`).
+   * The host drops this connection's leases and its record of our native ownership when the control socket closes, and the
+   * engine may keep running without us. Nothing else watches that socket, so its close is handled here; a control connection
+   * replaced by a reconnect is no longer this session's.
+   */
+  private watchHostControl(control: ExecutionHostClient): void {
+    void control.exited.then(() => { if (this.nativeHost?.client === control) this.hostControlLost(); }).catch(() => {});
+  }
+  /** A host restart is survivable while the app is initialized and no native turn is running: nothing in flight is cut. */
+  private reconnectEligible(): boolean {
+    return !this.closing && this.initialized !== undefined && this.nativeTurns.active.size === 0
+      && this.engines.every(engine => !engine.shared || engine.active.size === 0);
+  }
+  /**
+   * The host restarted (its control connection closed): when the session is eligible, the native socket is dropped so the
+   * reconnecting connection joins the restarted host's engine as the same session (see `reconnectHost`). A repair already
+   * running, because the engine socket closed first, decides on its own. Otherwise the session ends (`endForHostLoss`).
    */
   private hostControlLost(): void {
     if (this.closing || this.nativeHost?.client.closedByAdapter) return;
+    const native = this.native instanceof ReconnectingNativeConnection ? this.native : undefined;
+    if (native?.repairing) return;
+    if (native?.reconnect && !native.closed && this.reconnectEligible()) { native.drop(); return; }
+    this.endForHostLoss();
+  }
+  /**
+   * The engine half of a host restart: replay the app's `initialize` and every loaded native chat on the restarted host's
+   * engine, then adopt the new control connection. Gateway chats re-attach on their next request, as after any host restart.
+   */
+  private async reconnectHost(replacement: () => NativeRpcConnection, target: { socketPath: string }, acquireArgs: string[], nativeHome: string): Promise<NativeRpcConnection | undefined> {
+    const old = this.nativeHost?.client; const configPath = this.configPath;
+    if (!old || !configPath || this.closing) return undefined;
+    const started = Date.now(); const threads = [...this.nativeLoaded];
+    const result = await reconnectNativeHost({
+      old, threads, initialized: this.initialized, signal: this.stopped.signal, eligible: () => this.reconnectEligible(),
+      discover: async signal => {
+        const client = await ExecutionHostClient.discover(configPath, nativeHome, this.executable, "native", true, signal);
+        if (!client) throw new Error("Shared native executor host is unavailable");
+        if (this.sharedGateway && !client.capabilities.includes("gateway")) { client.close(); throw new Error("The restarted host no longer shares gateway chats"); }
+        return client;
+      },
+      acquire: client => client.acquireNative(acquireArgs, dirname(nativeHome)),
+      // Callbacks and their ids belonged to the old engine (with no turn running none is pending); the replacement's own
+      // callbacks, which can arrive during its initialize and resumes, start from a clean ledger.
+      connect: record => { this.forgetConnection(this.native); target.socketPath = record.socketPath; return replacement(); },
+    }).catch(() => undefined);
+    if (!result) {
+      // Only a lost host is reported and bounded here; an engine socket lost on its own keeps its existing exit path.
+      if (old.closed && !this.closing && !old.closedByAdapter) {
+        telemetry("execution_host_reconnect_failed", { chats: threads.length, ms: Date.now() - started });
+        this.endForHostLoss();
+      }
+      return undefined;
+    }
+    if (this.closing) { result.connection.stop(); result.client.close(); return undefined; }
+    this.nativeHost = { client: result.client, record: result.record };
+    this.watchHostControl(result.client);
+    telemetry("execution_host_reconnected", { chats: threads.length, resumed: result.resumed, failed: result.failed, ms: Date.now() - started });
+    return result.connection;
+  }
+  /**
+   * The session cannot continue after the host closed this session's control connection. That connection is what the host
+   * keys our native ownership and generation leases to, so the session ends exactly the way a native engine exit ends, and the
+   * app reconnects and the new session discovers and acquires a fresh client. Turns already running in the host-owned engine
+   * are not reported failed for this, because a lost control socket, like a lost engine socket, is not proof that the SDK
+   * died (see `nativeExited`).
+   */
+  private endForHostLoss(): void {
     telemetry("execution_host_control_lost", { sharedGateway: this.sharedGateway === true });
     // Closing the engine socket takes the existing exit path, which drains what the engine already sent before the session ends.
     if (!this.native.closed) stopConnection(this.native, "session_end");
@@ -281,7 +347,14 @@ export class AppServerBackends {
       : native.request(method, params), process.cwd());
     this.identity.learnReply(method, result);
     if (["thread/unsubscribe", "thread/delete", "thread/archive"].includes(method) && nativeId(params.threadId)) {
-      this.nativeTurns.delete(params.threadId); this.nativeTurns.revision++;
+      this.nativeTurns.delete(params.threadId); this.nativeTurns.revision++; this.nativeLoaded.delete(params.threadId);
+    }
+    if (["thread/start", "thread/resume", "thread/fork"].includes(method)) {
+      const thread = object(result.thread);
+      // Throwaway chats (composer predictions) are never resumed by the app, so a reconnect does not load them again.
+      // The request's flag decides only for a new chat; a resume keeps the chat's own kind.
+      const throwaway = thread.ephemeral === true || method !== "thread/resume" && params.ephemeral === true;
+      if (nativeId(thread.id) && !throwaway && this.nativeLoaded.size < 512) this.nativeLoaded.add(thread.id);
     }
     if (["thread/read", "thread/resume"].includes(method)) {
       const thread = object(result.thread); const id = nativeId(thread.id) ? thread.id : params.threadId;
@@ -310,6 +383,7 @@ export class AppServerBackends {
   private async forward(connection: RpcConnection, message: Message): Promise<void> {
     const engine = this.engines.find(value => value.connection === connection);
     if (connection === this.native && !this.closing) this.nativeTurns.observe(message);
+    if (connection === this.native && message.method === "thread/closed" && !isId(message.id)) this.nativeLoaded.delete(String(object(message.params).threadId));
     // Private gateway SDKs belong to this adapter and publish the same read-only
     // runtime state as native. Host-owned shared SDKs use passive observers.
     if ((connection === this.native || engine && !engine.shared) && !this.closing) this.nativeStatus?.observe(message);
@@ -609,9 +683,13 @@ export class AppServerBackends {
       const socket = await socketIdentity(record.socketPath);
       const engine: Engine = { connection: undefined!, revision: record.revision, aliases: new Set(record.aliases), threads: new Set(), active: new Map(), requests: 1, shared: true, defaultCwd: record.defaultCwd, ...(socket ? { socket } : {}), ...(provider ? { provider } : {}) };
       const connection: SocketAppServerConnection = new SocketAppServerConnection(record.socketPath, message => this.forward(connection, message), () => {
+        // Taken at the close, before the drain below: a native reconnect may finish while the drain still waits on the app.
+        const lost = { generation: this.native instanceof ReconnectingNativeConnection ? this.native.generation : 0, active: engine.active.size > 0 };
         engine.exitPending = (async () => {
           await Promise.race([connection.drained, this.nativeClosing]);
           const active = [...engine.active];
+          // A turn whose start was still buffered at the close counts too.
+          if (active.length) lost.active = true;
           const recoverable = !this.closing && !engine.detaching && !this.native.shared;
           await engine.compaction?.close(); this.forgetConnection(connection, !engine.detaching && !this.closing && !this.native.shared);
           // A shared socket is a client transport, not the executor. Rejoin every
@@ -632,7 +710,7 @@ export class AppServerBackends {
             if (this.closing) break;
           }
           engine.active.clear();
-        })().catch(() => {}).then(() => { if (!this.closing && !engine.detaching && this.native.shared) this.onNativeExit(); });
+        })().catch(() => {}).then(() => this.sharedEngineLost(engine, lost));
       }, { drainOnClose: true });
       engine.connection = connection;
       engine.compaction = this.compaction.session({ models: snapshot?.models || [], settings: snapshot?.settings || {}, args: snapshot?.args || [], aliases: engine.aliases,
@@ -645,6 +723,21 @@ export class AppServerBackends {
       } catch (error) { stopConnection(connection, "spawn_error"); throw error; }
     });
     this.creating = operation.catch(() => undefined); return operation;
+  }
+  /**
+   * A host-owned gateway engine socket closed. With a shared native engine that used to end the session; a host restart that
+   * the native connection survives (see `hostControlLost`) leaves this chat to re-attach on its next request instead.
+   */
+  private async sharedEngineLost(engine: Engine, lost: { generation: number; active: boolean }): Promise<void> {
+    if (this.closing || engine.detaching || !this.native.shared) return;
+    const native = this.native instanceof ReconnectingNativeConnection ? this.native : undefined;
+    // A gateway turn cut by the close is not recovered on a shared host (see above), so the session ends for it as before.
+    if (native?.reconnect && !lost.active) {
+      // The control connection and the native socket close with the host; give them a moment to be noticed.
+      if (!native.repairing && native.generation === lost.generation) await delay(hostLossGraceMs + 500, undefined, { ref: false });
+      if (this.closing || native.repairing || native.generation !== lost.generation || native.closed) return;
+    }
+    this.onNativeExit();
   }
   private async owner(threadId: string): Promise<Engine | undefined> {
     const record = await (await this.pool())?.find(threadId);
