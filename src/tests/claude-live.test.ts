@@ -128,6 +128,8 @@ test("an adopted pre-replay-contract fingerprint reseeds once without a replay h
     assert.equal((await f.capture()).filter(entry => entry.start === "live").length, 2);
     const outcomes = await sessions();
     assert.ok(outcomes.some(entry => entry.outcome === "reseeded" && entry.missReason === "fingerprint_changed"));
+    // Only the stored fingerprint was altered here, so every part matches: the release changed the fingerprint's meaning.
+    assert.ok(outcomes.some(entry => entry.outcome === "reseeded" && entry.changed === "contract"));
     assert.equal(outcomes.some(entry => entry.outcome === "fallback" && entry.missReason === "fingerprint_changed"), false);
   } finally { await teardown(f); }
 });
@@ -169,6 +171,7 @@ test("an effort change between turns keeps the process; thinking off reseeds and
     assert.equal((await turn(provider, [...start, ...d.output, ...outputFor(d.output, "r")], { context: other, effort: "low" })).text, "D");
     const events = await sessions();
     assert.deepEqual(events.filter(entry => entry.outcome === "reseeded").map(entry => entry.missReason), ["fingerprint_changed"]);
+    assert.deepEqual(events.filter(entry => entry.outcome === "reseeded").map(entry => entry.changed), ["thinking"], "the reseed names the part that changed");
     assert.deepEqual(events.filter(entry => entry.outcome === "preserved").map(entry => entry.missReason), ["effort_midturn"]);
     assert.equal(events.some(entry => entry.outcome === "fallback"), false);
     assert.equal((await pids(f)).length, 3, "two threads and one reseed; the held thread started no process");

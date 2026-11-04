@@ -114,6 +114,11 @@
   their bindings. Thanks to Edi Hasaj for requesting code-enforced routing and
   identifying the duplicated instruction policy.
 
+- A Claude live-session reseed caused by `fingerprint_changed` now records which part
+  changed (`changed`: model, thinking, Fast, instructions or tools, with added, removed
+  and edited tool counts, never names), so a burst of uncached reseeds that trips the
+  cache-safety stop can be traced to its cause. Behaviour is unchanged.
+
 - The phone reaches Macs whose ChatGPT updated to 26.1029 again. The native relay is
   rebuilt to accept its engine, Codex 0.166.0-alpha.6, whose remote-control transport,
   state migrations and login are unchanged from the admitted 0.166.0-alpha.5.1; the

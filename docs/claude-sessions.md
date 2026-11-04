@@ -43,7 +43,10 @@ finishes normally, then the session closes instead of remaining parked in replay
 - **Reseed** (a new process, one cache write): the model, thinking, Fast, system
   prompt, tool catalog or window changed (`fingerprint_changed`, `window_changed`), or
   the session was idle 60 minutes or more (`idle_expired`; see Context management
-  below). The cache of the old session is gone or unusable either way, so the new
+  below). A `fingerprint_changed` reseed records which part changed as `changed`
+  (`model`, `thinking`, `fast`, `instructions`, `tools`), with tool counts only; see
+  [diagnostics](diagnostics.md). The tool catalog is already sorted by name with canonical
+  schemas, so reordering alone never reseeds. The cache of the old session is gone or unusable either way, so the new
   process costs no more than the next one-shot request would.
 - **Messages after tools:** when every pending tool result is followed by new
   user or developer messages, the gateway queues only those new messages on the
