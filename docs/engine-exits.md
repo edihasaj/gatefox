@@ -135,6 +135,41 @@ by this, for the same reason a lost engine socket does not prove SDK death; they
 failed only when the host confirms that exact launch died. A connection the adapter
 closed itself, because it was stopping, records nothing.
 
+### Surviving a host restart (1.6.2)
+
+When the control connection closes because the host restarted, and no native turn is
+running, the session continues instead of ending. ChatGPT 26.1029 shows "hit a snag"
+whenever its app-server session ends, so this matters more than the half-second
+reconnect.
+
+```
+host restarts ──► control + engine sockets close
+                    │
+     native turn running? ── yes ──► session ends as above (execution_host_control_lost)
+                    │ no
+                    ▼
+     rediscover host ─► native/acquire ─► new engine socket
+     ─► replay the app's initialize ─► thread/resume {excludeTurns} per loaded native chat
+                    │
+         ok ──► same session continues (execution_host_reconnected)
+         90 s without success ──► session ends (execution_host_reconnect_failed)
+```
+
+The engine socket the adapter hands out (`ReconnectingNativeConnection`) stays one
+object throughout. Requests and sends that arrive during the repair wait for it, and
+its `exited` and `drained` settle only when the connection really ends, so nothing
+in the adapter or the app sees an exit. An engine socket that closes while the
+control connection stays open (the engine alone stopped) waits 1 s for the control
+connection. If it stays open, the loss takes the existing exit and death path
+unchanged. A deliberate stop abandons a repair at once.
+
+Only native chats this session started, resumed or forked and still has loaded are
+resumed; throwaway chats (composer predictions) are not. Callback bookkeeping from the
+old engine is dropped, which is safe because no turn was running. Gateway chats on the
+restarted host do not end the session either: their engine sockets close too, and each
+re-attaches on its next request (see the re-attach rules in `docs/app-server.md`).
+The reconnect telemetry carries only counts and durations.
+
 That exit path waits twice on the desktop app, and a lost host connection bounds both
 waits to 250 ms. It first lets the frames the engine already sent reach the app; if
 the app has stopped reading, a forwarded notification parks there and the session

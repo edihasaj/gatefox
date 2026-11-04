@@ -825,6 +825,11 @@ held). A held host is logged once per release as `execution_host_upgrade_waiting
 only while that release ships the installed release's gateway SDK. Host-side fixes in a
 release therefore reach a Mac when its apps disconnect or the Mac restarts.
 
+An attached app also survives a host restart that does happen (an unhealthy-host
+restart, a service restart, a crash) while none of its native turns is running: the
+adapter rejoins the restarted host's engine as the same session. See "Surviving a host
+restart" in `docs/engine-exits.md`.
+
 ## Desktop adapters wait for the app's next launch
 
 A desktop adapter is the process ChatGPT starts for its app-server connection. Before

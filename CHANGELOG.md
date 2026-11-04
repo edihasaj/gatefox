@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- ChatGPT no longer restarts when the execution host restarts while it is idle. The
+  desktop adapter used to end its session when the host's connection closed; it now
+  rejoins the restarted host's engine as the same session, replays the app's
+  initialization and resumes the native chats it had loaded. A restart during a running
+  native turn still ends the session as before.
+
 - Installing a release no longer restarts ChatGPT through the execution host either. The
   host's quiet move to a new release closed every attached app's connection, which
   ChatGPT 26.1029 does not survive; the move now waits while an app is attached, except
