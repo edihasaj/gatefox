@@ -285,3 +285,52 @@ test("a lagging service that refuses chats of the installed release is blocked b
   const restarted = await runRollout(false, undefined, base({ versions: async () => versions([{ role: "service", pid: 103, release: "0.5.9", startedAt: new Date().toISOString() }]), telemetry: async () => [refused] }));
   assert.equal(restarted.reason, "process_version_pending", "a service started after the refusal answered it");
 });
+
+test("a service that moved live is ready while its root and an identical relay keep the older label until a natural start", async () => {
+  const older = "0.5.9";
+  const moved = async () => versions([{ role: "service", pid: 101, release: older }, { role: "inference", pid: 102, release: installed }, { role: "native-relay", pid: 103, release: older }]);
+  const status = async () => ({ version: 1, pid: 101, updatedAt: new Date(now).toISOString(), runningRelease: older, controllerRelease: installed,
+    components: [{ id: "inference", kind: "inference", state: "running", pid: 102, startedAt: new Date(now - 30_000).toISOString() }] });
+  const ready = await runRollout(false, undefined, base({ versions: moved, status, sameRelay: async () => true }));
+  assert.deepEqual([ready.state, ready.reason, ready.versions.retained, ready.versions.pending], ["ready", "ready", 2, 0]);
+  // A relay whose binary differs from the installed release's has to move: it runs other code.
+  const relay = await runRollout(false, undefined, base({ versions: moved, status, sameRelay: async () => false }));
+  assert.deepEqual([relay.state, relay.reason], ["pending", "process_version_pending"]);
+  // Without a live controller swap nothing is retained: the root still runs the older controller.
+  const notLive = await runRollout(false, undefined, base({ versions: moved, sameRelay: async () => true,
+    status: async () => ({ ...(await status()), controllerRelease: older }) }));
+  assert.equal(notLive.reason, "process_version_pending");
+  // The host moved is still required, and one that refuses chats of the installed release is blocked.
+  const host = async () => ({ status: { identity: { hostPid: 101, startedAtMs, runningRelease: older, sourceCommit, catalogFingerprint, sdkSha256 }, capabilities: ["gateway"], compatible: true, quiescing: false, activeWork: false } });
+  const waiting = await runRollout(false, undefined, base({ versions: moved, status, sameRelay: async () => true, host, telemetry: async () => [] }));
+  assert.equal(waiting.reason, "host_status_pending");
+  const refusing = await runRollout(false, undefined, base({ versions: moved, status, sameRelay: async () => true, host,
+    telemetry: async () => [{ event: "release_skew_refused", direction: "adapter_newer", count: 2, at: startedAtMs + 60_000 }] }));
+  assert.deepEqual([refusing.state, refusing.reason], ["blocked", "release_skew"]);
+});
+
+test("a live controller exempts only the service that reported it; another lagging service root stays pending", async () => {
+  const older = "0.5.9";
+  const two = async () => versions([{ role: "service", pid: 101, release: older }, { role: "inference", pid: 102, release: installed }, { role: "service", pid: 999, release: older }]);
+  const status = async () => ({ version: 1, pid: 101, updatedAt: new Date(now).toISOString(), runningRelease: older, controllerRelease: installed,
+    components: [{ id: "inference", kind: "inference", state: "running", pid: 102, startedAt: new Date(now - 30_000).toISOString() }] });
+  const report = await runRollout(true, undefined, base({ versions: two, status, sameRelay: async () => true }));
+  assert.deepEqual([report.state, report.reason, report.versions.retained, report.versions.pending], ["pending", "process_version_pending", 1, 1]);
+  const foreign = await runRollout(false, undefined, base({ versions: async () => versions([{ role: "service", pid: 999, release: older }, { role: "inference", pid: 102, release: installed }]), status }));
+  assert.equal(foreign.versions.retained, undefined, "a status whose pid is no running service exempts nothing");
+});
+
+test("retention decided from one status read holds only if the validated read names the same service", async () => {
+  const older = "0.5.9"; let reads = 0;
+  const cohort = async () => versions([{ role: "service", pid: 101, release: older }, { role: "inference", pid: 102, release: installed }, { role: "service", pid: 999, release: installed }]);
+  const component = [{ id: "inference", kind: "inference", state: "running", pid: 102, startedAt: new Date(now - 30_000).toISOString() }];
+  // The first read is a stale snapshot of lagging PID 101; the second is a fresh one of current PID 999.
+  const status = async () => ++reads === 1
+    ? { version: 1, pid: 101, updatedAt: new Date(now - 3_600_000).toISOString(), runningRelease: older, controllerRelease: installed, components: component }
+    : { version: 1, pid: 999, updatedAt: new Date(now).toISOString(), runningRelease: installed, controllerRelease: installed, components: component };
+  for (const verify of [false, true]) {
+    reads = 0;
+    const report = await runRollout(verify, undefined, base({ versions: cohort, status, sameRelay: async () => true }));
+    assert.deepEqual([report.state, report.reason], ["pending", "service_identity_pending"]);
+  }
+});

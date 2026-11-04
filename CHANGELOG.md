@@ -114,6 +114,15 @@
   their bindings. Thanks to Edi Hasaj for requesting code-enforced routing and
   identifying the duplicated instruction policy.
 
+- Releases finish without a restart. `gateway rollout` reports `ready` once a live-moved
+  service's controller, execution host, inference and canary run the installed release;
+  the service root and a byte-identical native relay keep their older label until a
+  natural start and are counted as `retained`. A live controller swap refused only by a
+  brief host probe or restart check now retries within seconds instead of every two
+  minutes, which could lose every time on a Mac whose host is probed each minute, and
+  logs `self_upgrade_waiting: handover_busy` once. `gateway health` no longer blames
+  Claude Desktop components for a swap that simply has not happened yet.
+
 - Releases reach every Mac without a restart, and a release that would block chats can no
   longer ship. Each release now carries a versioned forward contract
   (`forward-preparation.js`), so an older execution host prepares newer chats with the new

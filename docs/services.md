@@ -76,6 +76,18 @@ restores the old controller and schedules. Release leases retain code still used
 by inherited callbacks until this root eventually stops. There is no additional
 LaunchAgent, Login Item or maintenance job.
 
+A swap is refused while a host probe, start or restart check is in progress
+(`canHandover`). Both run on one-minute timers started together, so before 1.5.8 a host
+probed every minute (for example one marked `sdk_changed`) could refuse every swap, with
+nothing logged. Since 1.5.8 a swap refused only for that brief work is tried again every
+2 s, up to 15 times, and a release still refused that way is logged once as
+`self_upgrade_waiting` with `reason: handover_busy`. Like every controller change, this
+applies to moves made by a 1.5.8 or later controller. A 1.5.8 or later service publishes `liveUpdates: true`
+in its status when it swaps controllers live; health then reports a controller that has
+not swapped yet as such, since Claude Desktop components never block the swap. Only a
+service without live updates is held by the Claude restart rule, and an older service
+that does not say gets both ways out.
+
 `gateway service status --json` reports `runtime.controllerRelease` separately
 from `runtime.runningRelease`, the root's immutable bootstrap release. Retained
 host and native components keep their actual provenance. A live controller
