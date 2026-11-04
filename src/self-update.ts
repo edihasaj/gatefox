@@ -74,6 +74,29 @@ export function pendingGatewaySdkReader(moduleUrl = import.meta.url, state: () =
 }
 
 /**
+ * Whether the installed (newer) release ships another gateway SDK than the release this module runs from, read from both
+ * build receipts. A desktop adapter moves to a newer release by exiting under the app it serves, which ChatGPT does not
+ * always survive; it only has to when the SDK changes (an older adapter's SDK is refused by a host that moved). Unknown is
+ * true, keeping the earlier move. Cached per installed release.
+ */
+export function gatewaySdkChangeReader(moduleUrl = import.meta.url, state: () => ReleaseState | undefined = () => releaseState(moduleUrl),
+  receipt: (packageDirectory: string) => Promise<string | undefined> = directory => receiptGatewaySdkSha256(directory)): () => Promise<boolean> {
+  const known = new Map<string, boolean>();
+  return async () => {
+    try {
+      const current = state();
+      if (!current?.installed || current.installed === current.running) return false;
+      const cached = known.get(current.installed); if (cached !== undefined) return cached;
+      const release = realpathSync(resolve(dirname(fileURLToPath(moduleUrl)), "../.."));
+      const [mine, theirs] = await Promise.all([receipt(resolve(release, "package")), receipt(resolve(dirname(release), current.installed, "package"))]);
+      const changed = !mine || !theirs || mine !== theirs;
+      if (mine && theirs) known.set(current.installed, changed);
+      return changed;
+    } catch { return true; }
+  };
+}
+
+/**
  * How a process moved to a newer release: `idle` (nothing connected or loaded), the service's `quiet` rule, or the service's
  * `skew` rule (an adapter of the installed release was refused by this older host, so the move was urgent).
  */

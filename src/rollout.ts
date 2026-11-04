@@ -1,3 +1,4 @@
+import { sameGatewaySdk } from "./release-sdk-match.js";
 import { readHealthTelemetry, unansweredSkewRefusals, type HealthEvent } from "./health-telemetry.js";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -79,6 +80,8 @@ export interface RolloutDeps {
   claudeConsolidationPending?: (state: string) => Promise<boolean>;
   /** Whether the native relay of release `running` is byte-identical to the installed release's. */
   sameRelay?: (running: string, installed: string) => Promise<boolean>;
+  /** Whether release `running` ships the installed release's gateway SDK (a desktop adapter then waits for the app's relaunch). */
+  sameSdk?: (running: string, installed: string) => Promise<boolean>;
   /** This Mac's recent telemetry, read for release skew refusals. */
   telemetry?: (state: string) => Promise<HealthEvent[]>;
 }
@@ -293,8 +296,12 @@ async function sameRelayBinary(running: string, installed: string): Promise<bool
  * (inference, adapters, listeners, the execution host and its canary) must still be current.
  */
 async function retainedProcesses(versions: VersionsResult, status: { pid?: number; controllerRelease?: string } | undefined,
-  sameRelay: (running: string, installed: string) => Promise<boolean>): Promise<Set<number>> {
+  sameRelay: (running: string, installed: string) => Promise<boolean>, sameSdk: (running: string, installed: string) => Promise<boolean> = async () => false): Promise<Set<number>> {
   const retained = new Set<number>();
+  // A desktop adapter whose release has the installed SDK keeps serving its open app until the app relaunches, by design.
+  if (versions.installed) for (const row of versions.processes) {
+    if (row.role === "desktop-adapter" && row.release !== versions.installed && row.release !== "unknown" && await sameSdk(row.release, versions.installed).catch(() => false)) retained.add(row.pid);
+  }
   // The evidence is one status snapshot, so it exempts only the service that wrote it; any other service root stays pending.
   if (!versions.installed || !status?.pid || status.controllerRelease !== versions.installed
     || !versions.processes.some(row => row.role === "service" && row.pid === status.pid)) return retained;
@@ -314,7 +321,7 @@ export async function runRollout(verify: boolean, explicitConfig?: string, deps:
   const versions = await (deps.versions ?? (() => runVersions()))();
   // The live controller's release is read before the counts: it decides which older labels are retained by design.
   const early = await (deps.status ?? readStatus)(config.stateDirectory).then(value => statusFields(value), () => undefined);
-  const retained = await retainedProcesses(versions, early, deps.sameRelay ?? sameRelayBinary);
+  const retained = await retainedProcesses(versions, early, deps.sameRelay ?? sameRelayBinary, deps.sameSdk ?? ((running, installed) => sameGatewaySdk(running, installed)));
   const counts = { total: versions.processes.length, current: versions.processes.filter(row => row.release === versions.installed).length,
     pending: versions.processes.filter(row => row.release !== versions.installed && row.release !== "unknown" && !retained.has(row.pid)).length,
     unknown: versions.processes.filter(row => row.release === "unknown").length, ...(retained.size ? { retained: retained.size } : {}) };

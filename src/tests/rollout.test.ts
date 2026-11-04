@@ -334,3 +334,12 @@ test("retention decided from one status read holds only if the validated read na
     assert.deepEqual([report.state, report.reason], ["pending", "service_identity_pending"]);
   }
 });
+
+test("a desktop adapter that shares the installed release's SDK waits for its app's relaunch and does not hold readiness", async () => {
+  const older = "0.5.9";
+  const cohort = async () => versions([{ role: "service", pid: 101, release: installed }, { role: "inference", pid: 102, release: installed }, { role: "desktop-adapter", pid: 104, release: older }]);
+  const same = await runRollout(false, undefined, base({ versions: cohort, sameSdk: async () => true }));
+  assert.deepEqual([same.state, same.versions.retained, same.versions.pending], ["ready", 1, 0]);
+  const changed = await runRollout(false, undefined, base({ versions: cohort, sameSdk: async () => false }));
+  assert.equal(changed.reason, "process_version_pending", "an adapter whose SDK differs still has to move");
+});

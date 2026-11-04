@@ -10,7 +10,7 @@ import { TurnTelemetry, errorClass } from "./turn-telemetry.js";
 import { AnnouncedThreads, describeChat } from "./announced-threads.js";
 import { telemetry } from "./telemetry.js";
 import { reportException } from "./error-report.js";
-import { watchForUpgrade } from "./self-update.js";
+import { gatewaySdkChangeReader, watchForUpgrade } from "./self-update.js";
 import { registerActivityProbe } from "./runtime-activity.js";
 import { ThreadStartOrder } from "./thread-start-order.js";
 import { nativeThreadAbsent } from "./native-thread-absence.js";
@@ -117,7 +117,17 @@ export async function shimSession(executable: string, args: string[], config: Ga
   signal.addEventListener("abort", stop, { once: true });
   // Only a process-per-session adapter can upgrade by exiting. A Unix reconnect returns to
   // the same listener and the same loaded code, so session retirement would loop indefinitely.
-  const stopWatching = upgradeOwner === "session" ? watchForUpgrade("adapter", idle, () => { stop(); return true; }) : () => {};
+  // An app stays connected to its adapter while idle, and exiting under it makes ChatGPT restart its engine ("hit a snag").
+  // So the adapter moves only when the installed release changes the gateway SDK; otherwise the app picks up the new release
+  // at its next launch, and nothing it runs is lost meanwhile (docs/services.md).
+  const sdkChanged = gatewaySdkChangeReader(); let deferred = false;
+  const movable = async () => {
+    if (!idle()) return false;
+    if (await sdkChanged()) return true;
+    if (!deferred) { deferred = true; telemetry("self_upgrade_waiting", { component: "adapter", reason: "same_gateway_sdk" }); }
+    return false;
+  };
+  const stopWatching = upgradeOwner === "session" ? watchForUpgrade("adapter", movable, () => { stop(); return true; }) : () => {};
   try {
     if (signal.aborted) return 0;
     await router.initialize();

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Installing a release no longer crashes ChatGPT. The desktop adapter used to exit under
+  the connected app once it was idle, which made ChatGPT 26.1029 restart with "hit a
+  snag"; it now moves only for a release that changes the gateway SDK and otherwise
+  waits for the app's next launch. Rollout counts that adapter as retained and health no
+  longer reports it as lagging. Takes effect from the install after the one that ships it.
+
 - A Claude live-session reseed caused by `fingerprint_changed` now records which part
   changed (`changed`: model, thinking, Fast, instructions or tools, with added, removed
   and edited tool counts, never names), so a burst of uncached reseeds that trips the

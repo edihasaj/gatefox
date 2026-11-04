@@ -808,6 +808,21 @@ continues from saved history after a resume. `gateway service restart` keeps the
 rule and its maintenance window. Each move is logged as `self_upgrade` with `mode`
 `idle`, `quiet` or `skew`, and for `quiet` and `skew` the number of chats still loaded.
 
+## Desktop adapters wait for the app's next launch
+
+A desktop adapter is the process ChatGPT starts for its app-server connection. Before
+1.6.1 it moved to a newly installed release by exiting after 30 s without traffic, even
+though ChatGPT stayed connected. ChatGPT 26.1029 does not survive that: it restarts its
+engine and shows "ChatGPT hit a snag" (MacBook Pro, 4 Nov 2026, at every install). Since
+1.6.1 the adapter exits for a release only when that release ships another gateway SDK,
+which an older adapter would need because a moved host refuses its SDK. Otherwise it keeps
+serving the open app, logs `self_upgrade_waiting` with `reason: same_gateway_sdk` once, and
+the app runs the new release from its next launch. `gateway rollout` counts such an adapter
+as `retained` and `gateway health` does not report it as lagging. An adapter that cannot
+read either release's SDK receipt keeps the earlier exit. This is decided by the running
+adapter's own code, so the release after 1.6.1 is the first install that leaves ChatGPT
+alone.
+
 ## Release skew: a newer adapter beside an older host
 
 Since 1.5.2 an older host normally serves a newer adapter on the installed release's
