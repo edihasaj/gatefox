@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The phone reaches Macs whose ChatGPT updated to 26.1029 again. The native relay is
+  rebuilt to accept its engine, Codex 0.166.0-alpha.6, whose remote-control transport,
+  state migrations and login are unchanged from the admitted 0.166.0-alpha.5.1; the
+  installed relay refused it and was paused as `failing`. The engine is also shared by
+  the native host after passing the shared-native fixture.
+
 - Releases finish without a restart. `gateway rollout` reports `ready` once a live-moved
   service's controller, execution host, inference and canary run the installed release;
   the service root and a byte-identical native relay keep their older label until a
