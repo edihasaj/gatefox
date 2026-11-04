@@ -179,3 +179,13 @@ test("release skew refusals fail until a service on the installed release starts
   const restarted = await check([skew], { versions: async () => versions(now - minute) });
   assert.equal(restarted.reasons.some(finding => /chats refused/.test(finding.reason)), false);
 });
+
+test("a desktop adapter waiting for its app's relaunch on the installed SDK is not reported as lagging", async () => {
+  const adapter = (): VersionsResult => ({ installed: "0.4.4", lagging: 1, processes: [
+    { role: "service", pid: 10, startedAt: new Date(at("06:00:00")).toISOString(), release: "0.4.4" },
+    { role: "desktop-adapter", pid: 11, startedAt: new Date(at("06:00:00")).toISOString(), release: "0.4.3" }] });
+  const waiting = await check([], { versions: async () => adapter(), sameSdk: async () => true });
+  assert.equal(waiting.reasons.some(finding => /lagging desktop-adapter/.test(finding.reason)), false);
+  const moving = await check([], { versions: async () => adapter(), sameSdk: async () => false });
+  assert.ok(moving.reasons.some(finding => /lagging desktop-adapter@0\.4\.3/.test(finding.reason)));
+});

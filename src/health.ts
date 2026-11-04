@@ -1,3 +1,4 @@
+import { sameGatewaySdk } from "./release-sdk-match.js";
 import { parseConfigRejection } from "./config-rejection.js";
 import { access, constants, lstat, readFile as readTextFile } from "node:fs/promises";
 import { readServicePlan, serviceStatusPath, type ServicePlan } from "./service-plan.js";
@@ -42,6 +43,8 @@ export interface HealthOptions {
 
 /** Every side effect the checks have, so a test can hand them fixtures instead of a machine. */
 export interface HealthDeps {
+  /** Whether release `running` ships the installed release's gateway SDK (see src/release-sdk-match.ts). */
+  sameSdk?: (running: string, installed: string) => Promise<boolean>;
   now?: () => number;
   readFile?: (path: string) => Promise<string>;
   exists?: (path: string) => Promise<boolean>;
@@ -85,6 +88,15 @@ function trustedSnapshot(versions: VersionsResult, status: ServiceStatus): boole
   const row = versions.processes.find(process => process.role === "service" && process.pid === status.pid);
   const startedAt = row ? Date.parse(row.startedAt) : Number.NaN;
   return !!row && Number.isFinite(updatedAt) && Number.isFinite(startedAt) && updatedAt >= startedAt;
+}
+
+async function deferredAdapters(versions: VersionsResult, sameSdk: (running: string, installed: string) => Promise<boolean>): Promise<Set<number>> {
+  const deferred = new Set<number>();
+  if (!versions.installed) return deferred;
+  for (const row of versions.processes) {
+    if (row.role === "desktop-adapter" && row.release !== versions.installed && row.release !== "unknown" && await sameSdk(row.release, versions.installed).catch(() => false)) deferred.add(row.pid);
+  }
+  return deferred;
 }
 
 function reconcileServiceRelease(versions: VersionsResult, status: ServiceStatus): VersionsResult {
@@ -188,7 +200,10 @@ export async function runHealth(options: HealthOptions, deps: HealthDeps = {}): 
   // the watchdog already knows how to say, and it never stops the run or the alert.
   const smoke = await decideSmoke(options, app, state, change.changed, deps, now)
     .catch(() => ({ outcome: { ran: false, result: "unavailable" } as SmokeOutcome }));
-  const components = componentFindings(reconcileServiceRelease(versions, status), now, switched);
+  // A desktop adapter that has the installed release's SDK waits for its app's next launch instead of exiting under it.
+  const deferred = await note("adapters", () => deferredAdapters(versions, deps.sameSdk ?? sameGatewaySdk), new Set<number>());
+  const reconciled = reconcileServiceRelease(versions, status);
+  const components = componentFindings({ ...reconciled, processes: reconciled.processes.map(row => deferred.has(row.pid) ? { ...row, release: versions.installed! } : row) }, now, switched);
   const findings: Finding[] = [
     ...appFindings(app, change.changed), ...components.findings, ...upgradeFindings(plan, laggingWithService(components.lagging, versions, status), components.stale, trustedSnapshot(versions, status) ? status.controllerRelease : undefined, versions.installed, trustedSnapshot(versions, status) ? status.liveUpdates : undefined),
     ...serviceFindings(status, signals), ...relayFindings(status, relay, now), ...inferenceFindings(inference, versions.installed),
