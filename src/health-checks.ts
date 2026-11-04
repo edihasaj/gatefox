@@ -84,7 +84,7 @@ export function componentFindings(result: VersionsResult, now: number, since?: n
  */
 export function upgradeFindings(plan: ServicePlan | undefined, lagging: string[], stale: string[], controllerRelease?: string, installed?: string | null, liveUpdates?: boolean): Finding[] {
   if (![...lagging, ...stale].some(name => name.startsWith("service@"))) return [];
-  if (installed && controllerRelease === installed) return [{ level: "info", reason: "service moved live; its execution host follows once chats drain: see gateway activity" }];
+  if (installed && controllerRelease === installed) return [{ level: "info", reason: "service moved live; its execution host follows once chats drain and no app is attached: see gateway activity" }];
   // A service that publishes its controller release swaps controllers live, and Claude components never block that swap; it
   // has simply not happened yet (a busy host keeps refusing it, see docs/services.md). Only a service without live updates is
   // held by the Claude restart rule below.
@@ -119,6 +119,8 @@ export interface ServiceStatus {
   controllerRelease?: string;
   /** Whether this service swaps controllers live (published since 1.5.8). A service that does not say is either kind. */
   liveUpdates?: boolean;
+  /** Whether the execution host's move to the installed release is held because an app is attached (since 1.6.2). */
+  hostMoveHeld?: boolean;
   stopping?: boolean;
   published: boolean;
 }
@@ -142,6 +144,7 @@ export function statusFields(value: unknown): ServiceStatus {
     ...(typeof row.updatedAt === "string" && Number.isFinite(Date.parse(row.updatedAt)) ? { updatedAt: row.updatedAt } : {}),
     ...(typeof row.runningRelease === "string" && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.[0-9]$/.test(row.runningRelease) ? { runningRelease: row.runningRelease } : {}),
     ...(row.liveUpdates === true ? { liveUpdates: true } : {}),
+    ...(row.hostMoveHeld === true ? { hostMoveHeld: true } : {}),
     ...(typeof row.controllerRelease === "string" && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.[0-9]$/.test(row.controllerRelease) ? { controllerRelease: row.controllerRelease } : {}),
     ...(row.stopping === true ? { stopping: true } : {}) };
 }

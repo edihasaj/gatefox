@@ -380,9 +380,14 @@ export async function runRollout(verify: boolean, explicitConfig?: string, deps:
   if (!hostRead.status) return result("pending", "host_pending", { ...base, service: serviceReport, inference });
   const host = hostRead.status.identity;
   const hostReport = { pid: host.hostPid, startedAtMs: host.startedAtMs, runningRelease: host.runningRelease, capabilities: hostRead.status.capabilities };
-  const installedSource = await (deps.releaseSource ?? readReleaseSource)(versions.installed);
+  // A host whose move is held while an app is attached (docs/services.md) is verified against the release it runs, and only
+  // while that release ships the installed release's gateway SDK, so adapters of either release are served without skew.
+  const heldHost = service.hostMoveHeld === true && host.runningRelease !== versions.installed && release.test(host.runningRelease)
+    && await (deps.sameSdk ?? ((running, installed) => sameGatewaySdk(running, installed)))(host.runningRelease, versions.installed).catch(() => false);
+  const hostRelease = heldHost ? host.runningRelease : versions.installed;
+  const installedSource = await (deps.releaseSource ?? readReleaseSource)(hostRelease);
   const sameServiceStart = Math.floor(Date.parse(serviceRow.startedAt) / 1000) * 1000 === host.startedAtMs;
-  if (!installedSource || hostRead.status.quiescing || host.hostPid !== service.pid || !sameServiceStart || host.runningRelease !== versions.installed
+  if (!installedSource || hostRead.status.quiescing || host.hostPid !== service.pid || !sameServiceStart || host.runningRelease !== hostRelease
     || host.sourceCommit !== installedSource || !hostRead.status.compatible || !hostRead.status.capabilities.includes("gateway")) {
     // A live-moved service whose host still runs the older release and refuses chats of the installed one is blocked, as above.
     if (host.runningRelease !== versions.installed) {

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Installing a release no longer restarts ChatGPT through the execution host either. The
+  host's quiet move to a new release closed every attached app's connection, which
+  ChatGPT 26.1029 does not survive; the move now waits while an app is attached, except
+  when the host refuses a newer adapter. Rollout accepts a held host on a release with the
+  installed SDK, verified against its own release.
+
 - Installing a release no longer crashes ChatGPT. The desktop adapter used to exit under
   the connected app once it was idle, which made ChatGPT 26.1029 restart with "hit a
   snag"; it now moves only for a release that changes the gateway SDK and otherwise

@@ -9,6 +9,7 @@ import { serviceStatusPath, readServicePlan, type ServiceComponent, type Service
 import { startExecutionHost, type QuietWait } from "./execution-host.js";
 import { serviceTunnelArguments, staleForwardCleanup } from "./service-tunnel.js";
 import { telemetry } from "./telemetry.js";
+import { appsAttached } from "./service-host-hold.js";
 import { reportException } from "./error-report.js";
 import { watchForUpgrade, releaseState, type PendingRelease, type UpgradeOutcome } from "./self-update.js";
 import { componentStopMs, inferenceStopGraceMs } from "./runtime-activity.js";
@@ -59,6 +60,8 @@ function within(done: Promise<unknown> | undefined, ms: number): Promise<unknown
   return Promise.race([done, new Promise<void>(resolve => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
 }
 /** How often, and how far apart, a live swap refused for brief host work is tried again within one upgrade attempt. */
+/** How often the controller looks whether an app is attached, to hold the host's quiet move (GATEWAY_HOST_HOLD_MS: tests). */
+const hostHoldCheckMs = (): number => Number(process.env.GATEWAY_HOST_HOLD_MS) || 15_000;
 const handoverRetries = (): number => Number(process.env.GATEWAY_HANDOVER_RETRIES) || 15;
 const handoverRetryMs = (): number => Number(process.env.GATEWAY_HANDOVER_RETRY_MS) || 2000;
 /**
@@ -118,6 +121,10 @@ export class ServiceSupervisor {
   private readonly upgradeWaits = new Set<string>();
   /** Makes the upgrade watcher look now (an urgent move, when the host says one is waiting); set while the watcher runs. */
   private nudgeUpgrade?: () => void;
+  /** Whether the execution host's quiet move to an installed release is held because an app is attached (see holdHostMove). */
+  private hostHeld = false;
+  private hostHoldWatch?: NodeJS.Timeout;
+  private hostHoldLogged = new Set<string>();
   private stoppedResolve: () => void = () => {};
   stopped = new Promise<void>(resolve => { this.stoppedResolve = resolve; });
   constructor(private plan: ServicePlan, private state: string, private retryBaseMs = 1000, startHost: typeof startExecutionHost = startExecutionHost,
@@ -125,6 +132,11 @@ export class ServiceSupervisor {
     healing: Partial<SupervisorHealing> = {}, private readonly registrationPollMs = nativeRegistrationPollMs,
     private readonly cleanStaleForward: StaleForwardCleaner = clearStaleForward) {
     this.heal = { ...defaultHealing, ...healing };
+    // The host keeper reads its quiet grace from the controller's healing on every attempt, and a live controller swap hands
+    // the keeper this object, so the hold below reaches hosts whose keeper code is older than this controller.
+    const grace = this.heal.hostQuietGraceMs;
+    Object.defineProperty(this.heal, "hostQuietGraceMs", { configurable: true, enumerable: true,
+      get: () => this.hostHeld ? Number.MAX_SAFE_INTEGER : grace });
     const running = this.heal.releaseState()?.running;
     if (running && canonicalRelease.test(running)) this.runningRelease = this.controllerRelease = running;
     // A host that refused a newer adapter says when no turn runs, so the urgent move is tried in that gap (see skewIdle).
@@ -138,7 +150,7 @@ export class ServiceSupervisor {
   /** One advisory status queue belongs to the shared ownership broker across all controllers. */
   private publish(): Promise<void> {
     if (this.retired) return this.writes;
-    const snapshot = { version: 1, pid: process.pid, updatedAt: new Date().toISOString(), ...(this.runningRelease ? { runningRelease: this.runningRelease } : {}), ...(this.controllerRelease ? { controllerRelease: this.controllerRelease } : {}), ...(this.controlUpdate ? { liveUpdates: true } : {}), stopping: this.inactive, components: this.slots.map(slot => ({ ...slot.state })), ...(this.host.executionState ? { executionHost: { ...this.host.executionState } } : {}) };
+    const snapshot = { version: 1, pid: process.pid, updatedAt: new Date().toISOString(), ...(this.runningRelease ? { runningRelease: this.runningRelease } : {}), ...(this.controllerRelease ? { controllerRelease: this.controllerRelease } : {}), ...(this.controlUpdate ? { liveUpdates: true } : {}), ...(this.hostHeld ? { hostMoveHeld: true } : {}), stopping: this.inactive, components: this.slots.map(slot => ({ ...slot.state })), ...(this.host.executionState ? { executionHost: { ...this.host.executionState } } : {}) };
     this.writes = this.writes.then(() => writePrivateJson(serviceStatusPath(this.state), snapshot)).catch(error => this.statusWriteFailed(error));
     return this.writes;
   }
@@ -180,6 +192,8 @@ export class ServiceSupervisor {
     // host has refused (release skew) makes the move urgent: no grace, and only a running turn or terminal holds it back.
     this.stopUpgradeWatch = watchForUpgrade("service", () => !this.inactive && !this.restarting && !this.host.hostRestarting, pending => this.upgrade(pending),
       { state: this.heal.releaseState, urgent: to => this.skewWaiting(to), bind: nudge => { this.nudgeUpgrade = nudge; } });
+    // While an app is attached, the host does not move quietly under it; a refused newer adapter (release skew) still moves it.
+    void this.holdHostMove(); this.hostHoldWatch = setInterval(() => { void this.holdHostMove(); }, hostHoldCheckMs()); this.hostHoldWatch.unref();
     // The watchdog heartbeat; it stands down while this Mac has no monitor URL.
     this.stopHealth = this.heal.healthSchedule(this.state, this.plan.config);
     // Updates share this existing service lifecycle; they never add another
@@ -190,6 +204,22 @@ export class ServiceSupervisor {
       this.modelMaintenance = hostAutoLatestMaintenance(this.plan.config, "service");
     }
     await this.publish();
+  }
+  /**
+   * The quiet host move restarts the execution host and closes every attached app's control connection, which ChatGPT does not
+   * survive. So it waits while an app is attached: the host moves when the apps disconnect (the strict idle move), at the next
+   * natural start, or at once when this host refuses a newer adapter (the urgent release skew move is not held).
+   */
+  private async holdHostMove(): Promise<void> {
+    if (this.inactive || this.retired) return;
+    const installed = this.heal.releaseState()?.installed;
+    const host = await this.host.executionStarting?.catch(() => undefined);
+    const skew = !!installed && host?.skewRefused?.(installed) === true;
+    const held = !skew && await appsAttached();
+    if (held && !this.hostHeld && installed && !this.hostHoldLogged.has(installed)) {
+      this.hostHoldLogged.add(installed); telemetry("execution_host_upgrade_waiting", { reason: "app_attached" });
+    }
+    if (held !== this.hostHeld) { this.hostHeld = held; void this.publish(); }
   }
   /** Probes the running host now; the service's own probe tick does the same (see ServiceHostKeeper.checkHost). */
   checkHost(): Promise<void> { return this.host.checkHost(); }
@@ -509,7 +539,7 @@ export class ServiceSupervisor {
     }
   }
   private async stopControl(): Promise<void> {
-    clearInterval(this.heartbeat); clearInterval(this.wakeWatch); clearInterval(this.pauseWatch); clearInterval(this.registrationWatch);
+    clearInterval(this.heartbeat); clearInterval(this.wakeWatch); clearInterval(this.pauseWatch); clearInterval(this.registrationWatch); clearInterval(this.hostHoldWatch);
     this.stopUpgradeWatch?.(); this.stopHealth?.(); this.appUpdates?.stop();
     await this.modelMaintenance?.stop();
 
