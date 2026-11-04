@@ -190,7 +190,7 @@ export async function runHealth(options: HealthOptions, deps: HealthDeps = {}): 
     .catch(() => ({ outcome: { ran: false, result: "unavailable" } as SmokeOutcome }));
   const components = componentFindings(reconcileServiceRelease(versions, status), now, switched);
   const findings: Finding[] = [
-    ...appFindings(app, change.changed), ...components.findings, ...upgradeFindings(plan, laggingWithService(components.lagging, versions, status), components.stale, trustedSnapshot(versions, status) ? status.controllerRelease : undefined, versions.installed),
+    ...appFindings(app, change.changed), ...components.findings, ...upgradeFindings(plan, laggingWithService(components.lagging, versions, status), components.stale, trustedSnapshot(versions, status) ? status.controllerRelease : undefined, versions.installed, trustedSnapshot(versions, status) ? status.liveUpdates : undefined),
     ...serviceFindings(status, signals), ...relayFindings(status, relay, now), ...inferenceFindings(inference, versions.installed),
     ...errorFindings(signals, nativePaused(status)), ...desktop, ...smokeFindings(smoke.outcome.result, smoke.outcome.phase),
     ...unreadable,

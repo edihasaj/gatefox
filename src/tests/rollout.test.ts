@@ -308,3 +308,29 @@ test("a service that moved live is ready while its root and an identical relay k
     telemetry: async () => [{ event: "release_skew_refused", direction: "adapter_newer", count: 2, at: startedAtMs + 60_000 }] }));
   assert.deepEqual([refusing.state, refusing.reason], ["blocked", "release_skew"]);
 });
+
+test("a live controller exempts only the service that reported it; another lagging service root stays pending", async () => {
+  const older = "0.5.9";
+  const two = async () => versions([{ role: "service", pid: 101, release: older }, { role: "inference", pid: 102, release: installed }, { role: "service", pid: 999, release: older }]);
+  const status = async () => ({ version: 1, pid: 101, updatedAt: new Date(now).toISOString(), runningRelease: older, controllerRelease: installed,
+    components: [{ id: "inference", kind: "inference", state: "running", pid: 102, startedAt: new Date(now - 30_000).toISOString() }] });
+  const report = await runRollout(true, undefined, base({ versions: two, status, sameRelay: async () => true }));
+  assert.deepEqual([report.state, report.reason, report.versions.retained, report.versions.pending], ["pending", "process_version_pending", 1, 1]);
+  const foreign = await runRollout(false, undefined, base({ versions: async () => versions([{ role: "service", pid: 999, release: older }, { role: "inference", pid: 102, release: installed }]), status }));
+  assert.equal(foreign.versions.retained, undefined, "a status whose pid is no running service exempts nothing");
+});
+
+test("retention decided from one status read holds only if the validated read names the same service", async () => {
+  const older = "0.5.9"; let reads = 0;
+  const cohort = async () => versions([{ role: "service", pid: 101, release: older }, { role: "inference", pid: 102, release: installed }, { role: "service", pid: 999, release: installed }]);
+  const component = [{ id: "inference", kind: "inference", state: "running", pid: 102, startedAt: new Date(now - 30_000).toISOString() }];
+  // The first read is a stale snapshot of lagging PID 101; the second is a fresh one of current PID 999.
+  const status = async () => ++reads === 1
+    ? { version: 1, pid: 101, updatedAt: new Date(now - 3_600_000).toISOString(), runningRelease: older, controllerRelease: installed, components: component }
+    : { version: 1, pid: 999, updatedAt: new Date(now).toISOString(), runningRelease: installed, controllerRelease: installed, components: component };
+  for (const verify of [false, true]) {
+    reads = 0;
+    const report = await runRollout(verify, undefined, base({ versions: cohort, status, sameRelay: async () => true }));
+    assert.deepEqual([report.state, report.reason], ["pending", "service_identity_pending"]);
+  }
+});

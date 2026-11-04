@@ -292,12 +292,15 @@ async function sameRelayBinary(running: string, installed: string): Promise<bool
  * binary is byte-identical to the one the installed release ships. Both change at the next natural start. Everything else
  * (inference, adapters, listeners, the execution host and its canary) must still be current.
  */
-async function retainedProcesses(versions: VersionsResult, controllerRelease: string | undefined, sameRelay: (running: string, installed: string) => Promise<boolean>): Promise<Set<number>> {
+async function retainedProcesses(versions: VersionsResult, status: { pid?: number; controllerRelease?: string } | undefined,
+  sameRelay: (running: string, installed: string) => Promise<boolean>): Promise<Set<number>> {
   const retained = new Set<number>();
-  if (!versions.installed || controllerRelease !== versions.installed) return retained;
+  // The evidence is one status snapshot, so it exempts only the service that wrote it; any other service root stays pending.
+  if (!versions.installed || !status?.pid || status.controllerRelease !== versions.installed
+    || !versions.processes.some(row => row.role === "service" && row.pid === status.pid)) return retained;
   for (const row of versions.processes) {
     if (row.release === versions.installed || row.release === "unknown") continue;
-    if (row.role === "service") retained.add(row.pid);
+    if (row.role === "service") { if (row.pid === status.pid) retained.add(row.pid); }
     else if (row.role === "native-relay" && await sameRelay(row.release, versions.installed).catch(() => false)) retained.add(row.pid);
   }
   return retained;
@@ -311,7 +314,7 @@ export async function runRollout(verify: boolean, explicitConfig?: string, deps:
   const versions = await (deps.versions ?? (() => runVersions()))();
   // The live controller's release is read before the counts: it decides which older labels are retained by design.
   const early = await (deps.status ?? readStatus)(config.stateDirectory).then(value => statusFields(value), () => undefined);
-  const retained = await retainedProcesses(versions, early?.controllerRelease, deps.sameRelay ?? sameRelayBinary);
+  const retained = await retainedProcesses(versions, early, deps.sameRelay ?? sameRelayBinary);
   const counts = { total: versions.processes.length, current: versions.processes.filter(row => row.release === versions.installed).length,
     pending: versions.processes.filter(row => row.release !== versions.installed && row.release !== "unknown" && !retained.has(row.pid)).length,
     unknown: versions.processes.filter(row => row.release === "unknown").length, ...(retained.size ? { retained: retained.size } : {}) };
@@ -350,6 +353,8 @@ export async function runRollout(verify: boolean, explicitConfig?: string, deps:
     || statusAt < Date.parse(serviceRow.startedAt) || statusAt > now + 60_000 || now - statusAt > 30_000) {
     return result("pending", "service_identity_pending", base);
   }
+  // Retention was decided from an earlier read; it holds only for the service this validated read names.
+  if (retained.size && early?.pid !== service.pid) return result("pending", "service_identity_pending", base);
   const serviceReport = { pid: service.pid, runningRelease: service.runningRelease };
   const liveMoved = retained.has(serviceRow.pid) && service.controllerRelease === versions.installed;
   if (!liveMoved && (service.runningRelease !== versions.installed || serviceRow.release !== versions.installed)) {

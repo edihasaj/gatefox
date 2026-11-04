@@ -82,9 +82,11 @@ probed every minute (for example one marked `sdk_changed`) could refuse every sw
 nothing logged. Since 1.5.8 a swap refused only for that brief work is tried again every
 2 s, up to 15 times, and a release still refused that way is logged once as
 `self_upgrade_waiting` with `reason: handover_busy`. Like every controller change, this
-applies to moves made by a 1.5.8 or later controller. Health reports a service whose
-controller has not swapped yet as such; Claude Desktop components never block the swap,
-and only a service without live updates is held by the Claude restart rule.
+applies to moves made by a 1.5.8 or later controller. A 1.5.8 or later service publishes `liveUpdates: true`
+in its status when it swaps controllers live; health then reports a controller that has
+not swapped yet as such, since Claude Desktop components never block the swap. Only a
+service without live updates is held by the Claude restart rule, and an older service
+that does not say gets both ways out.
 
 `gateway service status --json` reports `runtime.controllerRelease` separately
 from `runtime.runningRelease`, the root's immutable bootstrap release. Retained

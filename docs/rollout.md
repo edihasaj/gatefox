@@ -19,8 +19,9 @@ gateway rollout --verify
 
 `ready` means all of the following agree on one installed release. Since 1.5.8 two
 processes may keep an older release label, by design of the no-restart move, and are
-reported as `versions.retained`: the service root, only while its live controller
-(`runtime.controllerRelease`) already runs the installed release, and the native relay,
+reported as `versions.retained`: the service root that wrote the status, only while its live
+controller (`runtime.controllerRelease`) already runs the installed release (any other
+service root stays pending), and the native relay,
 only while its binary is byte-identical to the one the installed release ships (every
 release since 1.5.0 reuses the 1.5.0 relay). Both change at the next natural start.
 Everything below still has to be current, including the execution host and its canary.

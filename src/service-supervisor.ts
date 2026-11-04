@@ -138,7 +138,7 @@ export class ServiceSupervisor {
   /** One advisory status queue belongs to the shared ownership broker across all controllers. */
   private publish(): Promise<void> {
     if (this.retired) return this.writes;
-    const snapshot = { version: 1, pid: process.pid, updatedAt: new Date().toISOString(), ...(this.runningRelease ? { runningRelease: this.runningRelease } : {}), ...(this.controllerRelease ? { controllerRelease: this.controllerRelease } : {}), stopping: this.inactive, components: this.slots.map(slot => ({ ...slot.state })), ...(this.host.executionState ? { executionHost: { ...this.host.executionState } } : {}) };
+    const snapshot = { version: 1, pid: process.pid, updatedAt: new Date().toISOString(), ...(this.runningRelease ? { runningRelease: this.runningRelease } : {}), ...(this.controllerRelease ? { controllerRelease: this.controllerRelease } : {}), ...(this.controlUpdate ? { liveUpdates: true } : {}), stopping: this.inactive, components: this.slots.map(slot => ({ ...slot.state })), ...(this.host.executionState ? { executionHost: { ...this.host.executionState } } : {}) };
     this.writes = this.writes.then(() => writePrivateJson(serviceStatusPath(this.state), snapshot)).catch(error => this.statusWriteFailed(error));
     return this.writes;
   }

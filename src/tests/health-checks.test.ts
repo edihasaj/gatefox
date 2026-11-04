@@ -232,7 +232,9 @@ test("a lagging service is described by what holds it: no live swap yet, Claude 
   const { upgradeFindings } = await import("../health-checks.js");
   const plan = { version: 1 as const, config: "/c", components: [{ id: "claude-adapter", kind: "claude-adapter" as const, command: "/x", args: [], log: "/l" }] };
   assert.equal(upgradeFindings(plan, ["service@1.5.6"], [], "1.5.7", "1.5.7")[0]?.level, "info");
-  const notSwapped = upgradeFindings(plan, ["service@1.5.6"], [], "1.5.6", "1.5.7")[0]!;
+  const notSwapped = upgradeFindings(plan, ["service@1.5.6"], [], "1.5.6", "1.5.7", true)[0]!;
   assert.equal(notSwapped.level, "warn"); assert.match(notSwapped.reason, /has not swapped live to 1\.5\.7/); assert.doesNotMatch(notSwapped.reason, /Claude/);
   assert.match(upgradeFindings(plan, ["service@1.5.6"], [], undefined, "1.5.7")[0]!.reason, /blocked by Claude Desktop components/);
+  // A service that publishes a controller but not whether it swaps live (before 1.5.8) gets both ways out.
+  assert.match(upgradeFindings(plan, ["service@1.5.6"], [], "1.5.6", "1.5.7")[0]!.reason, /quit ChatGPT.*restart --force.*Claude Desktop components block an automatic restart/);
 });
