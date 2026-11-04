@@ -105,3 +105,19 @@ reconnect, steering, Stop, command execution exactly once, pending approval
 recovery and native/gateway capability separation, with no owned process left
 behind. It joined `hostVerifiedAppEngines` in 1.3.0; until then rollout reported
 `native_owner_pending` on Macs that share native work.
+
+Engine 0.166.0-alpha.6 corresponds to OpenAI commit
+`4f093f2748667f3b0e6a07e3d4055121cbd3ce64`. ChatGPT 26.1029.61003 shipped it on
+4 Nov 2026 to the MacBook Pro, where the installed relay refused it, paused as
+`failing`, and the post-update smoke test failed at `stdio-catalog`. Relative to the
+admitted 0.166.0-alpha.5.1, `app-server-transport` (including `remote_control`),
+`state/migrations`, `login` and the app-server remote-control processor are
+byte-identical, and `CHATGPT_ACCOUNT_ID_HEADER` is still `chatgpt-account-id`. The
+other changes concern OTel requirements, review delivery, a ChatGPT routing-affinity
+header for model requests, thread-listener registration and a read-only attached-thread
+query over an existing column. The rebuilt relay passed its tests, the upstream
+`remote_control` suite (165 passed) and `scripts/e2e-native-relay.mjs` against the
+signed engine. The engine passed every stdio and Unix shared-native phase, with and
+without `--host-codex`, including the changed thread-listener lifecycle (reconnect,
+disconnect of every frontend, steering, Stop, commands exactly once, pending approval
+recovery, native/gateway capability separation), with no owned process left behind.
