@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.6.9 — 2026-11-05
+## 1.7.0 — 2026-11-05
 
 - A Claude refusal no longer holds the chat. Gateway treated a `reasoning_extraction` refusal as a
   crashed CLI, so every later message in that chat failed before reaching Claude until it had been
@@ -8,6 +8,8 @@
   and goes to Claude, which costs one full resend of the chat. The cache stop still limits repeats:
   refused requests always count, including ones that report no usage, so repeated refusals stop
   after two resends. A chat that recovers is not stopped on its next message.
+
+## 1.6.9 — 2026-11-05
 
 - A follow-up message can no longer trip the cache stop. Sending a message during a turn cancels
   that request and can close Claude's live session, so the next request has to rebuild the chat.
