@@ -4,7 +4,7 @@
 
 - Cache safety no longer stops a provider declared `selfHosted: true`, such as local Qwen. Two
   large cache misses in a row stopped a worker's next request, which protected no quota or
-  credit on a model you run yourself and sent the task to a metered fallback. Qwen lost eleven
+  credit on a model you run yourself and sent the task to a metered fallback. Qwen lost ten
   turns this way between 1 and 3 November. Gateway still records these misses as `observed`.
   The setting is explicit because a local address can be a proxy to a metered upstream, so
   every other provider keeps the same stop.

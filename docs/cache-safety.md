@@ -22,7 +22,7 @@ compaction recovery budget.
 A provider declared `selfHosted: true` is measured but never stopped. It records
 `outcome: observed` where another provider would record `blocked`, and the request
 runs. A cache miss on a model you run yourself costs prefill time, not quota or credit,
-and stopping the worker only moved its task onto a metered fallback. Qwen lost eleven
+and stopping the worker only moved its task onto a metered fallback. Qwen lost ten
 worker turns this way between 1 and 3 November 2026. Gateway requires a loopback or
 tailnet inference provider for this setting but never infers it, because a local
 address can be a proxy to a metered upstream. Leave it off for anything that forwards.
