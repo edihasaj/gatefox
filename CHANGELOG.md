@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.6.9 — 2026-11-05
+
+- A follow-up message can no longer trip the cache stop. Sending a message during a turn cancels
+  that request and can close Claude's live session, so the next request has to rebuild the chat.
+  Gateway counted the cancelled rebuild and the finished rebuild as two cache misses, then stopped
+  a request that would have continued the rebuilt session cheaply. A 368,000-token chat stayed
+  stuck this way on 5 November, and retrying kept it stuck. Requests the caller cancels no longer
+  count, and the one rebuild after a cancellation is excused, for up to four rebuilds in a row
+  without cache reuse. Timeouts, shutdowns and clients that disconnect in a retry loop still reach
+  the stop, whose message now says to wait 5 minutes and that retrying restarts the wait.
+
 ## 1.4.8 — 2026-11-02
 
 - Give identified SDK turns one compaction recovery signal after the large-context
@@ -113,15 +124,6 @@
   provider. Explicit models, permissions and independent reviewer roles retain
   their bindings. Thanks to Edi Hasaj for requesting code-enforced routing and
   identifying the duplicated instruction policy.
-
-- A follow-up message can no longer trip the cache stop. Sending a message during a turn cancels
-  that request and can close Claude's live session, so the next request has to rebuild the chat.
-  Gateway counted the cancelled rebuild and the finished rebuild as two cache misses, then stopped
-  a request that would have continued the rebuilt session cheaply. A 368,000-token chat stayed
-  stuck this way on 5 November, and retrying kept it stuck. Requests the caller cancels no longer
-  count, and the one rebuild after a cancellation is excused, for up to four rebuilds in a row
-  without cache reuse. Timeouts, shutdowns and clients that disconnect in a retry loop still reach
-  the stop, whose message now says to wait 5 minutes and that retrying restarts the wait.
 
 - Fixed the cause of Qwen's garbled tool calls. Gateway showed Chat Completions models opaque
   tool names such as `tool_14`, and Qwen had to recall that index token by token. On real
