@@ -54,6 +54,15 @@ After confirming that no installer or updater remains, move only the stale
 `.gateway-installation-lock` directory in the installation root to Trash before
 retrying.
 
+Update transactions skip the installer's release pruning, so the same cleanup then
+runs after the update is finalized (`src/app-updates/retention.ts`). It keeps the
+current and previous releases, the newest other release, and any release a running
+process or saved service plan refers to. It also removes gateway generations beyond
+the newest 12 that are at least three days old and unreferenced. Both come back from
+a release download or the next engine start. An incomplete inventory, or a process
+running through `current` whose source release cannot be identified, prevents all of
+this; so does an open update transaction.
+
 The CLI installer bounds each process/open-file inventory at 64 MiB so busy Macs
 can complete the release-retention check. A timeout, overflow or incomplete scan
 still prevents pruning; it never establishes that an old release is unused.

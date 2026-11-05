@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- App updates now clean up after themselves. Update transactions skip the installer's
+  release pruning, and nothing pruned gateway generations at all, so one Mac held 240
+  generations (21 GiB) and eleven releases. After an update finishes, the updater now
+  removes old releases and old generations that no running process refers to.
+
 - Local Qwen workers now survive a garbled tool call. Qwen sometimes returns a broken tool
   name such as `tool=` or `tool_1=apply_patch`, and the gateway treated that as a final
   failure, so the worker's turn ended and its parent moved the task to Sonnet. Over the last
