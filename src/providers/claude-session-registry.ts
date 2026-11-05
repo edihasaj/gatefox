@@ -137,13 +137,17 @@ export function pinReplay(registry: SessionRegistry, key: string, lastUse: numbe
 
 /**
  * A refusal never holds a thread. A session from an earlier release still closes as crashed after one,
- * and an in-place upgrade keeps those sessions running, so the request that saw the refusal clears the hold.
+ * and an in-place upgrade keeps those sessions running, so the request that saw the refusal clears the
+ * hold. Taken when the request attaches, it clears only that session's own hold: a later session on the
+ * same thread can really crash while this request's reader is still behind.
  */
-export function releaseRefusalHold(scope: string, threadId: string): void {
-  const registry = adopt();
-  if (!registry) return;
-  const key = sessionKey(scope, threadId);
-  registry.replayUntil.delete(key); registry.ended.delete(key);
+export function refusalHoldRelease(scope: string, threadId: string): () => void {
+  const registry = adopt(), key = sessionKey(scope, threadId), session = registry?.sessions.get(key);
+  return () => {
+    const hold = registry?.replayUntil.get(key);
+    if (!registry || !session || typeof hold !== "object" || hold.why !== "crashed" || hold.since !== session.lastUse) return;
+    registry.replayUntil.delete(key); registry.ended.delete(key);
+  };
 }
 
 /**

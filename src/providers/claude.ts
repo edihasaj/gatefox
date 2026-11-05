@@ -17,7 +17,7 @@ import { claudeCliModel } from "./claude-models.js";
 import { claudeCliArgs, claudeEnv, claudeMcpCatalog, claudeSystemPrompt, userLine } from "./claude-control.js";
 import { ClaudeMessageStream, resultWindows, type ClaudeStreamEnd, type ClaudeTokens } from "./claude-stream.js";
 import { choiceBlock, leadingInstructions, markCustomCalls, renderConversation, renderItems, renderSelected, type ClaudeConversation, type ClaudeImages, type ReplayFormat } from "./claude-render.js";
-import { compactionCheckpoint, retireScope, releaseRefusalHold } from "./claude-session-registry.js";
+import { compactionCheckpoint, retireScope, refusalHoldRelease } from "./claude-session-registry.js";
 import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveModule, type ClaudeLiveOutcome } from "./claude-live-contract.js";
 import { telemetry } from "../telemetry.js";
 import { claudeReplayBudget, ClaudeReplayBlocked, type ClaudeReplayBudget } from "./claude-replay-budget.js";
@@ -158,12 +158,13 @@ export class ClaudeSubscription implements Provider {
         throw new CliContinuityUnavailable("Claude", reason);
       }
       if (live?.outcome.kind === "stream") {
+        const releaseHold = refusalHoldRelease(this.scope(), conversationId);
         try { for await (const event of live.outcome.events) {
           authVisible = true;
           markCompleted(event); yield event;
         } return; }
         catch (error) {
-          if (providerRefusal(error)) releaseRefusalHold(this.scope(), conversationId);
+          if (providerRefusal(error)) releaseHold();
           if (!authVisible && await beginRecovery(error)) {
             // A failed live session synchronously removes itself from the registry; the
             // cancellable backoff also gives its killed CLI time to exit before this spawn.

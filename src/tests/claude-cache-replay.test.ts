@@ -1,4 +1,5 @@
 import test from "node:test";
+import { sessionKey } from "../providers/claude-live-contract.js";
 import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -6,7 +7,7 @@ import { ProviderError } from "../providers/provider.js";
 import { ClaudeSubscription } from "../providers/claude.js";
 import { claudeLive } from "../providers/claude-live.js";
 import { ClaudeSession } from "../providers/claude-session.js";
-import { evictable, idleMs, pinReplay, rememberEnd, replayPinned, sessionRegistry } from "../providers/claude-session-registry.js";
+import { evictable, idleMs, pinReplay, refusalHoldRelease, rememberEnd, replayPinned, sessionRegistry } from "../providers/claude-session-registry.js";
 import { systemPrefixCacheReadTokens, systemPrefixOnly } from "../providers/claude-usage.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { installClaudeFixture, type ClaudeFixture, type FixtureScenario } from "./claude-cli-fixture.js";
@@ -236,6 +237,23 @@ test("a session from an earlier release does not hold its thread after a refusal
     await turn(provider, [user("first"), user("again")], thread("refused-adopted"));
     assert.deepEqual(await starts(), ["live", "live"]);
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
+});
+
+test("clearing a refused session's hold leaves a later session's crash hold alone", () => {
+  const registry = sessionRegistry(), scope = "refusal-generation", threadId = "shared";
+  const key = sessionKey(scope, threadId);
+  registry.sessions.set(key, { lastUse: 5 } as never);
+  const release = refusalHoldRelease(scope, threadId);
+  registry.sessions.delete(key);
+  pinReplay(registry, key, 999, "crashed");
+  release();
+  assert.equal(replayPinned(registry, key, 1000), "crashed", "a newer session's real crash stays held");
+  pinReplay(registry, key, 5, "prefix_diverged");
+  release();
+  assert.equal(replayPinned(registry, key, 6), "prefix_diverged", "and so does a hold for another reason");
+  pinReplay(registry, key, 5, "crashed");
+  release();
+  assert.equal(replayPinned(registry, key, 6), undefined, "only the refused session's own hold goes");
 });
 
 test("a refusal the caller also cancelled stays a refusal", async () => {
