@@ -224,9 +224,18 @@ Local Qwen workers made this necessary. They returned names such as `tool=`,
 `tool=tool_14` and `tool_1=apply_patch`, and the old final failure ended a worker's
 turn on one bad completion, which sent the parent to a paid fallback model.
 
-Chat Completions and Anthropic API providers address tools by position
-(`tool_0`, `tool_1`, …), so a replayed call can only stay structured when its
-tool is declared in the same request. Codex's local compaction replays the
+Chat Completions providers receive each tool under its real name. A name the Chat
+Completions grammar forbids, a duplicate, or a name shaped like `tool_N` falls back
+to that tool's position. Opaque positions were the cause of Qwen's garbled calls: the
+model must write the name back token by token, and at the index token it was unsure
+what came next. Replaying 12 real failure contexts showed about a 6% chance of an
+invalid token per call with positions and about 0.004% with real names; lowering the
+temperature did not help. Gateway never maps a position back to a tool that has a real
+wire name, because that would be a guess. See
+[the evidence](evidence/qwen-tool-names-2026-11-05.json).
+
+The Anthropic API provider still addresses tools by position. On both, a replayed
+call can only stay structured when its tool is declared in the same request. Codex's local compaction replays the
 whole chat without its tools, and an MCP tool can be deferred or disconnected
 later in a chat. A replayed call to an undeclared tool therefore stays in the
 history as text, `[Earlier tool call NAME: ARGUMENTS]`, and its result becomes

@@ -42,6 +42,7 @@
       "tool_N": "0/60",
       "real": "0/60"
     },
-    "conclusion": "Neither arm reproduced the field failure. Real names showed no benefit, so the wire format stayed unchanged. The cause of the garbling remains unknown."
+    "conclusion": "Neither arm reproduced the field failure. Real names showed no benefit, so the wire format stayed unchanged. The cause of the garbling remains unknown.",
+    "supersededBy": "qwen-tool-names-2026-11-05.json: this test was too small. The opaque names were the cause."
   }
 }

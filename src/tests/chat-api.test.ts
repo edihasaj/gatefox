@@ -19,9 +19,9 @@ test("chat API preserves custom calls, replay and reasoning, and rejects bad or 
     const delta = (value: unknown) => emit({ model: mode === "wrong-model" ? "another-model" : "qwen", choices: [{ index: 0, delta: value, finish_reason: null }] });
     delta({ reasoning: "public thought" });
     if (["tool", "bad-json", "duplicate"].includes(mode)) {
-      delta({ tool_calls: [{ index: 0, id: "call1", function: { name: "tool_0", arguments: '{"input":' } }] });
+      delta({ tool_calls: [{ index: 0, id: "call1", function: { name: "apply_patch", arguments: '{"input":' } }] });
       delta({ tool_calls: [{ index: 0, function: { arguments: mode === "bad-json" ? "broken" : '"patch\\nproof"}' } }] });
-      if (mode === "duplicate") delta({ tool_calls: [{ index: 1, id: "call1", function: { name: "tool_0", arguments: '{"input":"again"}' } }] });
+      if (mode === "duplicate") delta({ tool_calls: [{ index: 1, id: "call1", function: { name: "apply_patch", arguments: '{"input":"again"}' } }] });
     } else delta({ content: "wire-answer" });
     if (mode === "truncated") { res.end(); return; }
     emit({ model: "qwen", choices: [{ index: 0, delta: {}, finish_reason: ["tool", "bad-json", "duplicate"].includes(mode) ? "tool_calls" : mode === "length" ? "length" : "stop" }] });
@@ -48,7 +48,7 @@ test("chat API preserves custom calls, replay and reasoning, and rejects bad or 
     const replay = await (await send({ tools, input: [{ type: "custom_tool_call", call_id: "call1", name: "apply_patch", input: "patch\nproof" }, { type: "custom_tool_call_output", call_id: "call1", output: "patched" }, { role: "user", content: "follow up" }] })).json() as Result;
     assert.equal(replay.status, "completed");
     const messages = received.messages as Array<Record<string, unknown>>;
-    assert.equal((messages[0]!.tool_calls as Array<{ function: { name: string } }>)[0]!.function.name, "tool_0"); assert.equal(messages[1]!.tool_call_id, "call1");
+    assert.equal((messages[0]!.tool_calls as Array<{ function: { name: string } }>)[0]!.function.name, "apply_patch"); assert.equal(messages[1]!.tool_call_id, "call1");
     for (const failure of ["wrong-model", "truncated", "length", "bad-json", "duplicate"]) {
       mode = failure; const response = await send({ tools, stream: true }); const wire = await response.text();
       assert.equal(response.status, 200); assert.ok(wire.includes("response.failed"), failure);

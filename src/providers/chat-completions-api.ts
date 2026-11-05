@@ -98,18 +98,29 @@ function nullOnly(value: object, fields: readonly string[]): boolean { return fi
 
 type ChatToolDefinition = { name: string; responseTool?: { name?: string; namespace?: string } };
 /**
- * Map a returned tool name to its declaration. The wire names are `tool_N`; some self-hosted models (Qwen through vLLM's
- * tool parser) occasionally answer with the caller's original name instead. Accept that only when exactly one declared
- * tool carries it, so a guess never runs a different tool.
+ * The name each tool goes by on the wire. A model has to write this name back token by token, and an opaque position gave
+ * it nothing to recall: on replayed failure contexts Qwen's per-call chance of an invalid token fell from about 6% to
+ * about 0.004% once it saw real names. A tool keeps its name unless the Chat Completions grammar or uniqueness forbids
+ * it; only then does it fall back to its position, `tool_N`, a form a real name may not take here.
+ */
+export function chatWireToolNames<T extends { function: { name: string } }>(tools: readonly T[]): string[] {
+  const counts = new Map<string, number>();
+  for (const tool of tools) counts.set(tool.function.name, (counts.get(tool.function.name) || 0) + 1);
+  return tools.map(({ function: { name } }, index) => /^[A-Za-z0-9_-]{1,64}$/.test(name) && !/^tool_\d+$/.test(name) && counts.get(name) === 1 ? name : `tool_${index}`);
+}
+/**
+ * Map a returned tool name to its declaration. Besides the wire name, some self-hosted models (Qwen through vLLM's tool
+ * parser) occasionally answer with a qualified or local original name. Accept that only when exactly one declared tool
+ * carries it, so a guess never runs a different tool. A position that is not a wire name is a guess and never resolves.
  */
 export function resolveChatTool<T extends { function: ChatToolDefinition }>(name: string, tools: readonly T[]): T["function"] | undefined {
-  if (/^tool_\d+$/.test(name)) return tools[Number(name.slice(5))]?.function;
-  if (!name) return undefined;
+  const wire = chatWireToolNames(tools).indexOf(name);
+  if (wire >= 0) return tools[wire]!.function;
+  if (!name || /^tool_\d+$/.test(name)) return undefined;
   const unique = (matches: T[]) => matches.length === 1 ? matches[0]!.function : undefined;
   const local = (tool: T) => tool.function.responseTool?.name;
   const qualified = (tool: T) => tool.function.responseTool?.namespace ? `${tool.function.responseTool.namespace}.${local(tool)}` : undefined;
-  return unique(tools.filter(tool => tool.function.name === name))
-    ?? unique(tools.filter(tool => qualified(tool) === name))
+  return unique(tools.filter(tool => qualified(tool) === name))
     ?? unique(tools.filter(tool => local(tool) === name));
 }
 function reportRecovery(policy: ChatCompletionRecoveryPolicy, event: Parameters<NonNullable<ChatCompletionRecoveryPolicy["onRecovery"]>>[0]): void {
@@ -139,10 +150,11 @@ export class ChatCompletionsAPI implements Provider {
     // Images reach only a model whose metadata lists image input; a text-only server keeps the refusal.
     const vision = !!modelAlias && this.config.modelMetadata?.[modelAlias]?.inputModalities?.includes("image") === true;
     if (!vision && normalized.messages.some(message => message.parts?.some(part => part.type === "image"))) throw new ProviderError("unsupported_input", "This chat model does not accept images; its metadata does not list image input", 400);
+    const wireNames = chatWireToolNames(tools);
     const nativeName = (name: string): string => {
       const index = tools.findIndex(tool => tool.function.name === name);
       if (index < 0) throw new ProviderError("invalid_request", "Historical tool is absent from the current catalog", 400);
-      return `tool_${index}`;
+      return wireNames[index]!;
     };
     const reasoning = request.reasoning as { effort?: unknown; summary?: unknown } | undefined;
     const alias = Object.entries(this.config.models).find(([, model]) => model === request.model)?.[0];
@@ -157,7 +169,7 @@ export class ChatCompletionsAPI implements Provider {
     if (system) messages.unshift({ role: "system", content: system });
     const url = `${this.config.baseUrl!.replace(/\/$/, "")}/chat/completions`;
     const body = JSON.stringify({ model: request.model, messages, stream: true, stream_options: { include_usage: true },
-        ...(tools.length ? { tools: tools.map(({ function: fn }, index) => ({ type: "function", function: { name: `tool_${index}`, description: fn.description, parameters: fn.parameters || { type: "object", properties: {} } } })) } : {}),
+        ...(tools.length ? { tools: tools.map(({ function: fn }, index) => ({ type: "function", function: { name: wireNames[index], description: fn.description, parameters: fn.parameters || { type: "object", properties: {} } } })) } : {}),
         ...(choice ? { tool_choice: typeof choice === "object" ? { type: "function", function: { name: nativeName(choice.function.name) } } : choice } : {}),
         ...(reasoning?.effort === undefined ? {} : this.config.chatTemplateReasoningEffort
           ? { chat_template_kwargs: { reasoning_effort: reasoning.effort, enable_thinking: reasoning.effort !== "none" } }

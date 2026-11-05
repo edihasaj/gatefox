@@ -91,7 +91,7 @@ test("permanent, unknown, abort, HTTP and typed protocol failures never gain a c
 
 test("a chat body reset is never replayed, including buffered tool fragments and observed usage", async () => {
   const fragments = ["", frame({ content: "partial" }), frame({ reasoning_content: "partial" }),
-    frame({ tool_calls: [{ index: 0, id: "call", function: { name: "tool_0", arguments: "{" } }] }),
+    frame({ tool_calls: [{ index: 0, id: "call", function: { name: "tool", arguments: "{" } }] }),
     `data: ${JSON.stringify({ model: "fixture", choices: [], usage: { prompt_tokens: 200000, completion_tokens: 0, total_tokens: 200000 } })}\n\n`];
   for (const first of fragments) {
     const state = clock(); let calls = 0;
