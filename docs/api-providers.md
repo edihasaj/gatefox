@@ -185,14 +185,16 @@ holds its prefix cache. Opt in with `"sessionAffinity": true` on that
 falling back to its session ID, as a `session-id` header. Subagents have their
 own thread IDs, so they spread across workers while each keeps its own cache.
 
-Set `"selfHosted": true` on a loopback or tailnet provider that runs its own model.
-[Cache safety](cache-safety.md) then records repeated cache misses without stopping the
-worker. Leave it off for a local proxy that forwards to a metered upstream.
-
 Without this setting the router has no session key, hashes each request body,
 and sends every turn to an effectively random worker with a cold cache. The
 setting is off by default, accepted only on `chat-completions-api` providers,
 and never invents an ID for a request that has none.
+
+## Self-hosted models
+
+Set `"selfHosted": true` on a loopback or tailnet provider that runs its own model.
+[Cache safety](cache-safety.md) then records repeated cache misses without stopping the
+worker. Leave it off for a local proxy that forwards to a metered upstream.
 
 ## Context window cap
 
