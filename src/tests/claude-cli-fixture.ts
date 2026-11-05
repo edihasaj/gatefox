@@ -25,6 +25,8 @@ export interface FixtureReply {
   authenticationAfterText?: string;
   /** Emits one native non-authentication assistant failure before any stream event. */
   failureCode?: string;
+  /** Ends the turn with Claude's native private-reasoning refusal. */
+  refused?: boolean;
 }
 export interface FixtureScenario { replies: FixtureReply[]; exitAtSpawn?: boolean; /** A live CLI exits when its first user message arrives, before any output. */ exitAtFirstUser?: boolean; perTurnEffort?: boolean; /** Never starts the MCP server, so no relay hello arrives. */ noMcp?: boolean;
   /** Reject or delay the empty settings acknowledgment used to order queued steering. */
@@ -140,6 +142,11 @@ async function fixtureMain(): Promise<void> {
     if (reply.fail) process.exit(4);
     if (typeof reply.authenticationFailed === "string") {
       out({ type: "assistant", error: "authentication_failed", message: { content: [{ type: "text", text: reply.authenticationFailed }] } });
+      if (!live) process.exit(0);
+      return;
+    }
+    if (reply.refused) {
+      out({ type: "assistant", error: "invalid_request", message: { content: [{ type: "text", text: "API Error: test refusal\n\nDetails: `[reasoning_extraction]`" }] } });
       if (!live) process.exit(0);
       return;
     }

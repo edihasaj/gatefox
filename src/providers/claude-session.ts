@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { ChatToolSelection, InferenceEvent, OpenAITool } from "../protocol/types.js";
-import { ProviderError } from "./provider.js";
+import { ProviderError, providerRefusal } from "./provider.js";
 import { controlLine, controlResult, userLine, type ClaudeMcpTool } from "./claude-control.js";
 import type { ClaudeMessageStream, ClaudeStreamEnd, ClaudeTokens } from "./claude-stream.js";
 import type { ContentBlock } from "./claude-render.js";
@@ -47,7 +47,7 @@ export interface SessionTurn {
   onUsage(limit: ClaudeLimit): Promise<void>;
   onContextWindow(model: string, contextWindow: number): void;
   /** Called once: "ended" with the final message's tokens, or why it did not end. */
-  onEnd(outcome: "ended" | "interrupted" | "failed", tokens?: Partial<ClaudeTokens>): void;
+  onEnd(outcome: "ended" | "interrupted" | "failed" | "refused", tokens?: Partial<ClaudeTokens>): void;
 }
 
 type Block = { type?: unknown; name?: unknown };
@@ -317,8 +317,11 @@ export class ClaudeSession {
   private failed(attached: Attached, error: unknown): unknown {
     if (attached.steered && error instanceof ProviderError && error.code === "cli_failed") error = steeringEnded();
     if (this.attached === attached) {
-      this.detach(attached); attached.turn.onEnd("failed", attached.turn.stream.observedTokens);
-      void this.close("crashed", error instanceof ProviderError ? error.upstream?.code ?? error.code : "failed", true);
+      // A refusal judges one request and says nothing about the CLI, so it must not hold the thread as a crash does.
+      const refused = providerRefusal(error);
+      this.detach(attached); attached.turn.onEnd(refused ? "refused" : "failed", attached.turn.stream.observedTokens);
+      if (refused) void this.close("closed", "refused", true);
+      else void this.close("crashed", error instanceof ProviderError ? error.upstream?.code ?? error.code : "failed", true);
     }
     return error;
   }

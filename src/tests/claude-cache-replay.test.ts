@@ -188,6 +188,20 @@ test("a crashed session holds its thread: requests are refused without a replay 
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
 });
 
+test("a refusal does not hold its thread: the next message reaches Claude in a new session", async () => {
+  const { f, starts, events } = await setup({ replies: [{ refused: true }, { text: "recovered" }, { text: "continued" }] });
+  try {
+    const provider = adapter({ mode: "live", max: 6 });
+    await assert.rejects(turn(provider, [user("first")], thread("refused")), (error: { code?: string; upstream?: { reason?: string } }) => error.code === "invalid_request" && error.upstream?.reason === "reasoning_extraction");
+    assert.equal((await events()).some(entry => entry.outcome === "crashed"), false, "a refusal is not a crash");
+    assert.equal(sessionRegistry().replayUntil.has(keyOf("refused")), false, "and holds nothing");
+    await turn(provider, [user("first"), user("again")], thread("refused"));
+    assert.deepEqual(await starts(), ["live", "live"], "the next message started a new session");
+    await turn(provider, [user("first"), user("again"), said("recovered"), user("more")], thread("refused"));
+    assert.deepEqual(await starts(), ["live", "live"], "and the chat carries on in it");
+  } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
+});
+
 test("a returning thread costs live sessions no more cache than replay would have", async () => {
   // Measured pattern: more threads than slots, an eviction attempt, then each thread returns well
   // inside its cache's hour, with a user message that trails spaces and a tool result that trails a newline.

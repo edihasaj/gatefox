@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A Claude refusal no longer holds the chat. Gateway treated a `reasoning_extraction` refusal as a
+  crashed CLI, so every later message in that chat failed before reaching Claude until it had been
+  quiet for an hour, and each attempt restarted the hour. The next message now starts a new session
+  and goes to Claude, which costs one full resend of the chat. The cache stop still limits repeats:
+  refused requests always count, including ones that report no usage, so repeated refusals stop
+  after two resends. A chat that recovers is not stopped on its next message.
+
 - A follow-up message can no longer trip the cache stop. Sending a message during a turn cancels
   that request and can close Claude's live session, so the next request has to rebuild the chat.
   Gateway counted the cancelled rebuild and the finished rebuild as two cache misses, then stopped

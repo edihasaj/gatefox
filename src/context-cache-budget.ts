@@ -3,7 +3,7 @@ import { ProviderError } from "./providers/provider.js";
 import { telemetry } from "./telemetry.js";
 
 export interface CacheCounts { read?: number; uncached?: number; input?: number; complete?: boolean }
-export interface CacheRecordOutcome { cancelled?: boolean }
+export interface CacheRecordOutcome { cancelled?: boolean; refused?: boolean }
 interface Rewrite { count: number; bytes: number; cacheTokens?: number; unknown: boolean; lastActivityAt?: number; rebuildPass?: boolean; forgiven?: number }
 const symbol = Symbol.for("harness-gateway/context-cache-budget/v1");
 const state = globalThis as unknown as Record<symbol, Map<string, Rewrite> | undefined>;
@@ -30,6 +30,8 @@ const idleResetMs = 5 * 60_000;
 // rebuilds are forgiven, but a client that disconnects and retries in a loop must still stop.
 const maxForgivenRebuilds = 4;
 const maxHistories = 4096;
+// A refusal can arrive with no usage at all, so its size comes from the request itself.
+const estimatedBytesPerToken = 4;
 const valid = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 
 export class ContextCacheBlocked extends ProviderError {
@@ -95,12 +97,13 @@ export function contextCacheBudget(scope: string, identity: string | undefined, 
       if (prior) prior.lastActivityAt = lastActivityAt;
       const read = counts?.read, uncached = counts?.uncached, input = counts?.input;
       const measured = counts?.complete !== false && valid(read) && valid(uncached);
-      const largeUnknown = !measured && ((valid(input) && input >= largeInputTokens) || (valid(uncached) && uncached >= largeInputTokens));
-      const cancelled = outcome.cancelled === true;
+      const cancelled = outcome.cancelled === true, refused = outcome.refused === true;
+      const largeUnknown = !measured && ((valid(input) && input >= largeInputTokens) || (valid(uncached) && uncached >= largeInputTokens)
+        || refused && bytes >= largeInputTokens * estimatedBytesPerToken);
       if (!measured && !largeUnknown) {
-        // A cancellation can close the session before any usage arrives.
-        if (cancelled && prior) prior.rebuildPass = true;
-        else if (cancelled) { histories.set(key, { count: 0, unknown: false, bytes, lastActivityAt, rebuildPass: true }); trim(); }
+        // A cancellation or refusal can close the session before any usage arrives.
+        if ((cancelled || refused) && prior) prior.rebuildPass = true;
+        else if (cancelled || refused) { histories.set(key, { count: 0, unknown: false, bytes, lastActivityAt, rebuildPass: true }); trim(); }
         return;
       }
       const reused = measured && valid(prior?.cacheTokens) && prior.cacheTokens > 0 && read >= prior.cacheTokens * 0.75;
@@ -109,13 +112,14 @@ export function contextCacheBudget(scope: string, identity: string | undefined, 
       // Only a real cache hit on a large context renews the allowance. A tiny request proves nothing.
       const restored = measured && !cold && read >= largeInputTokens;
       // A cancelled request and the one rebuild after it say nothing about whether the cache works.
-      const excused = cold && forgiven < maxForgivenRebuilds && (cancelled || prior?.rebuildPass === true);
+      // A refused request is never excused: it spent the resend, so repeated refusals reach the stop.
+      const excused = cold && !refused && forgiven < maxForgivenRebuilds && (cancelled || prior?.rebuildPass === true);
       histories.delete(key);
       histories.set(key, { count: !cold ? 0 : excused ? prior?.count ?? 0 : (prior?.count ?? 0) + 1,
         unknown: excused ? prior?.unknown ?? false : largeUnknown,
         bytes: cold && prior?.count ? Math.min(prior.bytes, bytes) : bytes,
         cacheTokens: measured ? read + uncached : undefined, lastActivityAt,
-        rebuildPass: cancelled, forgiven: restored ? 0 : excused ? forgiven + 1 : forgiven });
+        rebuildPass: cancelled || refused, forgiven: restored ? 0 : excused ? forgiven + 1 : forgiven });
       trim();
     },
   };

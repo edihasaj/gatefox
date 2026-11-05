@@ -68,6 +68,14 @@ Provider, model and caller identity remain
 the scope. No new user turn, reconnect or provider reseed alone resets the guard;
 only the cancellation rule above excuses a rebuild.
 
+A provider refusal also ends the live session, so the next message rebuilds the
+chat. The refused request always counts as a miss when it was cold, and a refused
+request that reports no usage counts as one of unknown cache reuse if its input is
+at least 262,144 bytes, about 65,536 tokens. Repeated refusals therefore stop after
+two resends. A rebuild that follows a refusal gets the same single pass as one after
+a cancellation, so a chat that recovers is not stopped on its warm next message.
+A refusal is never excused, even when the caller also cancelled it.
+
 A cache failure receives a final HTTP 400 or terminal stream error telling the
 person to wait 5 minutes without sending anything and then send one message, because
 each attempt during the pause restarts the wait. It never reports
