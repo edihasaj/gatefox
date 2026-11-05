@@ -25,7 +25,7 @@ export function largeUncachedUsage(value: ProviderCacheUsage): boolean {
 
 /** One guard at the shared provider boundary, including usage reported before an error or abort. */
 export async function* cacheGuardedInference(provider: Provider, request: ResponsesRequest, signal: AbortSignal,
-  context: InferenceContext, scope: string, options: { advisory?: boolean } = {}): AsyncGenerator<InferenceEvent> {
+  context: InferenceContext, scope: string, options: { advisory?: boolean; cancelled?: () => boolean } = {}): AsyncGenerator<InferenceEvent> {
   const identity = context.threadId ?? context.sessionId;
   // Recovery is available even when the ordinary request budget is blocked, but repeated
   // cold compactions have their own bound rather than an unlimited exemption.
@@ -35,6 +35,9 @@ export async function* cacheGuardedInference(provider: Provider, request: Respon
   budget.beforeRequest("provider");
   const finishActivity = budget.track();
   let observed: CacheCounts | undefined;
+  // A caller that disconnects after a finished response cancelled nothing, and Codex does that at once.
+  let finished = false;
+  const callerCancelled = () => !finished && options.cancelled?.() === true;
   const observeCacheUsage = (value: ProviderCacheUsage) => {
     const next = observedCacheCounts(value);
     // A default/missing terminal usage object cannot erase an earlier measured cache snapshot.
@@ -42,11 +45,12 @@ export async function* cacheGuardedInference(provider: Provider, request: Respon
     context.observeCacheUsage?.(value);
   };
   try {
-    for await (const event of provider.infer(request, signal, { ...context, observeCacheUsage })) {
+    for await (const event of provider.infer(request, signal, { ...context, observeCacheUsage, callerCancelled })) {
       if (event.type === "usage" || event.type === "done") observeCacheUsage(reported(event.usage, event.accounting));
+      if (event.type === "done" && event.interrupted !== true) finished = true;
       yield event;
     }
   } finally {
-    try { budget.record(observed); } finally { finishActivity(); }
+    try { budget.record(observed, { cancelled: callerCancelled() }); } finally { finishActivity(); }
   }
 }

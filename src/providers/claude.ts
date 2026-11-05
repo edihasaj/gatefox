@@ -116,7 +116,7 @@ export class ClaudeSubscription implements Provider {
       ...(conversationId ? { threadKey: sessionKey(this.scope(), conversationId).slice(0, 8) } : {}) };
     {
       run.replayBudget = { beforeRequest: mode => { if (context.requestKind !== "compaction") budget.beforeRequest(mode); }, record: tokens => {
-        if (context.requestKind !== "compaction") budget.record(tokens);
+        if (context.requestKind !== "compaction") budget.record(tokens, { cancelled: context.callerCancelled?.() });
         const measured = tokens?.input !== undefined && tokens.cacheRead !== undefined && tokens.cacheWrite !== undefined;
         context.observeCacheUsage?.({ ...(measured ? { inputTokens: tokens.input! + tokens.cacheRead! + tokens.cacheWrite! } : {}),
           ...(!measured ? { inputTokensLowerBound: [tokens?.input, tokens?.cacheRead, tokens?.cacheWrite].reduce<number>((sum, value) => sum + (value ?? 0), 0) } : {}),
