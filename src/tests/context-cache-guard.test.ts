@@ -18,7 +18,7 @@ for (const kind of kinds) test(`all-provider cache safety covers ${kind} through
   const provider: Provider = { async *infer() { calls++; yield { type: "text", text: "ok" }; yield { type: "done", usage }; } };
   const config = validateConfig({ version: 1, port: 0, stateDirectory: state, providers: [{
     id: "test", type: kind, models: { alias: "upstream" },
-    ...(["responses-api", "chat-completions-api", "anthropic-api"].includes(kind) ? { baseUrl: "http://127.0.0.1:1/v1", apiKeyEnv: "UNUSED_CACHE_GUARD_KEY" } : {}),
+    ...(["responses-api", "chat-completions-api", "anthropic-api"].includes(kind) ? { baseUrl: "https://metered.invalid/v1", apiKeyEnv: "UNUSED_CACHE_GUARD_KEY" } : {}),
     ...(kind === "codex-subscription" ? { credentialFile: join(state, "unused") } : {}),
   }] });
   const server = await startGateway(config, () => provider, undefined, { onFailure() {} });
@@ -42,6 +42,58 @@ for (const kind of kinds) test(`all-provider cache safety covers ${kind} through
     }
     assert.equal(calls, 8, "neither ingress protocol or streaming mode spends on its third cold request");
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+for (const [label, row] of [["loopback", { baseUrl: "http://127.0.0.1:1/v1" }], ["tailnet", { baseUrl: "http://models.example.ts.net:4000/v1", tailnet: true }]] as const) {
+  test(`a ${label} self-hosted model keeps working through repeated cache misses`, async () => {
+    const state = await mkdtemp(join(tmpdir(), "cache-local-")); let calls = 0;
+    const provider: Provider = { async *infer() { calls++; yield { type: "text", text: "ok" }; yield { type: "done", usage }; } };
+    const config = validateConfig({ version: 1, port: 0, stateDirectory: state, providers: [{ id: "local", type: "chat-completions-api", models: { alias: "upstream" }, apiKeyEnv: "UNUSED_CACHE_GUARD_KEY", selfHosted: true, ...row }] });
+    const server = await startGateway(config, () => provider, undefined, { onFailure() {} });
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const token = await gatewayToken(state);
+    try {
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const response = await fetch(base + "/v1/responses", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "thread-id": "local-worker" },
+          body: JSON.stringify({ model: "alias", input: "Repeated history", stream: false }) });
+        assert.equal(response.status, 200);
+      }
+      assert.equal(calls, 5, "a local cache miss never stops the worker");
+    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
+}
+
+test("a local address alone stays stopped, because it can be a proxy to a metered upstream", async () => {
+  const state = await mkdtemp(join(tmpdir(), "cache-proxy-")); let calls = 0;
+  const provider: Provider = { async *infer() { calls++; yield { type: "text", text: "ok" }; yield { type: "done", usage }; } };
+  const config = validateConfig({ version: 1, port: 0, stateDirectory: state, providers: [{ id: "proxy", type: "responses-api", models: { alias: "gpt-paid" }, baseUrl: "http://127.0.0.1:1/v1", apiKeyEnv: "UNUSED_CACHE_GUARD_KEY" }] });
+  const server = await startGateway(config, () => provider, undefined, { onFailure() {} });
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const token = await gatewayToken(state);
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const response = await fetch(base + "/v1/responses", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "thread-id": "proxy-worker" },
+        body: JSON.stringify({ model: "alias", input: "Repeated history", stream: false }) });
+      assert.equal(response.status, attempt < 2 ? 200 : 400);
+    }
+    assert.equal(calls, 2);
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
+
+test("selfHosted is refused away from a loopback or tailnet inference provider", () => {
+  const row = { id: "x", models: { alias: "upstream" }, apiKeyEnv: "UNUSED_CACHE_GUARD_KEY", selfHosted: true };
+  assert.throws(() => validateConfig({ version: 1, port: 0, stateDirectory: "/tmp/unused", providers: [{ ...row, type: "responses-api", baseUrl: "https://openrouter.ai/api/v1" }] }), /selfHosted requires/);
+  assert.throws(() => validateConfig({ version: 1, port: 0, stateDirectory: "/tmp/unused", providers: [{ id: "x", type: "codex-subscription", models: { alias: "upstream" }, credentialFile: "/tmp/unused/c", selfHosted: true }] }), /selfHosted/);
+});
+
+test("a metered provider on the same request shape still stops, so only an advisory budget continues", () => {
+  const scope = "advisory-scope"; const cold = { read: 0, uncached: 200000, input: 200000 };
+  for (const advisory of [true, false]) {
+    const budget = contextCacheBudget(scope + advisory, "thread", "model", 1000, { advisory });
+    budget.record(cold); budget.record(cold);
+    if (advisory) budget.beforeRequest("provider");
+    else assert.throws(() => budget.beforeRequest("provider"), { code: "invalid_request" });
+  }
 });
 
 test("shared guard retains measured cache costs when any provider fails", async () => {

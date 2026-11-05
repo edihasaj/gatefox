@@ -295,6 +295,11 @@ test("a committed update recovered after a crash also removes its stage", darwin
   assert.deepEqual(await w.survivors(), { retained: "old", releases: true, current: true });
 }));
 
+test("retention cannot fail a finished install, even without a readable state directory", () => withUpdate(async w => {
+  const result = await installPending({ ...w.ctx(), snapshot: undefined } as never, w.deps());
+  assert.equal(result.ok, true);
+}));
+
 test("a cleanup that fails or is refused never turns a completed install into a failure", darwin, () => withUpdate(async w => {
   const result = await installPending(w.ctx(), w.deps({ removeStage: async () => { throw new Error("secret-token-xyz"); } }));
   assert.ok(result.ok, JSON.stringify(result)); if (result.ok) assert.equal(result.result.phase, "installed");

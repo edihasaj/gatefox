@@ -19,6 +19,14 @@ before a later stream failure as well as on success. Missing cache fields remain
 unknown; the helper cannot reset the ordinary chat budget or opt into its
 compaction recovery budget.
 
+A provider declared `selfHosted: true` is measured but never stopped. It records
+`outcome: observed` where another provider would record `blocked`, and the request
+runs. A cache miss on a model you run yourself costs prefill time, not quota or credit,
+and stopping the worker only moved its task onto a metered fallback. Qwen lost eleven
+worker turns this way between 1 and 3 November 2026. Gateway requires a loopback or
+tailnet inference provider for this setting but never infers it, because a local
+address can be a proxy to a metered upstream. Leave it off for anything that forwards.
+
 During active work, two consecutive requests that each have at least 65,536 uncached input tokens
 and more uncached than cached tokens stop the next request before provider
 execution. A read covering at least 75% of the preceding cached prefix is treated

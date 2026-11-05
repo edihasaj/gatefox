@@ -26,6 +26,12 @@ export interface ProviderConfig {
    * Opt-in: the identifier never goes to a provider that has not asked for it.
    */
   sessionAffinity?: boolean;
+  /**
+   * Declares that this loopback or tailnet API provider runs its own model, so a repeated cache miss costs time rather than
+   * quota or credit, and cache safety records the miss without stopping the worker. Never inferred: a local address can be a
+   * proxy to a metered upstream, so leave this off for anything that forwards.
+   */
+  selfHosted?: boolean;
   /** Send the caller's reasoning effort through vLLM chat template kwargs, for routers with narrower effort enums. */
   chatTemplateReasoningEffort?: boolean;
   apiKeyEnv?: string;
@@ -265,6 +271,13 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (!["responses-api", "chat-completions-api"].includes(provider.type) || !provider.baseUrl
         || (!provider.tailnet && !["localhost", "127.0.0.1", "[::1]"].includes(new URL(provider.baseUrl).hostname))) {
         throw new Error(`${provider.id}: capacityDiscovery requires a loopback or tailnet inference provider`);
+      }
+    }
+    if (provider.selfHosted !== undefined && typeof provider.selfHosted !== "boolean") throw new Error(`${provider.id}: selfHosted must be boolean`);
+    if (provider.selfHosted === true) {
+      if (!["responses-api", "chat-completions-api"].includes(provider.type) || !provider.baseUrl
+        || (!provider.tailnet && !["localhost", "127.0.0.1", "[::1]"].includes(new URL(provider.baseUrl).hostname))) {
+        throw new Error(`${provider.id}: selfHosted requires a loopback or tailnet inference provider`);
       }
     }
     if (provider.grokHome !== undefined && (provider.type !== "grok-subscription" || typeof provider.grokHome !== "string" || !provider.grokHome)) throw new Error(`${provider.id}: grokHome is only valid for grok-subscription providers`);
