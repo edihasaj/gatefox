@@ -95,7 +95,7 @@ Tailnet connection failures retain allowlisted network codes and the fixed
 `connect` stage, so temporary DNS and dial timeouts can be distinguished from
 certificate failures without recording addresses or exception prose.
 
-`context_cache_guard` reports `outcome: blocked`, `mode: seed|oneshot|continued|provider`, a hashed
+`context_cache_guard` reports `outcome: blocked` (or `observed` for a `selfHosted` provider, which continues), `mode: seed|oneshot|continued|provider`, a hashed
 `threadKey` and a numeric `rewrites` count. It appears in recent problems when
 the shared guard stops another large uncached request before inference.
 See [cache safety](cache-safety.md).

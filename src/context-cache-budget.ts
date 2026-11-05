@@ -41,8 +41,8 @@ export interface ContextCacheBudget {
   record(counts?: CacheCounts): void;
 }
 
-/** Count-only, bounded process state shared by every provider and preserved across hot upgrades. */
-export function contextCacheBudget(scope: string, identity: string | undefined, model: string, bytes: number): ContextCacheBudget {
+/** Count-only, bounded process state shared by every provider and preserved across hot upgrades. `advisory` records without stopping. */
+export function contextCacheBudget(scope: string, identity: string | undefined, model: string, bytes: number, options: { advisory?: boolean } = {}): ContextCacheBudget {
   const key = createHash("sha256").update(JSON.stringify([scope, identity ?? null, model])).digest("hex");
   const activeHistory = (): Rewrite | undefined => {
     const prior = histories.get(key);
@@ -72,8 +72,11 @@ export function contextCacheBudget(scope: string, identity: string | undefined, 
       const prior = activeHistory();
       if (!prior || prior.count < 2) return;
       if (bytes <= prior.bytes / 2) { histories.delete(key); return; }
-      telemetry("context_cache_guard", { outcome: "blocked", mode, threadKey: key.slice(0, 8),
+      telemetry("context_cache_guard", { outcome: options.advisory ? "observed" : "blocked", mode, threadKey: key.slice(0, 8),
         reason: prior.unknown ? "cache_usage_unknown" : "cache_reuse_failed", rewrites: prior.count });
+      // A missed cache on a self-hosted model costs time, not quota or credit. Stopping that
+      // worker would only move its task onto a metered fallback.
+      if (options.advisory) return;
       throw new ContextCacheBlocked(prior.unknown);
     },
     record(counts) {

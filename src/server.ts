@@ -252,13 +252,13 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     admissions.configure(current);
     capacity.configure(current.providers);
     const adapters = new Map(current.providers.map(provider => [provider.id, factory(provider, limit => providerUsage.record(provider, limit), (model, window) => contextWindows.record(provider.id, model, window), (usage, revision) => providerUsage.recordCodex(provider, usage, revision))] as const));
-    const routes = new Map(current.providers.flatMap(provider => Object.entries(provider.models).map(([alias, model]) => [alias, { adapter: adapters.get(provider.id)!, admission: admissions.admission(provider.id), get limit() { return admissions.limit(provider.id); }, model, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider) }] as const)));
+    const routes = new Map(current.providers.flatMap(provider => Object.entries(provider.models).map(([alias, model]) => [alias, { adapter: adapters.get(provider.id)!, admission: admissions.admission(provider.id), get limit() { return admissions.limit(provider.id); }, model, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider), selfHosted: provider.selfHosted === true }] as const)));
     // A reviewer slug is served by the same adapter instance as that provider's own rows, so its credential, turn-state and
     // reasoning scope match. Resolution follows autoReviewTarget, the same account rule /v1/model-catalog advertises under,
     // so the gateway never advertises a reviewer a request would resolve differently.
     const reviewers = new Map(autoReviewModels.flatMap(slug => {
       const provider = autoReviewTarget(current, slug);
-      return provider ? [[slug as string, { adapter: adapters.get(provider.id)!, admission: admissions.admission(provider.id), get limit() { return admissions.limit(provider.id); }, model: slug as string, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider) }] as const] : [];
+      return provider ? [[slug as string, { adapter: adapters.get(provider.id)!, admission: admissions.admission(provider.id), get limit() { return admissions.limit(provider.id); }, model: slug as string, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider), selfHosted: provider.selfHosted === true }] as const] : [];
     }));
     return { routes, reviewers, retain: () => admissions.retain(current.providers), release: admissions.retain(current.providers) };
   };
@@ -477,7 +477,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       const take = (event: InferenceEvent) => { if (event.type === "usage" || event.type === "done") { usage = event.usage; accounting = event.accounting ?? accounting; } };
       const source = cacheGuardedInference(route.adapter, { ...restoreReasoning(providerRequest, route.reasoningScope,
         route.type === "claude-subscription" || route.type === "copilot-subscription" ? { preserveSummaries: true } : undefined), model: route.model }, controller.signal, context,
-        config.stateDirectory + "\0" + route.reasoningScope)[Symbol.asyncIterator]();
+        config.stateDirectory + "\0" + route.reasoningScope, { advisory: route.selfHosted })[Symbol.asyncIterator]();
       // This view has no `return`, so leaving the loop early keeps the provider open for the usage drain below.
       const kept = { [Symbol.asyncIterator]: () => ({ next: () => source.next() }) };
       let stopped = false;

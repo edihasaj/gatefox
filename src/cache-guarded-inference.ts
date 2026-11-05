@@ -25,12 +25,12 @@ export function largeUncachedUsage(value: ProviderCacheUsage): boolean {
 
 /** One guard at the shared provider boundary, including usage reported before an error or abort. */
 export async function* cacheGuardedInference(provider: Provider, request: ResponsesRequest, signal: AbortSignal,
-  context: InferenceContext, scope: string): AsyncGenerator<InferenceEvent> {
+  context: InferenceContext, scope: string, options: { advisory?: boolean } = {}): AsyncGenerator<InferenceEvent> {
   const identity = context.threadId ?? context.sessionId;
   // Recovery is available even when the ordinary request budget is blocked, but repeated
   // cold compactions have their own bound rather than an unlimited exemption.
   const guardIdentity = context.requestKind === "compaction" ? JSON.stringify([identity ?? null, "compaction"]) : identity;
-  const budget = contextCacheBudget(scope, guardIdentity, request.model, Buffer.byteLength(JSON.stringify(request.input)));
+  const budget = contextCacheBudget(scope, guardIdentity, request.model, Buffer.byteLength(JSON.stringify(request.input)), options);
   // Cache safety never impersonates a model context limit or asks the client to compact.
   budget.beforeRequest("provider");
   const finishActivity = budget.track();

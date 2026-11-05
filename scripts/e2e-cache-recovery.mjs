@@ -23,7 +23,7 @@ const provider={async *infer(request,signal,context){
  const input=compactions||seed?1000:200000,cached=compactions||seed?900:0;
  yield {type:'done',usage:{input_tokens:input,output_tokens:10,total_tokens:input+10,input_tokens_details:{cached_tokens:cached}}};
 }};
-const config=validateConfig({version:1,port:0,stateDirectory:state,providers:[{id:'fixture',type:'responses-api',baseUrl:'http://127.0.0.1:1',apiKeyEnv:'UNUSED_FIXTURE',models:{'fixture/sol':'mock-sol'}}]});
+const config=validateConfig({version:1,port:0,stateDirectory:state,providers:[{id:'fixture',type:'responses-api',baseUrl:'https://metered.invalid',apiKeyEnv:'UNUSED_FIXTURE',models:{'fixture/sol':'mock-sol'}}]});
 const server=await startGateway(config,()=>provider,undefined,{onFailure(){}});
 const {modelCatalog}=await load('catalog.js');
 const row=modelCatalog(config).models[0];
