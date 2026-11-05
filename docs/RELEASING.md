@@ -172,6 +172,9 @@ JavaScript. Installing a CLI update preserves the registration. See
    1.2.2 fails all three. It prints only PASS/FAIL lines and fixed error codes. When
    the model's metadata lists image input, or with `--vision`, it also sends a user
    image and a tool-result image and requires the model to name their colors.
+   For Chat Completions failure handling, run `E2E_ROOT=FRESH_DIRECTORY node
+   scripts/e2e-chat-tool-retry.mjs LABEL GATEWAY_COMMAND`. A real Codex client must
+   retry a garbled tool call and finish. It uses a local mock and spends no credit.
    For chat identity changes, run `scripts/e2e-identity.mjs --package
    INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY`. With the package's own
    gateway SDK and a mock upstream it proves that new chats stay
