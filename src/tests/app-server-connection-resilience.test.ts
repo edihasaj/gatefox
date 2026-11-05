@@ -2,6 +2,8 @@
 // oversized frames are dropped, invalid JSON lines are skipped, and a message handler
 // that throws is reported instead of killing the reader loop.
 import test from "node:test";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { Readable } from "node:stream";
@@ -253,3 +255,185 @@ test("an engine that exits behind a grandchild holding stdout open stays an engi
     connection.stop("session_end"); await connection.exited.catch(() => {}); await f.clean();
   }
 });
+
+// Run stdout fault cases outside the test runner: an unhandled stream error must really
+// fail the child, not be hidden by a test-installed stdout error listener.
+async function outputFixture(source: string, closePipe = false) {
+  const module = new URL("../app-server-connection.js", import.meta.url).href;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", `
+    import assert from "node:assert/strict";
+    import { once, EventEmitter } from "node:events";
+    import { setTimeout as delay } from "node:timers/promises";
+    import { emitMessage } from ${JSON.stringify(module)};
+    const deadline = setTimeout(() => { throw new Error("emitMessage stalled"); }, 3000);
+    ${source}
+    clearTimeout(deadline);
+    if (process.connected) process.disconnect();
+  `], { stdio: ["pipe", "pipe", "pipe", "ipc"] });
+  let stderr = ""; let stdout = "";
+  child.stderr!.on("data", chunk => { stderr += chunk; });
+  child.stdout!.on("data", chunk => { stdout += chunk; });
+  const exited = once(child, "exit");
+  const kill = setTimeout(() => child.kill("SIGKILL"), 6000);
+  try {
+    if (closePipe) {
+      const [ready] = await once(child, "message");
+      assert.equal(ready, "ready");
+      child.stdout!.destroy(); // Close the actual OS pipe before the next adapter emit.
+      child.send("emit");
+    }
+    const [code, signal] = await exited;
+    return { code, signal, stderr, stdout };
+  } finally { clearTimeout(kill); child.kill("SIGKILL"); child.stdin!.destroy(); }
+}
+
+for (const bytes of [32, 4 * 1024 * 1024]) {
+  test(`HARNESS-GATEWAY-M: closed client stdout tolerates a ${bytes}-byte emit`, { timeout: 10000 }, async () => {
+    const result = await outputFixture(`
+      await emitMessage({ method: "note/connected" });
+      process.send("ready");
+      await once(process, "message");
+      // Observe without adding an error listener: the unfixed writer must still crash.
+      // stdout can reset .errored after a write failure, unlike an ordinary Writable.
+      let errorCode;
+      const originalEmit = process.stdout.emit;
+      process.stdout.emit = function(event, ...args) {
+        if (event === "error") errorCode = args[0].code;
+        return originalEmit.call(this, event, ...args);
+      };
+      await emitMessage({ method: "note/disconnected", params: { fill: "x".repeat(${bytes}) } });
+      await delay(30); // Include async WriteWrap completion, even when write returned true.
+      assert.equal(errorCode, "EPIPE");
+      for (let i = 0; i < 20; i++) await emitMessage({ method: "note/late" });
+    `, true);
+    assert.equal(result.signal, null, result.stderr);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout, '{"method":"note/connected"}\n');
+    assert.equal(result.stderr, "");
+  });
+}
+
+const fakeOutput = `
+  const output = new EventEmitter();
+  Object.defineProperty(process, "stdout", { value: output, configurable: true });
+  let writes = 0;
+  const pipeError = code => Object.assign(new Error("fixture output failure"), { code });
+`;
+
+test("client output retains JSON framing and waits for drain with bounded listeners", { timeout: 10000 }, async () => {
+  const result = await outputFixture(fakeOutput + `
+    const frames = [];
+    output.write = frame => { frames.push(frame); return ++writes === 1; };
+    await emitMessage({ id: 1, result: { ok: true } });
+    assert.equal(frames[0], '{"id":1,"result":{"ok":true}}\\n');
+    let finished = false;
+    const pending = Promise.all(Array.from({ length: 32 }, (_, id) => emitMessage({ id })));
+    pending.then(() => { finished = true; });
+    await delay(10);
+    assert.equal(finished, false);
+    assert.equal(output.listenerCount("error"), 1);
+    assert.equal(output.listenerCount("close"), 1);
+    assert.equal(output.listenerCount("drain"), 1);
+    output.emit("drain");
+    await pending;
+    assert.equal(finished, true);
+  `);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stderr, "");
+});
+
+for (const code of ["EPIPE", "ERR_STREAM_DESTROYED"]) {
+  for (const mode of ["throw", "buffered", "late"]) {
+    test(`client output tolerates ${code} (${mode}) and stops writing`, { timeout: 10000 }, async () => {
+      const result = await outputFixture(fakeOutput + `
+        output.write = () => {
+          writes++;
+          if (${JSON.stringify(mode)} === "throw") throw pipeError(${JSON.stringify(code)});
+          setImmediate(() => output.emit("error", pipeError(${JSON.stringify(code)})));
+          return ${mode === 'late'};
+        };
+        await emitMessage({ method: "note/first" });
+        await delay(10);
+        await emitMessage({ method: "note/late" });
+        output.emit("error", pipeError(${JSON.stringify(code)})); // A final buffered completion is also guarded.
+        assert.equal(writes, 1);
+      `);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.stderr, "");
+    });
+  }
+}
+
+test("close without drain releases every pending client emit", { timeout: 10000 }, async () => {
+  const result = await outputFixture(fakeOutput + `
+    output.write = () => { writes++; return false; };
+    const pending = Promise.all(Array.from({ length: 32 }, () => emitMessage({ method: "note/pending" })));
+    output.emit("close");
+    await pending;
+    await emitMessage({ method: "note/late" });
+    assert.equal(writes, 32);
+  `);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stderr, "");
+});
+
+test("client output disconnect state belongs to one stdout object", { timeout: 10000 }, async () => {
+  const result = await outputFixture(fakeOutput + `
+    const firstFrames = [];
+    output.write = frame => { firstFrames.push(frame); return true; };
+    await emitMessage({ id: 1 });
+
+    const replacement = new EventEmitter();
+    const replacementFrames = [];
+    replacement.write = frame => { replacementFrames.push(frame); return true; };
+    Object.defineProperty(process, "stdout", { value: replacement, configurable: true });
+    await emitMessage({ id: 2 });
+
+    // A late completion from the old pipe stays guarded but must not latch the replacement closed.
+    output.emit("error", pipeError("EPIPE"));
+    await emitMessage({ id: 3 });
+    replacement.emit("close");
+    await emitMessage({ id: 4 });
+    assert.deepEqual(firstFrames, ['{"id":1}\\n']);
+    assert.deepEqual(replacementFrames, ['{"id":2}\\n', '{"id":3}\\n']);
+    assert.equal(output.listenerCount("error"), 1);
+    assert.equal(replacement.listenerCount("error"), 1);
+  `);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stderr, "");
+});
+
+test("unrelated backpressured errors reject pending emits for caller recovery", { timeout: 10000 }, async () => {
+  const result = await outputFixture(fakeOutput + `
+    const failure = pipeError("EIO");
+    output.write = () => { writes++; return false; };
+    const pending = Array.from({ length: 3 }, (_, id) => emitMessage({ id }));
+    const settled = Promise.allSettled(pending);
+    output.emit("error", failure);
+    for (const item of await settled) {
+      assert.equal(item.status, "rejected");
+      assert.equal(item.reason, failure);
+    }
+    output.write = () => { writes++; return true; };
+    await emitMessage({ id: 4 });
+    assert.equal(writes, 4); // An unrelated failure must not latch the client closed.
+  `);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stderr, "");
+});
+
+for (const mode of ["throw", "buffered", "late"]) {
+  test(`unrelated stdout errors retain process-failing semantics (${mode})`, { timeout: 10000 }, async () => {
+    const result = await outputFixture(fakeOutput + `
+      output.write = () => {
+        if (${JSON.stringify(mode)} === "throw") throw pipeError("EIO");
+        setImmediate(() => output.emit("error", pipeError("EIO")));
+        return ${mode === 'late'};
+      };
+      await emitMessage({ method: "note/failure" });
+      await delay(10);
+    `);
+    assert.equal(result.code, 1, result.stderr);
+    assert.match(result.stderr, /EIO/);
+  });
+}

@@ -748,6 +748,21 @@ one. Only adapter tests cover the offer so far; a rendered desktop check is stil
 required before this becomes the default. Changing the setting needs a fresh adapter
 connection.
 
+## Many requests for unloaded chats at once
+
+A reconnecting app sends one request per chat in its sidebar, such as
+`thread/attachment/list`, and an unloaded gateway chat needs a gateway executor to answer.
+Since 1.6.5 requests for the same generation on the same host connection share a single
+`execution/acquire`, whose frame carries the whole catalog; the host's lease covers all of
+them. Each request reads the current settings first, so one with different settings asks
+for its own generation. A failed acquire fails the requests waiting on it and is not
+remembered; the next request tries again.
+
+The adapter also keeps its answer to "which gateway SDK" while the SDK's files are unchanged
+(device, inode, size, times, owner and mode), instead of hashing the file on every request.
+That answer only names the SDK. Whatever spawns one still hashes the bytes first and refuses
+a mismatch: the execution host on each spawn, and the adapter for its private executors.
+
 ## Re-attaching a gateway chat
 
 A gateway chat runs on an executor that can go away under a loaded chat: the shared host

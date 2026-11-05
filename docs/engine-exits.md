@@ -44,6 +44,16 @@ exiting, and an exit inside that window stays recorded as engine-initiated and
 its remaining output is allowed to drain, because the engine was already on its
 way out. A missing executable is stopped at once.
 
+The separate client-facing stdio output treats `EPIPE` and
+`ERR_STREAM_DESTROYED` as a disconnected client, not an engine pipe failure.
+Pending backpressured emits settle on disconnect or close, and later emits are
+no-ops. Guard state belongs to the stdout stream object for that object's
+lifetime: a late completion from an old stream remains handled, while a replaced
+stream starts with independent state. Unrelated errors reject pending emits so
+their callers can report them; an unrelated late error with no waiting caller
+remains fatal. This does not change engine stdin handling
+or provider network retry policy.
+
 ## Server callback bookkeeping
 
 Answered server callbacks do not count toward the 256 unanswered-request limit.
