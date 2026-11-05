@@ -1,0 +1,47 @@
+{
+  "summary": "Qwen malformed tool call retry, 5 November 2026",
+  "fieldData": {
+    "window": "about 15 days of local Codex session records, deduplicated by turn ID",
+    "failedTurnsOverTurns": {
+      "qwen": "113/347",
+      "claude": "67/1264",
+      "codex": "42/1650"
+    },
+    "qwenUnknownToolFailures": 83,
+    "qwenWorkersWithAFailedTurn": "83/234",
+    "gatewayRequestHardFailurePercent": {
+      "qwen": 1.92,
+      "claude": 0.46,
+      "codex": 0.32
+    },
+    "note": "Hard failures exclude cancellations. Turn counts cover retained session files only."
+  },
+  "realCodexProof": {
+    "client": "codex-cli 0.166.0",
+    "installed1.6.5": "ended on request 1: Chat API returned an unknown tool \"tool=\\n\"",
+    "fixed": {
+      "log": "Reconnecting... 1/5",
+      "exit": 0,
+      "proofWritten": true,
+      "providerRequests": 3
+    },
+    "partialOutputFirst": {
+      "exit": 0,
+      "proofWritten": true,
+      "leakedIntoRetriedRequests": 0,
+      "partialInSavedItems": 0
+    }
+  },
+  "wireNameExperiment": {
+    "question": "Do real tool names reduce garbling compared with tool_N?",
+    "shortContextMediumEffort": {
+      "tool_N": "0/200",
+      "real": "3/200 (write_file, write)"
+    },
+    "seventyTurnXhigh": {
+      "tool_N": "0/60",
+      "real": "0/60"
+    },
+    "conclusion": "Neither arm reproduced the field failure. Real names showed no benefit, so the wire format stayed unchanged. The cause of the garbling remains unknown."
+  }
+}

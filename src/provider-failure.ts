@@ -8,7 +8,7 @@ export type ProviderAbortCause = "timeout" | "cancelled" | "shutdown" | undefine
 const networkCodes: ReadonlySet<string> = new Set([...transientNetworkCodes, ...diagnosticNetworkCodes]);
 const diagnosticCodes = new Set([
   "timeout", "cancelled", "authentication", "invalid_request", "invalid_json", "request_too_large", "model_not_found", "busy", "usage_limit",
-  "upstream_error", "upstream_unavailable", "provider_failed", "inference_failed", "incomplete", "invalid_tool_call", "tool_identity_failure", "cli_failed", "output_too_large",
+  "upstream_error", "upstream_unavailable", "provider_failed", "inference_failed", "incomplete", "invalid_tool_call", "malformed_tool_call", "tool_identity_failure", "cli_failed", "output_too_large",
   "inconsistent_stream", "unsupported_protocol", "invalid_stream", "invalid_output", "context_length_exceeded", "rate_limit_exceeded", "insufficient_quota",
   "upstream_rejected", "provider_unreachable",
   "managed_route_identity_required", "managed_route_unavailable", "managed_route_changed", "managed_route_state_unbound", "managed_route_state_unavailable",
@@ -45,7 +45,9 @@ function allowlisted(value: unknown, allowed: ReadonlySet<string>): string | und
 
 // Codex retries a failed stream up to five times unless its code is one Codex treats
 // as final. These failures repeat identically, so the stream reports such a code and
-// the turn stops at once instead of re-running inference.
+// the turn stops at once instead of re-running inference. `malformed_tool_call` is
+// deliberately absent: a sampled model's garbled tool call differs on the next attempt,
+// so ending the turn would discard a healthy worker over one bad completion.
 const deterministicOutputCodes = new Set(["invalid_tool_call", "tool_identity_failure", "invalid_stream", "invalid_output", "inconsistent_stream", "output_too_large", "unsupported_output", "unsupported_input"]);
 const permanentCodes = new Set(["invalid_request", "invalid_json", "request_too_large", "model_not_found", "unsupported_protocol", "authentication", "usage_limit", "insufficient_quota", ...deterministicOutputCodes]);
 for (const code of ["managed_route_identity_required", "managed_route_changed", "managed_route_state_unbound", "managed_route_state_unavailable"]) permanentCodes.add(code);
@@ -136,7 +138,7 @@ export function providerFailureDiagnostic(input: ProviderFailureDiagnosticInput)
   if (upstream) {
     const upstreamCode = own(upstream, "code"); const event = own(upstream, "event"); const subtype = own(upstream, "subtype"); const upstreamRequestId = own(upstream, "requestId");
     if (typeof upstreamCode === "string" && (upstreamCodes.has(upstreamCode) || networkCodes.has(upstreamCode) || (event === "oauth_refresh" && (oauthErrorCodes.has(upstreamCode) || upstreamCode === "other" || upstreamCode === "none")))) result.upstreamCode = upstreamCode;
-    if (typeof event === "string" && ["error", "response.failed", "response.incomplete", "unknown", "http", "eof", "network", "oauth_refresh", "claude.tool_use", "claude.assistant", "claude.result", "copilot.tool_use", "grok.tool_use", "grok.assistant", "grok.result"].includes(event)) result.upstreamEvent = event;
+    if (typeof event === "string" && ["error", "response.failed", "response.incomplete", "unknown", "http", "eof", "network", "oauth_refresh", "chat.tool_call", "claude.tool_use", "claude.assistant", "claude.result", "copilot.tool_use", "grok.tool_use", "grok.assistant", "grok.result"].includes(event)) result.upstreamEvent = event;
     const stage = own(upstream, "stage");
     if (event === "network" && (stage === "connect" || stage === "stream" || stage === "unknown")) result.upstreamStage = stage;
     const codes = networkCodesField(own(upstream, "networkCodes"));

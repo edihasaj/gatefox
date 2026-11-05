@@ -128,7 +128,9 @@ for (const protocol of ["responses", "messages"] as const) {
       const response = await send(failure.choice); const result = await response.json() as Result;
       const incomplete = !failure.completion.missingCall && (failure.completion.finish === undefined || failure.completion.finish === "length" || failure.completion.finish === "unexpected" || failure.completion.done === false
         || failure.choice !== undefined && failure.choice !== "named" && failure.completion.finish === "stop");
-      assert.equal(response.status, incomplete ? 502 : 400); assert.ok(result.error);
+      // A sampled model's garbled call is a retryable 502: only the client may retry, and it re-samples.
+      const sampled = ["an unknown tool is rejected", "malformed JSON is rejected", "array input is rejected", "null input is rejected"].includes(failure.name);
+      assert.equal(response.status, incomplete || sampled ? 502 : 400); assert.ok(result.error);
       assert.equal(result.output, undefined, "no tool result dispatched to a nonstreaming Responses caller");
       assert.equal(result.content, undefined, "no tool result dispatched to a nonstreaming Messages caller");
       assert.equal(requests - before, 1, "rejected output does not trigger a retry");
@@ -143,7 +145,7 @@ for (const protocol of ["responses", "messages"] as const) {
       await t.test("named custom input still requires a string", async () => {
         completion = { finish: "stop", arguments: '{"input":7}' };
         const response = await send("named", true); const result = await response.json() as Result;
-        assert.equal(response.status, 400); assert.ok(result.error); assert.equal(result.output, undefined);
+        assert.equal(response.status, 502); assert.ok(result.error); assert.equal(result.output, undefined);
       });
     }
   });

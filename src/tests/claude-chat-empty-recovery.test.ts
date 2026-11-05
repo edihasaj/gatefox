@@ -396,7 +396,7 @@ test("the recovery request deadline is a typed timeout after a clean empty first
   } finally { globalThis.fetch = originalFetch; delete process.env[key]; }
 });
 
-test("default output cancellation closes the body, and later invalid tools still follow an earlier valid tool", async () => {
+test("default output cancellation closes the body, and a later invalid tool refuses the whole batch before any call is released", async () => {
   let cancelled = false;
   const upstream = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/event-stream" });
@@ -418,6 +418,6 @@ test("default output cancellation closes the body, and later invalid tools still
   ], false);
   try {
     const source = tools.provider.infer({ ...request, tools: [{ type: "function", name: "tool" }] }, new AbortController().signal)[Symbol.asyncIterator]();
-    assert.equal((await source.next()).value?.type, "tool"); await assert.rejects(source.next(), { code: "invalid_tool_call" });
+    await assert.rejects(source.next(), { code: "invalid_tool_call" }, "no call of a refused batch reaches the client");
   } finally { await tools.close(); }
 });
