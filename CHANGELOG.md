@@ -114,9 +114,17 @@
   their bindings. Thanks to Edi Hasaj for requesting code-enforced routing and
   identifying the duplicated instruction policy.
 
+- Fixed the cause of Qwen's garbled tool calls. Gateway showed Chat Completions models opaque
+  tool names such as `tool_14`, and Qwen had to recall that index token by token. On real
+  failure contexts it was unsure at exactly that token, which is where names such as `tool_`
+  and `tool=` came from. Tools now keep their real names on the wire. Across 12 replayed
+  contexts the chance of an invalid token per call fell from about 6% to about 0.004%, and
+  lower temperature did not help. This corrects the 5 November note that real names showed
+  no benefit: that test was too small to see the effect. The retry stays as a backstop.
+
 - Cache safety no longer stops a provider declared `selfHosted: true`, such as local Qwen. Two
   large cache misses in a row stopped a worker's next request, which protected no quota or
-  credit on a model you run yourself and sent the task to a metered fallback. Qwen lost eleven
+  credit on a model you run yourself and sent the task to a metered fallback. Qwen lost ten
   turns this way between 1 and 3 November. Gateway still records these misses as `observed`.
   The setting is explicit because a local address can be a proxy to a metered upstream, so
   every other provider keeps the same stop.

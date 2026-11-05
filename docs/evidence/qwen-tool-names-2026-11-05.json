@@ -1,0 +1,35 @@
+{
+  "summary": "Why Qwen garbled tool calls, 5 November 2026",
+  "method": "Requests rebuilt with Gateway's own translation from saved sessions at 12 real garble points, then sampled against the live Sparks. Tool definitions came from a real client capture and may not match each worker's exact catalog.",
+  "pilot": {
+    "contexts": 12,
+    "samples": 120,
+    "garbled": 4,
+    "note": "About 3.4 percent, against 0.74 percent per request in the field; one context garbled 3 of 10."
+  },
+  "worstContext": {
+    "sampledGarbled": {
+      "tool_N": "2/30",
+      "realNames": "0/30",
+      "tool_N_temperature_0_2": "5/30"
+    }
+  },
+  "tokenProbabilityAcross12Contexts": {
+    "definition": "For each sampled call, the chance of an invalid next token at any tool-name position, from the top six token probabilities.",
+    "tool_N": {
+      "samples": 31,
+      "calls": 37,
+      "meanInvalidPercentPerCall": 5.69,
+      "garbled": 2
+    },
+    "realNames": {
+      "samples": 33,
+      "calls": 44,
+      "meanInvalidPercentPerCall": 0.004,
+      "garbled": 0
+    }
+  },
+  "exampleAtIndexToken": "After <function=tool_ one context gave 1 at 95 percent, a newline at 3 percent and command at 0.15 percent. Every surrounding token was near certain.",
+  "conclusion": "The opaque position is the cause. The model must recall an index that nothing in its instructions mentions, and it is unsure at that token. Temperature does not fix it. The earlier short A/B, 0 of 260 against 3 of 260, was too small to detect this.",
+  "limits": "Sampled at failure-prone points, so these rates are not field rates. Field effect needs the post-release comparison. In a short synthetic test real names produced 3 of 260 invented names such as write_file, which the retry handles."
+}

@@ -20,7 +20,7 @@ const mock=http.createServer((req,res)=>{let b="";req.on("data",c=>b+=c);req.on(
  if(toolMsgs)return sse(res,text("E2E_DONE"));
  if(seen.filter(x=>x.tools).length===1)return sse(res,[{model:M,choices:[{index:0,delta:{reasoning_content:"PARTIAL_REASONING "},finish_reason:null}]},{model:M,choices:[{index:0,delta:{content:"PARTIAL_TEXT "},finish_reason:null}]},...tool("tool=\n","{}")]);
  seen[seen.length-1].leaked=/PARTIAL_TEXT|PARTIAL_REASONING/.test(JSON.stringify(body.messages));
- return sse(res,tool(`tool_${idx}`,JSON.stringify({cmd:`/usr/bin/printf %s ${value} > ${proof}`,yield_time_ms:1000})));
+ return sse(res,tool(body.tools[idx].function.name,JSON.stringify({cmd:`/usr/bin/printf %s ${value} > ${proof}`,yield_time_ms:1000})));
 })});
 await new Promise(r=>mock.listen(0,"127.0.0.1",r)); const mp=mock.address().port;
 const port=40000+Math.floor(Math.random()*9000); const key="E2E_FIXTURE_KEY";

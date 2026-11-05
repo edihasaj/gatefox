@@ -33,7 +33,7 @@ test("Qwen keeps a call to an undeclared tool and its result as text instead of 
   const body = await outbound(t, new ChatCompletionsAPI(config), { model: "fixture", input, tools });
   const messages = body.messages as Array<{ role: string; content: string | null; tool_calls?: Array<{ id: string; function: { name: string } }>; tool_call_id?: string }>;
   const structured = messages.flatMap(message => message.tool_calls || []);
-  assert.deepEqual(structured.map(call => [call.id, call.function.name]), [["call_exec", "tool_0"]], "a declared tool keeps its structured call");
+  assert.deepEqual(structured.map(call => [call.id, call.function.name]), [["call_exec", "exec_command"]], "a declared tool keeps its structured call");
   assert.deepEqual(messages.filter(message => message.role === "tool").map(message => message.tool_call_id), ["call_exec"], "no result is orphaned");
   const text = messages.map(message => message.content || "").join("\n");
   assert.match(text, /\[Earlier tool call mcp__recall__report_correction: \{"text":"use uv"\}\]/);

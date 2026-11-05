@@ -142,7 +142,7 @@ test("observed vLLM null-only metadata can recover, but non-null metadata fails 
 
 test("allows an auto tool response after an empty completion but never retries twice-empty", async () => {
   const tool = (attempt: number): Frame[] => attempt === 1 ? empty() : [
-    terminal({ tool_calls: [{ index: 0, id: "call_1", function: { name: "tool_0", arguments: "{}" } }] }),
+    terminal({ tool_calls: [{ index: 0, id: "call_1", function: { name: "tool", arguments: "{}" } }] }),
     terminal({}, "tool_calls"), usage(2, 1), "[DONE]",
   ];
   const f = await fixture(tool);
@@ -217,7 +217,7 @@ test("Responses rejects empty and reasoning-only completions without retrying or
 test("Responses still completes visible answers and tool calls after reasoning", async () => {
   for (const frames of [[terminal({ reasoning_content: "private" }), ...text("answer")], [
     terminal({ reasoning_content: "private" }),
-    terminal({ tool_calls: [{ index: 0, id: "call_1", function: { name: "tool_0", arguments: "{}" } }] }),
+    terminal({ tool_calls: [{ index: 0, id: "call_1", function: { name: "tool", arguments: "{}" } }] }),
     terminal({}, "tool_calls"), usage(3, 2), "[DONE]",
   ] as Frame[]]) {
     const f = await fixture(() => frames);
@@ -413,7 +413,7 @@ test("default output cancellation closes the body, and a later invalid tool refu
   } finally { delete process.env[key]; await close(upstream); }
 
   const tools = await fixture(() => [
-    terminal({ tool_calls: [{ index: 0, id: "call_1", function: { name: "tool_0", arguments: "{}" } }, { index: 1, id: "call_1", function: { name: "tool_0", arguments: "{}" } }] }),
+    terminal({ tool_calls: [{ index: 0, id: "call_1", function: { name: "tool", arguments: "{}" } }, { index: 1, id: "call_1", function: { name: "tool", arguments: "{}" } }] }),
     terminal({}, "tool_calls"), usage(1, 1), "[DONE]",
   ], false);
   try {

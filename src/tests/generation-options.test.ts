@@ -90,7 +90,7 @@ test("API adapters validate and forward Messages generation options", async () =
     assert.deepEqual(chatBodies.at(-1)!.messages, [
       { role: "system", content: "Client attribution\n\nCaller instructions\n\nLater instruction\n\nFinal instruction\nKeep this line." },
       { role: "user", content: "First" },
-      { role: "assistant", content: "Checking", tool_calls: [{ id: "check", type: "function", function: { name: "tool_0", arguments: '{"path":"proof.txt"}' } }] },
+      { role: "assistant", content: "Checking", tool_calls: [{ id: "check", type: "function", function: { name: "read", arguments: '{"path":"proof.txt"}' } }] },
       { role: "tool", tool_call_id: "check", content: "proof" },
       { role: "user", content: "Second" },
     ]);
