@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ProviderConfig } from "../config.js";
+import { providerFailureStatus, streamFailureCode } from "../provider-failure.js";
 import { ChatCompletionsAPI, resolveChatTool } from "../providers/chat-completions-api.js";
+import type { ProviderError } from "../providers/provider.js";
 
 const stream = (name: string, args = '{"cmd":"echo ok"}') => new Response([
   { model: "fixture", choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_1", function: { name, arguments: args } }] }, finish_reason: null }] },
@@ -46,6 +48,43 @@ test("the chat transport runs a call Qwen named by its original tool name and na
   name = "tool_0";
   assert.equal((await run())[0]!.function.name, "exec_command", "the normal wire name still works");
   name = "delete_repo";
-  await assert.rejects(run(), (error: unknown) => error instanceof Error && "code" in error && (error as { code: string }).code === "invalid_tool_call"
+  await assert.rejects(run(), (error: unknown) => error instanceof Error && "code" in error && (error as { code: string }).code === "malformed_tool_call"
     && /unknown tool "delete_repo"/.test(error.message));
+});
+
+const garbledStream = (calls: Array<{ name: string; arguments: string }>) => new Response([
+  { model: "fixture", choices: [{ index: 0, delta: { tool_calls: calls.map((call, index) => ({ index, id: `call_${index}`, function: call })) }, finish_reason: null }] },
+  { model: "fixture", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
+  { choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } },
+].map(value => `data: ${JSON.stringify(value)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } });
+
+test("a garbled Qwen call is retryable, never a final turn failure, and carries a fixed reason", async t => {
+  const key = "GATEWAY_TOOL_GARBLE_FIXTURE"; const previous = process.env[key]; process.env[key] = "fixture-only";
+  t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+  const config: ProviderConfig = { id: "qwen", type: "chat-completions-api", baseUrl: "http://127.0.0.1:4000/v1", apiKeyEnv: key, models: { "qwen/flash": "fixture" } };
+  const tools = [{ type: "function" as const, name: "exec_command", parameters: { type: "object", properties: { cmd: { type: "string" } } } }];
+  // Names observed on real failed worker turns.
+  for (const [name, args, reason] of [["tool=\n", "{}", "unknown_tool"], ["tool=tool_14", "{}", "unknown_tool"], ["tool_1=\n<parameter=input", "{}", "unknown_tool"], ["exec_command", "{not json", "invalid_tool_arguments"]] as const) {
+    t.mock.method(globalThis, "fetch", async () => garbledStream([{ name, arguments: args }]));
+    await assert.rejects(async () => { for await (const _ of new ChatCompletionsAPI(config).infer({ model: "fixture", input: "run it", tools }, new AbortController().signal)) { /* drain */ } },
+      (error: unknown) => {
+        const failure = error as ProviderError;
+        assert.equal(failure.code, "malformed_tool_call"); assert.equal(failure.upstream?.code, reason);
+        assert.notEqual(streamFailureCode(failure), "invalid_prompt", "Codex must be free to retry a sampled failure");
+        assert.equal(streamFailureCode(failure), "malformed_tool_call");
+        assert.equal(providerFailureStatus(failure), 502);
+        return true;
+      });
+  }
+});
+
+test("a valid call is not released when a sibling in the batch is garbled, so a retry cannot repeat it", async t => {
+  const key = "GATEWAY_TOOL_BATCH_FIXTURE"; const previous = process.env[key]; process.env[key] = "fixture-only";
+  t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+  t.mock.method(globalThis, "fetch", async () => garbledStream([{ name: "exec_command", arguments: '{"cmd":"rm build.lock"}' }, { name: "tool=", arguments: "{}" }]));
+  const config: ProviderConfig = { id: "qwen", type: "chat-completions-api", baseUrl: "http://127.0.0.1:4000/v1", apiKeyEnv: key, models: { "qwen/flash": "fixture" } };
+  const tools = [{ type: "function" as const, name: "exec_command", parameters: { type: "object", properties: { cmd: { type: "string" } } } }];
+  const seen: string[] = [];
+  await assert.rejects(async () => { for await (const event of new ChatCompletionsAPI(config).infer({ model: "fixture", input: "run it", tools }, new AbortController().signal)) seen.push((event as { type: string }).type); }, { code: "malformed_tool_call" });
+  assert.equal(seen.includes("tool"), false);
 });

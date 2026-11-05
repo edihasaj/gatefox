@@ -21,6 +21,14 @@ final refusal behavior as other invalid tool output. No tool is dispatched by
 this classification. Names, namespaces, arguments and response content remain
 private, and no automatic inference retry is added.
 
+## Chat Completions malformed tool calls
+
+`malformed_tool_call` records a sampled Chat Completions model returning a tool call
+the client cannot run. Its `upstreamEvent` is `chat.tool_call` and its `upstreamCode`
+is `unknown_tool` or `invalid_tool_arguments`. Unlike `invalid_tool_call`, this failure
+is retryable, so one event does not mean a worker stopped. Tool names and arguments
+stay out of telemetry.
+
 ## Cache and failure screen
 
 `api_cache_cold` records large measured cold OpenRouter Responses requests, with

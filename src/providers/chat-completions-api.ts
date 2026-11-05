@@ -88,6 +88,10 @@ function addUsage(left: Usage, right: Usage): Usage {
   };
 }
 function timeoutError(): ProviderError { return new ProviderError("timeout", "Chat API inference timed out", 504); }
+/** A sampled completion the client cannot run. Retryable: the next attempt samples again; see `deterministicOutputCodes`. */
+function malformedToolCall(message: string, code: "unknown_tool" | "invalid_tool_arguments"): ProviderError {
+  return new ProviderError("malformed_tool_call", message, 502, { code, event: "chat.tool_call" });
+}
 function incomplete(message: string): ProviderError { return new ProviderError("incomplete", message, 502); }
 function unknownFields(value: object, allowed: ReadonlySet<string>): boolean { return Object.keys(value).some(key => !allowed.has(key)); }
 function nullOnly(value: object, fields: readonly string[]): boolean { return fields.some(field => Object.hasOwn(value, field) && (value as Record<string, unknown>)[field] !== null); }
@@ -338,17 +342,20 @@ export class ChatCompletionsAPI implements Provider {
 
   private *completed(calls: Map<number, { id: string; name: string; arguments: string }>, tools: NonNullable<ReturnType<typeof responsesToChatRequest>["tools"]>,
     choice: ReturnType<typeof responsesToChatRequest>["tool_choice"]): Generator<InferenceEvent> {
-    const ids = new Set<string>();
+    // Check the whole batch before releasing any call: a client runs a call as it arrives, so a
+    // later malformed sibling must not leave an executed call behind for the retry to repeat.
+    const ids = new Set<string>(); const accepted: Extract<InferenceEvent, { type: "tool" }>[] = [];
     for (const call of calls.values()) {
       const definition = resolveChatTool(call.name, tools);
       const shown = JSON.stringify(call.name.slice(0, 64));
       if (!call.id) throw new ProviderError("invalid_tool_call", "Chat API returned a tool call without an ID");
       if (ids.has(call.id)) throw new ProviderError("invalid_tool_call", "Chat API repeated a tool call ID");
-      if (!definition) throw new ProviderError("invalid_tool_call", `Chat API returned an unknown tool ${shown}`);
+      if (!definition) throw malformedToolCall(`Chat API returned an unknown tool ${shown}`, "unknown_tool");
       if (choice === "none" || (typeof choice === "object" && choice.function.name !== definition.name)) throw new ProviderError("invalid_tool_call", `Chat API returned an unselected tool ${shown}`);
-      let input: unknown; try { input = JSON.parse(call.arguments); } catch { throw new ProviderError("invalid_tool_call", "Chat API returned invalid tool JSON"); }
-      if (!input || typeof input !== "object" || Array.isArray(input) || (definition.responseTool?.type === "custom" && typeof (input as { input?: unknown }).input !== "string")) throw new ProviderError("invalid_tool_call", "Chat API returned invalid tool input");
-      ids.add(call.id); yield { type: "tool", call: { id: call.id, type: "function", responseTool: definition.responseTool, function: { name: definition.name, arguments: call.arguments } } };
+      let input: unknown; try { input = JSON.parse(call.arguments); } catch { throw malformedToolCall("Chat API returned invalid tool JSON", "invalid_tool_arguments"); }
+      if (!input || typeof input !== "object" || Array.isArray(input) || (definition.responseTool?.type === "custom" && typeof (input as { input?: unknown }).input !== "string")) throw malformedToolCall("Chat API returned invalid tool input", "invalid_tool_arguments");
+      ids.add(call.id); accepted.push({ type: "tool", call: { id: call.id, type: "function", responseTool: definition.responseTool, function: { name: definition.name, arguments: call.arguments } } });
     }
+    yield* accepted;
   }
 }

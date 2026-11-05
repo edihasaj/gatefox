@@ -418,6 +418,6 @@ test("default output cancellation closes the body, and later invalid tools still
   ], false);
   try {
     const source = tools.provider.infer({ ...request, tools: [{ type: "function", name: "tool" }] }, new AbortController().signal)[Symbol.asyncIterator]();
-    assert.equal((await source.next()).value?.type, "tool"); await assert.rejects(source.next(), { code: "invalid_tool_call" });
+    await assert.rejects(source.next(), { code: "invalid_tool_call" }, "no call of a refused batch reaches the client");
   } finally { await tools.close(); }
 });
