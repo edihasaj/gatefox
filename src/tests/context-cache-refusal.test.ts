@@ -25,6 +25,30 @@ test("Claude's own budget lets the same recovery continue", () => {
   assert.doesNotThrow(() => budget().beforeRequest("continued"));
 });
 
+test("a recovery still gets its pass after the rebuild allowance has run out", () => {
+  const budget = contextCacheBudget("refusal-after-allowance", "thread", "opus", large);
+  for (let cancel = 0; cancel < 4; cancel++) budget.record(rebuild, { cancelled: true });
+  budget.record(undefined, { refused: true });
+  budget.record(rebuild);
+  assert.doesNotThrow(() => budget.beforeRequest("provider"));
+});
+
+test("a cancelled rebuild keeps the refusal's pass for the rebuild that finishes", () => {
+  const budget = contextCacheBudget("refusal-cancelled-rebuild", "thread", "opus", large);
+  budget.record(rebuild, { refused: true });
+  budget.record(rebuild, { cancelled: true });
+  budget.record(rebuild);
+  assert.doesNotThrow(() => budget.beforeRequest("provider"));
+});
+
+test("a disconnect loop after a refusal still reaches the stop", () => {
+  const budget = contextCacheBudget("refusal-disconnect-loop", "thread", "opus", large);
+  budget.record(rebuild, { refused: true });
+  let spent = 0;
+  assert.throws(() => { for (;;) { budget.beforeRequest("provider"); spent++; budget.record(rebuild, { cancelled: true }); assert.ok(spent < 20); } }, ContextCacheBlocked);
+  assert.ok(spent <= 5);
+});
+
 test("repeated refusals reach the stop after two resends", () => {
   const budget = contextCacheBudget("refusal-repeats", "thread", "opus", large);
   let spent = 0;

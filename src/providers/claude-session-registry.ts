@@ -136,6 +136,17 @@ export function pinReplay(registry: SessionRegistry, key: string, lastUse: numbe
 }
 
 /**
+ * A refusal never holds a thread. A session from an earlier release still closes as crashed after one,
+ * and an in-place upgrade keeps those sessions running, so the request that saw the refusal clears the hold.
+ */
+export function releaseRefusalHold(scope: string, threadId: string): void {
+  const registry = adopt();
+  if (!registry) return;
+  const key = sessionKey(scope, threadId);
+  registry.replayUntil.delete(key); registry.ended.delete(key);
+}
+
+/**
  * Why a thread is still held to the one-shot path, or undefined once a session may start again. A hold
  * an earlier release left in an adopted registry carried only the idle time and took its reason from
  * `ended`; such a hold is read the same way, and the next turn rewrites it with its own reason.

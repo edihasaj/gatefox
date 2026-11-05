@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { ChatToolSelection, InferenceEvent, OpenAITool } from "../protocol/types.js";
 import { ProviderError, providerRefusal } from "./provider.js";
+import { claudeRequestRejection } from "./claude-request-rejection.js";
 import { controlLine, controlResult, userLine, type ClaudeMcpTool } from "./claude-control.js";
 import type { ClaudeMessageStream, ClaudeStreamEnd, ClaudeTokens } from "./claude-stream.js";
 import type { ContentBlock } from "./claude-render.js";
@@ -105,6 +106,8 @@ async function privateDirectory(path: string): Promise<void> {
  * it accepts only the CLI's housekeeping lines; new model output there is a protocol
  * violation that closes the session.
  */
+// How long a running turn waits for a process's last lines after it exits.
+const exitDrainMs = 250;
 export class ClaudeSession {
   /** Adopted older instances lack this capability and use one controlled reseed. */
   readonly queuedInputVersion = 1;
@@ -172,7 +175,7 @@ export class ClaudeSession {
     child.on("error", () => { failed = true; for (const done of [...this.controls.values()]) done(false); });
     child.on("exit", () => {
       for (const done of [...this.controls.values()]) done(false);
-      if (this.state === "starting") this.relay?.close(); else void this.close("crashed", "exited", true);
+      if (this.state === "starting") this.relay?.close(); else this.exitedDuringTurn(child);
     });
     child.stderr.resume(); child.stdin.on("error", () => { /* The exit handler reports it. */ });
     createInterface({ input: child.stdout, crlfDelay: Infinity }).on("line", line => this.line(line));
@@ -313,6 +316,16 @@ export class ClaudeSession {
     this.interruptTimer.unref();
   }
 
+  /**
+   * The process can exit before its last lines are read. A running turn waits briefly for them, because
+   * a refusal printed just before the exit must not be mistaken for a crash that holds the thread.
+   */
+  private exitedDuringTurn(child: ChildProcessWithoutNullStreams): void {
+    const finish = () => { clearTimeout(timer); child.off("close", finish); void this.close("crashed", "exited", true); };
+    const timer = setTimeout(finish, this.attached ? exitDrainMs : 0); timer.unref();
+    if (this.attached) child.once("close", finish); else finish();
+  }
+
   /** A stream failure closes the session at once: the CLI must not act on a foreign or failed turn. */
   private failed(attached: Attached, error: unknown): unknown {
     if (attached.steered && error instanceof ProviderError && error.code === "cli_failed") error = steeringEnded();
@@ -407,11 +420,14 @@ export class ClaudeSession {
     const started = this.state !== "starting";
     this.state = "closed"; clearTimeout(this.parkTimer); clearTimeout(this.interruptTimer);
     const attached = this.attached;
+    // The reader may be behind the process: a refusal already queued is still the turn's outcome.
+    const refusal = attached && !attached.error ? attached.queue.map(claudeRequestRejection).find(Boolean) : undefined;
+    if (refusal) { outcome = "closed"; reason = "refused"; }
     if (attached) {
-      this.detach(attached); attached.turn.onEnd("failed", attached.turn.stream.observedTokens);
-      attached.error ??= attached.steered
+      this.detach(attached); attached.turn.onEnd(refusal ? "refused" : "failed", attached.turn.stream.observedTokens);
+      attached.error ??= refusal ?? (attached.steered
         ? steeringEnded()
-        : new ProviderError("cli_failed", "Claude CLI session ended; run gateway doctor", 502, { code: reason, event: "claude.session" });
+        : new ProviderError("cli_failed", "Claude CLI session ended; run gateway doctor", 502, { code: reason, event: "claude.session" }));
       attached.wake?.();
     }
     for (const done of [...this.controls.values(), ...this.settled]) done(false);

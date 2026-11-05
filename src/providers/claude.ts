@@ -17,7 +17,7 @@ import { claudeCliModel } from "./claude-models.js";
 import { claudeCliArgs, claudeEnv, claudeMcpCatalog, claudeSystemPrompt, userLine } from "./claude-control.js";
 import { ClaudeMessageStream, resultWindows, type ClaudeStreamEnd, type ClaudeTokens } from "./claude-stream.js";
 import { choiceBlock, leadingInstructions, markCustomCalls, renderConversation, renderItems, renderSelected, type ClaudeConversation, type ClaudeImages, type ReplayFormat } from "./claude-render.js";
-import { compactionCheckpoint, retireScope } from "./claude-session-registry.js";
+import { compactionCheckpoint, retireScope, releaseRefusalHold } from "./claude-session-registry.js";
 import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveModule, type ClaudeLiveOutcome } from "./claude-live-contract.js";
 import { telemetry } from "../telemetry.js";
 import { claudeReplayBudget, ClaudeReplayBlocked, type ClaudeReplayBudget } from "./claude-replay-budget.js";
@@ -163,6 +163,7 @@ export class ClaudeSubscription implements Provider {
           markCompleted(event); yield event;
         } return; }
         catch (error) {
+          if (providerRefusal(error)) releaseRefusalHold(this.scope(), conversationId);
           if (!authVisible && await beginRecovery(error)) {
             // A failed live session synchronously removes itself from the registry; the
             // cancellable backoff also gives its killed CLI time to exit before this spawn.
@@ -183,6 +184,8 @@ export class ClaudeSubscription implements Provider {
         }
         return;
       } catch (error) {
+        // A refusal stays a refusal when the caller also cancelled, or the cache stop would stop counting it.
+        if (providerRefusal(error)) throw error;
         if (signal.aborted || error instanceof ProviderError && error.code === "cancelled") {
           if (recovering && !recoveryReported) {
             recoveryReported = true;

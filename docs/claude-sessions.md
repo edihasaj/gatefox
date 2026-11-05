@@ -89,7 +89,9 @@ finishes normally, then the session closes instead of remaining parked in replay
 - **Refused turn:** a `reasoning_extraction` refusal ends the session (`closed`,
   reason `refused`) without a hold, so the next message starts a new session and
   reaches Claude. Rebuilding the chat costs one full resend, and the
-  [cache stop](cache-safety.md) limits repeats.
+  [cache stop](cache-safety.md) limits repeats. A CLI that exits during a turn gets
+  up to 250 ms for its last lines to be read, so a refusal printed just before the
+  exit is not recorded as a crash.
 
 - **Capacity** (no eviction): see Admission below.
 - **Warmup** (no session): a thread must complete `warmup` ordinary requests before

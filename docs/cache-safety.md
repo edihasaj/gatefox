@@ -74,6 +74,8 @@ request that reports no usage counts as one of unknown cache reuse if its input 
 at least 262,144 bytes, about 65,536 tokens. Repeated refusals therefore stop after
 two resends. A rebuild that follows a refusal gets the same single pass as one after
 a cancellation, so a chat that recovers is not stopped on its warm next message.
+That pass sits outside the four-rebuild allowance, because the refusal itself
+counted and a refuse-and-rebuild loop therefore still reaches the stop.
 A refusal is never excused, even when the caller also cancelled it.
 
 A cache failure receives a final HTTP 400 or terminal stream error telling the

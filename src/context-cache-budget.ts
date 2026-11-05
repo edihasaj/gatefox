@@ -4,7 +4,7 @@ import { telemetry } from "./telemetry.js";
 
 export interface CacheCounts { read?: number; uncached?: number; input?: number; complete?: boolean }
 export interface CacheRecordOutcome { cancelled?: boolean; refused?: boolean }
-interface Rewrite { count: number; bytes: number; cacheTokens?: number; unknown: boolean; lastActivityAt?: number; rebuildPass?: boolean; forgiven?: number }
+interface Rewrite { count: number; bytes: number; cacheTokens?: number; unknown: boolean; lastActivityAt?: number; rebuildPass?: boolean; refusalPass?: boolean; forgiven?: number }
 const symbol = Symbol.for("harness-gateway/context-cache-budget/v1");
 const state = globalThis as unknown as Record<symbol, Map<string, Rewrite> | undefined>;
 const histories = state[symbol] ??= new Map<string, Rewrite>();
@@ -102,8 +102,8 @@ export function contextCacheBudget(scope: string, identity: string | undefined, 
         || refused && bytes >= largeInputTokens * estimatedBytesPerToken);
       if (!measured && !largeUnknown) {
         // A cancellation or refusal can close the session before any usage arrives.
-        if ((cancelled || refused) && prior) prior.rebuildPass = true;
-        else if (cancelled || refused) { histories.set(key, { count: 0, unknown: false, bytes, lastActivityAt, rebuildPass: true }); trim(); }
+        if ((cancelled || refused) && prior) { prior.rebuildPass = true; prior.refusalPass ||= refused; }
+        else if (cancelled || refused) { histories.set(key, { count: 0, unknown: false, bytes, lastActivityAt, rebuildPass: true, refusalPass: refused }); trim(); }
         return;
       }
       const reused = measured && valid(prior?.cacheTokens) && prior.cacheTokens > 0 && read >= prior.cacheTokens * 0.75;
@@ -113,13 +113,16 @@ export function contextCacheBudget(scope: string, identity: string | undefined, 
       const restored = measured && !cold && read >= largeInputTokens;
       // A cancelled request and the one rebuild after it say nothing about whether the cache works.
       // A refused request is never excused: it spent the resend, so repeated refusals reach the stop.
-      const excused = cold && !refused && forgiven < maxForgivenRebuilds && (cancelled || prior?.rebuildPass === true);
+      // That also bounds the refusal's own pass, which does not need the rebuild allowance. A cancelled
+      // rebuild leaves it for the rebuild that finishes, and spends the allowance instead.
+      const excused = cold && !refused && (!cancelled && prior?.refusalPass === true
+        || forgiven < maxForgivenRebuilds && (cancelled || prior?.rebuildPass === true));
       histories.delete(key);
       histories.set(key, { count: !cold ? 0 : excused ? prior?.count ?? 0 : (prior?.count ?? 0) + 1,
         unknown: excused ? prior?.unknown ?? false : largeUnknown,
         bytes: cold && prior?.count ? Math.min(prior.bytes, bytes) : bytes,
         cacheTokens: measured ? read + uncached : undefined, lastActivityAt,
-        rebuildPass: cancelled || refused, forgiven: restored ? 0 : excused ? forgiven + 1 : forgiven });
+        rebuildPass: cancelled || refused, refusalPass: refused || cancelled && prior?.refusalPass === true, forgiven: restored ? 0 : excused ? forgiven + 1 : forgiven });
       trim();
     },
   };

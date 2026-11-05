@@ -27,6 +27,8 @@ export interface FixtureReply {
   failureCode?: string;
   /** Ends the turn with Claude's native private-reasoning refusal. */
   refused?: boolean;
+  /** With `refused`, the live CLI prints some text and the refusal, then exits. */
+  exitAfterRefusal?: boolean;
 }
 export interface FixtureScenario { replies: FixtureReply[]; exitAtSpawn?: boolean; /** A live CLI exits when its first user message arrives, before any output. */ exitAtFirstUser?: boolean; perTurnEffort?: boolean; /** Never starts the MCP server, so no relay hello arrives. */ noMcp?: boolean;
   /** Reject or delay the empty settings acknowledgment used to order queued steering. */
@@ -145,7 +147,7 @@ async function fixtureMain(): Promise<void> {
       if (!live) process.exit(0);
       return;
     }
-    if (reply.refused) {
+    if (reply.refused && !reply.exitAfterRefusal) {
       out({ type: "assistant", error: "invalid_request", message: { content: [{ type: "text", text: "API Error: test refusal\n\nDetails: `[reasoning_extraction]`" }] } });
       if (!live) process.exit(0);
       return;
@@ -171,6 +173,11 @@ async function fixtureMain(): Promise<void> {
       for (const piece of [value.slice(0, 2), value.slice(2)]) if (piece) event({ type: "content_block_delta", index, delta: { type: "text_delta", text: piece } });
       out({ type: "assistant", message: { id, content: [{ type: "text", text: value }] } }); event({ type: "content_block_stop", index: index++ });
     };
+    if (reply.exitAfterRefusal) {
+      text("partial answer");
+      out({ type: "assistant", error: "invalid_request", message: { content: [{ type: "text", text: "API Error: test refusal\n\nDetails: `[reasoning_extraction]`" }] } });
+      process.exit(0);
+    }
     const authentication = (diagnostic: string) => out({ type: "assistant", error: "authentication_failed", message: { content: [{ type: "text", text: diagnostic }] } });
     if (typeof reply.authenticationAfterThinking === "string") {
       thinking(reply.thinking ?? "private reasoning"); authentication(reply.authenticationAfterThinking); if (!live) process.exit(0); return;
