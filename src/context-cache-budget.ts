@@ -29,6 +29,7 @@ const idleResetMs = 5 * 60_000;
 // A caller's cancellation can end the live session, so the next request has to rebuild. Those
 // rebuilds are forgiven, but a client that disconnects and retries in a loop must still stop.
 const maxForgivenRebuilds = 4;
+const maxHistories = 4096;
 const valid = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 
 export class ContextCacheBlocked extends ProviderError {
@@ -44,6 +45,8 @@ export interface ContextCacheBudget {
   track(): () => void;
   record(counts?: CacheCounts, outcome?: CacheRecordOutcome): void;
 }
+
+const trim = () => { while (histories.size > maxHistories) histories.delete(histories.keys().next().value!); };
 
 /** Count-only, bounded process state shared by every provider and preserved across hot upgrades. `advisory` records without stopping. */
 export function contextCacheBudget(scope: string, identity: string | undefined, model: string, bytes: number, options: { advisory?: boolean } = {}): ContextCacheBudget {
@@ -97,12 +100,14 @@ export function contextCacheBudget(scope: string, identity: string | undefined, 
       if (!measured && !largeUnknown) {
         // A cancellation can close the session before any usage arrives.
         if (cancelled && prior) prior.rebuildPass = true;
-        else if (cancelled) histories.set(key, { count: 0, unknown: false, bytes, lastActivityAt, rebuildPass: true });
+        else if (cancelled) { histories.set(key, { count: 0, unknown: false, bytes, lastActivityAt, rebuildPass: true }); trim(); }
         return;
       }
       const reused = measured && valid(prior?.cacheTokens) && prior.cacheTokens > 0 && read >= prior.cacheTokens * 0.75;
       const cold = largeUnknown || measured && uncached >= largeInputTokens && uncached > read && !reused;
       const forgiven = prior?.forgiven ?? 0;
+      // Only a real cache hit on a large context renews the allowance. A tiny request proves nothing.
+      const restored = measured && !cold && read >= largeInputTokens;
       // A cancelled request and the one rebuild after it say nothing about whether the cache works.
       const excused = cold && forgiven < maxForgivenRebuilds && (cancelled || prior?.rebuildPass === true);
       histories.delete(key);
@@ -110,8 +115,8 @@ export function contextCacheBudget(scope: string, identity: string | undefined, 
         unknown: excused ? prior?.unknown ?? false : largeUnknown,
         bytes: cold && prior?.count ? Math.min(prior.bytes, bytes) : bytes,
         cacheTokens: measured ? read + uncached : undefined, lastActivityAt,
-        rebuildPass: cancelled, forgiven: !cold ? 0 : excused ? forgiven + 1 : forgiven });
-      while (histories.size > 4096) histories.delete(histories.keys().next().value!);
+        rebuildPass: cancelled, forgiven: restored ? 0 : excused ? forgiven + 1 : forgiven });
+      trim();
     },
   };
 }

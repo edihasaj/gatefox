@@ -69,6 +69,23 @@ test("real cache reuse restores the forgiveness a long chat has used", () => {
   assert.doesNotThrow(() => budget.beforeRequest("provider"));
 });
 
+test("a tiny request does not renew the allowance", () => {
+  const budget = contextCacheBudget("followup-tiny", "thread", "opus", 1000);
+  const uncached = { input: 200000, read: 0, uncached: 200000 };
+  let spent = 0;
+  assert.throws(() => { for (let round = 0; round < 20; round++) {
+    for (let cancel = 0; cancel < 4; cancel++) { budget.beforeRequest("provider"); spent++; budget.record(uncached, { cancelled: true }); }
+    budget.record({ input: 1, read: 0, uncached: 1 });
+  } }, ContextCacheBlocked);
+  assert.equal(spent, 6, "the second round spends only the two ordinary misses");
+});
+
+test("cancellations without usage stay inside the bounded history", () => {
+  const histories = (globalThis as unknown as Record<symbol, Map<string, unknown>>)[Symbol.for("harness-gateway/context-cache-budget/v1")];
+  for (let identity = 0; identity < 4200; identity++) contextCacheBudget("followup-bound", String(identity), "opus", 1000).record(undefined, { cancelled: true });
+  assert.ok(histories.size <= 4096);
+});
+
 test("the stop tells the person how to clear it", () => {
   for (const blocked of [new ContextCacheBlocked(), new ContextCacheBlocked(true)]) {
     assert.match(blocked.message, /Wait 5 minutes without sending anything, then send one message/);

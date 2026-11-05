@@ -53,8 +53,8 @@ one rebuild after that cancellation. On 5 November 2026 two follow-ups in a row
 counted as two misses, and Gateway stopped a request that would have continued the
 rebuilt session cheaply. Only a caller's own cancellation qualifies: a timeout or
 shutdown still counts, and a client that disconnects after a finished response
-cancelled nothing. A chat can excuse four rebuilds this way; real cache reuse or a
-five-minute idle restores that allowance. After four, ordinary counting resumes, so
+cancelled nothing. A chat can excuse four rebuilds this way; a real cache read of at
+least 65,536 tokens or a five-minute idle restores that allowance. After four, ordinary counting resumes, so
 a client that disconnects and retries in a loop still reaches the stop. The stop can
 therefore only follow a follow-up if more than four rebuilds in a row were cancelled
 or excused with no cache reuse between them.
