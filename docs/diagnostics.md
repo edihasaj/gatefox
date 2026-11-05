@@ -432,7 +432,9 @@ explanation of Claude's private-reasoning refusal. Telemetry stores only
 `upstreamReason: reasoning_extraction`. It never stores the diagnostic prose,
 provider request/message IDs from that prose, caller content or credentials.
 The gateway does not rewrite the chat, remove caller instructions, switch
-models, or try to bypass the provider's refusal.
+models, or try to bypass the provider's refusal. A refusal is not a crash: the
+session ends as `claude_session` `closed` with `missReason: refused` and no replay
+hold. The next message goes to Claude, and the cache stop limits repeated resends.
 
 ## Grok CLI records
 

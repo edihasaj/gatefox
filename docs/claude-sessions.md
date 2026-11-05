@@ -86,6 +86,12 @@ finishes normally, then the session closes instead of remaining parked in replay
   Explicit thread IDs retain the preservation behavior above.
 - **Dead session:** a crashed CLI cannot be preserved. Its existing replay hold
   remains bounded by the shared cache guard and expires after an idle hour.
+- **Refused turn:** a `reasoning_extraction` refusal ends the session (`closed`,
+  reason `refused`) without a hold, so the next message starts a new session and
+  reaches Claude. Rebuilding the chat costs one full resend, and the
+  [cache stop](cache-safety.md) limits repeats. A CLI that exits during a turn gets
+  up to 250 ms for its last lines to be read, so a refusal printed just before the
+  exit is not recorded as a crash.
 
 - **Capacity** (no eviction): see Admission below.
 - **Warmup** (no session): a thread must complete `warmup` ordinary requests before
@@ -238,6 +244,7 @@ A recognized credit refusal still takes billing precedence, and context overflow
 still permits the caller's normal compaction recovery. The native
 `reasoning_extraction` refusal gets a fixed explanation of Claude's protection
 policy; the gateway preserves caller history, instructions and model choice.
+The refusal does not hold the chat, so a person can send another message.
 See [request rejection diagnostics](diagnostics.md#claude-request-rejections).
 
 ## Authentication failures

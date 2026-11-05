@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { responsesToChatRequest } from "../protocol/request.js";
 import type { ResponsesRequest, InferenceEvent, OpenAITool, ChatToolSelection, PublicServiceTier } from "../protocol/types.js";
-import { ProviderError, providerConversationId, type Provider, type InferenceContext } from "./provider.js";
+import { ProviderError, providerRefusal, providerConversationId, type Provider, type InferenceContext } from "./provider.js";
 import { claudeSessionSettings, type ProviderConfig } from "../config.js";
 import { validateForcedChoice } from "./claude-calls.js";
 import { imageConversation } from "../protocol/images.js";
@@ -17,7 +17,7 @@ import { claudeCliModel } from "./claude-models.js";
 import { claudeCliArgs, claudeEnv, claudeMcpCatalog, claudeSystemPrompt, userLine } from "./claude-control.js";
 import { ClaudeMessageStream, resultWindows, type ClaudeStreamEnd, type ClaudeTokens } from "./claude-stream.js";
 import { choiceBlock, leadingInstructions, markCustomCalls, renderConversation, renderItems, renderSelected, type ClaudeConversation, type ClaudeImages, type ReplayFormat } from "./claude-render.js";
-import { compactionCheckpoint, retireScope } from "./claude-session-registry.js";
+import { compactionCheckpoint, retireScope, refusalHoldRelease } from "./claude-session-registry.js";
 import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveModule, type ClaudeLiveOutcome } from "./claude-live-contract.js";
 import { telemetry } from "../telemetry.js";
 import { claudeReplayBudget, ClaudeReplayBlocked, type ClaudeReplayBudget } from "./claude-replay-budget.js";
@@ -115,8 +115,8 @@ export class ClaudeSubscription implements Provider {
       // The same key the live registry derives, so one thread's one-shot and live events line up.
       ...(conversationId ? { threadKey: sessionKey(this.scope(), conversationId).slice(0, 8) } : {}) };
     {
-      run.replayBudget = { beforeRequest: mode => { if (context.requestKind !== "compaction") budget.beforeRequest(mode); }, record: tokens => {
-        if (context.requestKind !== "compaction") budget.record(tokens, { cancelled: context.callerCancelled?.() });
+      run.replayBudget = { beforeRequest: mode => { if (context.requestKind !== "compaction") budget.beforeRequest(mode); }, record: (tokens, outcome) => {
+        if (context.requestKind !== "compaction") budget.record(tokens, { cancelled: context.callerCancelled?.(), refused: outcome?.refused });
         const measured = tokens?.input !== undefined && tokens.cacheRead !== undefined && tokens.cacheWrite !== undefined;
         context.observeCacheUsage?.({ ...(measured ? { inputTokens: tokens.input! + tokens.cacheRead! + tokens.cacheWrite! } : {}),
           ...(!measured ? { inputTokensLowerBound: [tokens?.input, tokens?.cacheRead, tokens?.cacheWrite].reduce<number>((sum, value) => sum + (value ?? 0), 0) } : {}),
@@ -158,11 +158,13 @@ export class ClaudeSubscription implements Provider {
         throw new CliContinuityUnavailable("Claude", reason);
       }
       if (live?.outcome.kind === "stream") {
+        const releaseHold = refusalHoldRelease(this.scope(), conversationId);
         try { for await (const event of live.outcome.events) {
           authVisible = true;
           markCompleted(event); yield event;
         } return; }
         catch (error) {
+          if (providerRefusal(error)) releaseHold();
           if (!authVisible && await beginRecovery(error)) {
             // A failed live session synchronously removes itself from the registry; the
             // cancellable backoff also gives its killed CLI time to exit before this spawn.
@@ -183,6 +185,8 @@ export class ClaudeSubscription implements Provider {
         }
         return;
       } catch (error) {
+        // A refusal stays a refusal when the caller also cancelled, or the cache stop would stop counting it.
+        if (providerRefusal(error)) throw error;
         if (signal.aborted || error instanceof ProviderError && error.code === "cancelled") {
           if (recovering && !recoveryReported) {
             recoveryReported = true;
@@ -259,7 +263,7 @@ export class ClaudeSubscription implements Provider {
     // Fast waits for the result: only it reports the tier served, since a refused or throttled fast request
     // drops to standard speed without a stream line. The result follows end_turn within milliseconds.
     const stream = new ClaudeMessageStream({ tools: run.tools, summaryVisible: run.summaryVisible, endTurn: !run.fast });
-    let failure: Error | undefined; let exitCode: number | null = null; let fastState: string | undefined; let interrupted = false; let settle: NodeJS.Timeout | undefined;
+    let failure: Error | undefined; let refused = false; let exitCode: number | null = null; let fastState: string | undefined; let interrupted = false; let settle: NodeJS.Timeout | undefined;
     let end: ClaudeStreamEnd | undefined; let resultSubtype: string | undefined; let resultError = false; let tokens: ClaudeTokens | undefined; const began = Date.now();
     // Report the tier Claude actually served: Fast only while fast mode stayed on.
     const served = (): { serviceTier?: PublicServiceTier } => run.fast ? { serviceTier: fastState === "on" ? "priority" : "default" } : {};
@@ -311,12 +315,15 @@ export class ClaudeSubscription implements Provider {
       validateForcedChoice(calls, run.choice);
       for (const call of calls) yield { type: "tool", call };
       yield { type: "done", usage: end.usage, accounting: { cacheWriteTokens: end.tokens.cacheWrite }, ...served() };
+    } catch (error) {
+      refused = providerRefusal(error);
+      throw error;
     } finally {
       signal.removeEventListener("abort", cancel); lines.close(); clearTimeout(settle);
       // After a result the CLI exits on its own; anything else is stopped now, including the post-turn summary after end_turn.
       if (resultSubtype && !signal.aborted) { const timer = setTimeout(kill, 500); timer.unref(); child.once("exit", () => clearTimeout(timer)); } else kill();
       const observed = tokens ?? stream.observedTokens;
-      run.replayBudget?.record(observed);
+      run.replayBudget?.record(observed, { refused });
       telemetry("claude_cli", { mode: "oneshot", model: run.alias, effort: run.effort, fast: run.fast ? fastState || "unknown" : undefined, durationMs: Date.now() - began,
         result: end?.kind === "tool_use" || end?.kind === "end_turn" ? end.kind : resultSubtype ?? "none", isError: resultError, exitCode, aborted: signal.aborted && end?.kind !== "end_turn", interrupted, spawnFailed: !!failure, retry: run.retry,
         toolCalls: end?.kind === "tool_use" ? end.calls.length : 0, inputTokens: observed?.input, cacheReadTokens: observed?.cacheRead, cacheWriteTokens: observed?.cacheWrite, outputTokens: observed?.output,

@@ -1,11 +1,13 @@
 import test from "node:test";
+import { sessionKey } from "../providers/claude-live-contract.js";
+import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { ProviderError } from "../providers/provider.js";
 import { ClaudeSubscription } from "../providers/claude.js";
 import { claudeLive } from "../providers/claude-live.js";
 import { ClaudeSession } from "../providers/claude-session.js";
-import { evictable, idleMs, pinReplay, rememberEnd, replayPinned, sessionRegistry } from "../providers/claude-session-registry.js";
+import { evictable, idleMs, pinReplay, refusalHoldRelease, rememberEnd, replayPinned, sessionRegistry } from "../providers/claude-session-registry.js";
 import { systemPrefixCacheReadTokens, systemPrefixOnly } from "../providers/claude-usage.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { installClaudeFixture, type ClaudeFixture, type FixtureScenario } from "./claude-cli-fixture.js";
@@ -186,6 +188,83 @@ test("a crashed session holds its thread: requests are refused without a replay 
     await assert.rejects(turn(provider, [user("first"), said("one"), said("two"), user("later")], thread("c1")), unavailable, "this fixture's CLI dies again");
     assert.deepEqual(await starts(), ["live", "live"], "a thread quiet for an hour may hold a session again, and still never replays");
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
+});
+
+test("a refusal does not hold its thread: the next message reaches Claude in a new session", async () => {
+  const { f, starts, events } = await setup({ replies: [{ refused: true }, { text: "recovered" }, { text: "continued" }] });
+  try {
+    const provider = adapter({ mode: "live", max: 6 });
+    await assert.rejects(turn(provider, [user("first")], thread("refused")), (error: { code?: string; upstream?: { reason?: string } }) => error.code === "invalid_request" && error.upstream?.reason === "reasoning_extraction");
+    assert.equal((await events()).some(entry => entry.outcome === "crashed"), false, "a refusal is not a crash");
+    assert.equal(sessionRegistry().replayUntil.has(keyOf("refused")), false, "and holds nothing");
+    await turn(provider, [user("first"), user("again")], thread("refused"));
+    assert.deepEqual(await starts(), ["live", "live"], "the next message started a new session");
+    await turn(provider, [user("first"), user("again"), said("recovered"), user("more")], thread("refused"));
+    assert.deepEqual(await starts(), ["live", "live"], "and the chat carries on in it");
+  } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
+});
+
+const refusal = (error: { code?: string; upstream?: { reason?: string } }) => error.code === "invalid_request" && error.upstream?.reason === "reasoning_extraction";
+
+test("a refusal still queued when the CLI exits is a refusal, not a crash", async () => {
+  const { f, starts, events } = await setup({ replies: [{ refused: true, exitAfterRefusal: true }, { text: "recovered" }] });
+  try {
+    const provider = adapter({ mode: "live", max: 6 });
+    const stream = provider.infer({ model: "fixture", input: [user("first")] } as ResponsesRequest, new AbortController().signal, thread("refused-exit"))[Symbol.asyncIterator]();
+    // Stop reading mid-turn, so the refusal is queued behind the reader when the process goes.
+    while ((await stream.next()).value?.type !== "text") { /* Up to the first text. */ }
+    await delay(600);
+    await assert.rejects(async () => { while (!(await stream.next()).done) { /* Drain. */ } }, refusal);
+    assert.equal((await events()).some(entry => entry.outcome === "crashed"), false, "the exit is not reported as a crash");
+    assert.equal(sessionRegistry().replayUntil.has(keyOf("refused-exit")), false, "and holds nothing");
+    await turn(provider, [user("first"), user("again")], thread("refused-exit"));
+    assert.deepEqual(await starts(), ["live", "live"]);
+  } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
+});
+
+test("a session from an earlier release does not hold its thread after a refusal", async t => {
+  const prototype = ClaudeSession.prototype as unknown as { failed(attached: unknown, error: unknown): unknown };
+  // What failed() did before refusals had their own outcome: an adopted session keeps this code.
+  t.mock.method(prototype, "failed", function (this: { attached: { turn: { stream: { observedTokens: unknown }; onEnd(end: string, tokens: unknown): void } }; detach(attached: unknown): void; close(outcome: string, reason: string, hard: boolean): Promise<void> }, attached: { turn: { stream: { observedTokens: unknown }; onEnd(end: string, tokens: unknown): void } }, error: unknown) {
+    if (this.attached === attached) { this.detach(attached); attached.turn.onEnd("failed", attached.turn.stream.observedTokens); void this.close("crashed", "invalid_request", true); }
+    return error;
+  });
+  const { f, starts } = await setup({ replies: [{ refused: true }, { text: "recovered" }] });
+  try {
+    const provider = adapter({ mode: "live", max: 6 });
+    await assert.rejects(turn(provider, [user("first")], thread("refused-adopted")), refusal);
+    assert.equal(sessionRegistry().replayUntil.has(keyOf("refused-adopted")), false, "the new request cleared the old session's hold");
+    await turn(provider, [user("first"), user("again")], thread("refused-adopted"));
+    assert.deepEqual(await starts(), ["live", "live"]);
+  } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
+});
+
+test("clearing a refused session's hold leaves a later session's crash hold alone", () => {
+  const registry = sessionRegistry(), scope = "refusal-generation", threadId = "shared";
+  const key = sessionKey(scope, threadId);
+  registry.sessions.set(key, { lastUse: 5 } as never);
+  const release = refusalHoldRelease(scope, threadId);
+  registry.sessions.delete(key);
+  pinReplay(registry, key, 999, "crashed");
+  release();
+  assert.equal(replayPinned(registry, key, 1000), "crashed", "a newer session's real crash stays held");
+  pinReplay(registry, key, 5, "prefix_diverged");
+  release();
+  assert.equal(replayPinned(registry, key, 6), "prefix_diverged", "and so does a hold for another reason");
+  pinReplay(registry, key, 5, "crashed");
+  release();
+  assert.equal(replayPinned(registry, key, 6), undefined, "only the refused session's own hold goes");
+});
+
+test("a refusal the caller also cancelled stays a refusal", async () => {
+  const provider = adapter({ mode: "replay" });
+  const controller = new AbortController();
+  (provider as unknown as { oneShot: () => AsyncGenerator<InferenceEvent> }).oneShot = async function* () {
+    controller.abort();
+    throw new ProviderError("invalid_request", "refused", 400, { code: "invalid_request", event: "claude.result", reason: "reasoning_extraction" });
+    yield* [];
+  };
+  await assert.rejects(async () => { for await (const _ of provider.infer({ model: "fixture", input: [user("first")] } as ResponsesRequest, controller.signal, thread("refused-cancelled"))) { /* Drain. */ } }, refusal);
 });
 
 test("a returning thread costs live sessions no more cache than replay would have", async () => {

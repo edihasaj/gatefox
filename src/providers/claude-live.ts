@@ -218,9 +218,9 @@ function start(registry: SessionRegistry, settings: Settings, session: ClaudeSes
     begin, prefix, stream: input.newStream(), tools: input.tools, choice: input.choice, fast: input.fast, signal,
     onUsage: input.onUsage, onContextWindow: input.onContextWindow,
     onEnd: (end, tokens) => {
-      input.replayBudget?.record(tokens);
+      input.replayBudget?.record(tokens, { refused: end === "refused" });
       telemetry("claude_session", {
-        ...decision, ...(end === "interrupted" ? { outcome: "interrupted" } : {}), failed: end === "failed" || undefined,
+        ...decision, ...(end === "interrupted" ? { outcome: "interrupted" } : {}), failed: end === "failed" || end === "refused" || undefined,
         systemPrefixOnly: decision.outcome === "spawned" || decision.outcome === "reseeded" ? systemPrefixOnly(tokens?.cacheRead, tokens?.cacheWrite) : undefined,
         liveSessions: registry.sessions.size, perTurnEffort: session.perTurnEffort,
         inputTokens: tokens?.input, cacheReadTokens: tokens?.cacheRead, cacheWriteTokens: tokens?.cacheWrite, outputTokens: tokens?.output,

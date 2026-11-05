@@ -1,5 +1,5 @@
 import { contextCacheBudget, type CacheCounts } from "./context-cache-budget.js";
-import type { InferenceContext, Provider, ProviderCacheUsage } from "./providers/provider.js";
+import { providerRefusal, type InferenceContext, type Provider, type ProviderCacheUsage } from "./providers/provider.js";
 import type { InferenceEvent, ResponsesRequest, Usage, UsageAccounting } from "./protocol/types.js";
 
 const valid = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
@@ -44,13 +44,17 @@ export async function* cacheGuardedInference(provider: Provider, request: Respon
     if (next.complete || !observed?.complete || valid(next.input) && valid(observed.input) && next.input > observed.input) observed = next;
     context.observeCacheUsage?.(value);
   };
+  let refused = false;
   try {
     for await (const event of provider.infer(request, signal, { ...context, observeCacheUsage, callerCancelled })) {
       if (event.type === "usage" || event.type === "done") observeCacheUsage(reported(event.usage, event.accounting));
       if (event.type === "done" && event.interrupted !== true) finished = true;
       yield event;
     }
+  } catch (error) {
+    refused = providerRefusal(error);
+    throw error;
   } finally {
-    try { budget.record(observed, { cancelled: callerCancelled() }); } finally { finishActivity(); }
+    try { budget.record(observed, { cancelled: callerCancelled(), refused }); } finally { finishActivity(); }
   }
 }
