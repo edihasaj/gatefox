@@ -24,6 +24,8 @@ export interface InferenceContext {
   /** Legacy SDK capability retained for wire compatibility; never authorizes cache-driven compaction. */
   cacheRecovery?: true;
   observeCacheUsage?: (usage: ProviderCacheUsage) => void;
+  /** True once the caller itself cancelled this unfinished request; a timeout or shutdown is not a cancellation. */
+  callerCancelled?: () => boolean;
   sessionId?: string; threadId?: string; turnId?: string; windowId?: string; requestKind?: InferenceRequestKind;
   clientProtocol?: "responses" | "messages"; adaptiveThinking?: boolean;
   /** Opaque sticky-routing token that Codex echoes for the rest of a turn. */

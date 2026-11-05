@@ -45,16 +45,32 @@ retry loops cannot age their own block away. Actual cache reads still clear the
 consecutive-miss count. Intermittent misses separated by successful reuse do not
 constitute continuous uncached processing under this policy.
 
+A follow-up sent during a turn cancels that request, and that says nothing about
+whether the cache works. It can also end the live session, as when Claude was
+writing a tool call, so the next request has to rebuild the chat. Gateway therefore
+does not count a request the caller cancelled before it finished, and it excuses the
+one rebuild after that cancellation. On 5 November 2026 two follow-ups in a row
+counted as two misses, and Gateway stopped a request that would have continued the
+rebuilt session cheaply. Only a caller's own cancellation qualifies: a timeout or
+shutdown still counts, and a client that disconnects after a finished response
+cancelled nothing. A chat can excuse four rebuilds this way; a real cache read of at
+least 65,536 tokens or a five-minute idle restores that allowance. After four, ordinary counting resumes, so
+a client that disconnects and retries in a loop still reaches the stop. The stop can
+therefore only follow a follow-up if more than four rebuilds in a row were cancelled
+or excused with no cache reuse between them.
+
 The idle-aware policy's one-time adoption grants inactive inherited histories a
 fresh bounded warm-up, including old entries without trustworthy timestamps.
 In-flight conversations retain their history. A process-wide adoption marker
 prevents later module reloads from repeatedly clearing a safety stop. A late
 legacy write after that handoff stays conservative until real idle is observed.
 Provider, model and caller identity remain
-the scope. No new user turn, reconnect or provider reseed alone resets the guard.
+the scope. No new user turn, reconnect or provider reseed alone resets the guard;
+only the cancellation rule above excuses a rebuild.
 
-A cache failure receives a final HTTP 400 or terminal stream error explaining
-that cache/session continuity needs repair. It never reports
+A cache failure receives a final HTTP 400 or terminal stream error telling the
+person to wait 5 minutes without sending anything and then send one message, because
+each attempt during the pause restarts the wait. It never reports
 `context_length_exceeded`, marks a client's context full, or instructs automatic
 compaction. Real provider context overflows retain their normal context-limit
 code. Unchanged reconnects cannot repeat costly inference. Legacy
