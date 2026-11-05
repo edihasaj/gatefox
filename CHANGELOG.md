@@ -6,8 +6,8 @@
   name such as `tool=` or `tool_1=apply_patch`, and the gateway treated that as a final
   failure, so the worker's turn ended and its parent moved the task to Sonnet. Over the last
   two weeks 83 of 113 failed Qwen turns ended this way, and 83 of 234 Qwen workers lost at
-  least one turn. The failure is now retryable, so Codex asks again and the model samples a
-  new answer. Every call in a batch is checked before any is released, so a retry cannot
+  least one turn. The failure is now retryable, so a Codex client asks again and the model
+  samples a new answer. Every call in a batch is checked before any is released, so a retry cannot
   repeat a call that already ran.
 
 - Reconnecting no longer hangs on attachment requests. The app asks about dozens of chats

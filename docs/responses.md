@@ -210,9 +210,11 @@ still fail. This applies to both Responses and Messages ingress.
 
 A garbled call from a sampled Chat Completions model is a retryable failure, not a
 final one. An unknown tool name, invalid JSON arguments or invalid tool input fails
-the stream with `malformed_tool_call`, so Codex retries the turn's request and the
-model samples again; `stream_max_retries` bounds the attempts. Gateway itself does
-not replay the request. It checks every call in a batch before releasing any of
+the stream with `malformed_tool_call`, so Codex retries the request under its own
+stream retry limit and the model samples again. Gateway itself does not replay the
+request, and a caller that pins a temperature of zero can receive the same bad call
+again. Over Messages ingress the same failure arrives as `api_error`, and retrying is
+that client's decision. It checks every call in a batch before releasing any of
 them, because a client runs a call as it arrives and a retry would otherwise repeat
 a valid sibling. Identity faults that do not depend on sampling, such as a duplicate
 or missing call ID, a changed ID or an unselected tool, stay final as
