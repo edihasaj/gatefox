@@ -188,7 +188,8 @@ for (const tag of ["authtool", "authupdate", "authinfo", "authusage", "authperm"
       const error = await rejected(turn(provider, request));
       assert.ok(error instanceof ProviderError && error.status === 401 && error.code === "authentication", `a 401, got ${error?.code}`);
       assert.ok(await gone(h, await h.pids()));
-      assert.equal(Object.values((await store(h)).entries)[0]?.reason, "session_dead", "the reservation stays");
+      // `gone` sees the process leave before the store's write lands, so wait for the write.
+      assert.ok(await until(async () => Object.values((await store(h)).entries)[0]?.reason === "session_dead"), "the reservation stays");
       refusal(await rejected(turn(provider, request)), /session_dead/);
       assert.equal((await h.pids()).length, 1, "no second CLI started");
     } finally { await h.restore(); }
@@ -205,6 +206,6 @@ test("setup-only notifications before a first-prompt sign-in failure still relea
       assert.ok(await gone(h, await h.pids()));
     }
     assert.equal((await h.pids()).length, 2, "the retry started a CLI");
-    assert.deepEqual(Object.keys((await store(h)).entries), []);
+    assert.ok(await until(async () => Object.keys((await store(h)).entries).length === 0), "the reservation is released");
   } finally { await h.restore(); }
 });
