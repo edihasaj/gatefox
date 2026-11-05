@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { AppServerBackends } from "../app-server-backends.js";
 import { DesktopCatalog } from "../desktop-catalog.js";
 import { startExecutionHost, executionHostHome } from "../execution-host.js";
+import { ExecutionHostClient } from "../execution-host-client.js";
 import { SocketAppServerConnection } from "../socket-app-server-connection.js";
 import type { Message } from "../app-server-connection.js";
 import { writePrivateJson, type GatewayConfig } from "../config.js";
@@ -401,6 +402,68 @@ test("shared executors without priority metadata do not override the native fast
     const gateway = (await f.backends.request("fixture/features", { threadId: "ordinary-chat" })).cliFeatures as Message;
     assert.equal(gateway["features.fast_mode"], false);
     assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), f.nativeConfig);
+  } finally { await f.clean(); }
+});
+
+// A reconnecting app asks about dozens of unloaded chats at once. Each acquire carries the whole catalog over the host's one
+// socket, so one per chat filled its send queue ("send queue is full") and most of the burst failed.
+/** Holds every acquire until the test opens it, so a burst's callers have all joined whatever the machine's load. */
+function heldAcquires(t: { after(fn: () => void): void }) {
+  const original = ExecutionHostClient.prototype.acquire;
+  const held = { revisions: [] as string[], fail: false, gate: Promise.resolve(), open: () => {}, hold() { held.gate = new Promise<void>(resolve => { held.open = resolve; }); } };
+  ExecutionHostClient.prototype.acquire = async function (descriptor) {
+    held.revisions.push(descriptor.revision); await held.gate;
+    if (held.fail) throw new Error("fixture acquire failed");
+    return original.call(this, descriptor);
+  };
+  t.after(() => { ExecutionHostClient.prototype.acquire = original; });
+  return held;
+}
+const until = async (check: () => boolean) => { for (let i = 0; i < 2000 && !check(); i++) await delay(5); assert.ok(check()); };
+
+test("a burst of requests for unloaded gateway chats shares one acquire, and a failed one is not remembered", { timeout: 20000 }, async t => {
+  const f = await fixture(); const held = heldAcquires(t);
+  const internals = f.backends as unknown as { generationDescriptor: (...args: unknown[]) => Promise<unknown> };
+  const described = internals.generationDescriptor; let joined = 0;
+  internals.generationDescriptor = function (...args) { return described.apply(this, args).finally(() => { joined++; }); };
+  const burst = async (ids: string[]) => {
+    joined = 0; held.revisions.length = 0; held.hold();
+    for (const id of ids) await f.save({ id, model: alias, modelProvider: "subscription_gateway" });
+    const results = Promise.allSettled(ids.map(id => f.backends.request("thread/attachment/list", { threadId: id })));
+    await until(() => joined === ids.length); await delay(20); held.open();
+    return results;
+  };
+  try {
+    held.fail = true;
+    const failed = await burst(["a", "b", "c", "d"].map(id => "failing-" + id));
+    assert.ok(failed.every(result => result.status === "rejected")); assert.equal(held.revisions.length, 1, "the callers waiting on one acquire share its failure");
+    held.fail = false;
+    const results = await burst(Array.from({ length: 40 }, (_, index) => `burst-${index}`));
+    assert.deepEqual(results.filter(result => result.status === "rejected"), []);
+    assert.equal(held.revisions.length, 1, "forty requests, one acquire");
+    const served = (await f.rpcLog()).filter(row => row.method === "thread/attachment/list");
+    assert.equal(served.length, 40); assert.equal(new Set(served.map(row => row.pid)).size, 1, "all on one generation");
+  } finally { await f.clean(); }
+});
+
+test("a request does not join an acquire for other settings, or one on a host connection that was replaced", { timeout: 20000 }, async t => {
+  const f = await fixture(); const held = heldAcquires(t); held.hold();
+  const internals = f.backends as unknown as { acquireFlights: Map<string, unknown>; native: { request: (method: string, params: Message) => Promise<Message> } };
+  try {
+    for (const id of ["one", "two", "three"]) await f.save({ id, model: alias, modelProvider: "subscription_gateway" });
+    const first = f.backends.request("thread/attachment/list", { threadId: "one" });
+    await until(() => held.revisions.length === 1);
+    // The live agent limit changes while the first acquire waits: the next request needs another generation.
+    const read = internals.native.request.bind(internals.native);
+    internals.native.request = (method, params) => method === "config/read" ? Promise.resolve({ config: { agents: { max_concurrent_threads_per_session: 1 } } }) : read(method, params);
+    const second = f.backends.request("thread/attachment/list", { threadId: "two" });
+    await until(() => held.revisions.length === 2); assert.notEqual(held.revisions[0], held.revisions[1]);
+    held.open(); await Promise.all([first, second]);
+    assert.equal(internals.acquireFlights.size, 0, "settled acquires are not kept");
+    // An acquire still waiting on a connection that has since been replaced never answers; a new request must not wait for it.
+    internals.acquireFlights.set(held.revisions[1]!, { pool: {}, acquiring: new Promise(() => {}) });
+    await f.backends.request("thread/attachment/list", { threadId: "three" });
+    assert.equal(held.revisions.length, 3);
   } finally { await f.clean(); }
 });
 

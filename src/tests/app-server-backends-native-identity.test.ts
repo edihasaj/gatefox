@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -180,9 +180,11 @@ test("a connection keeps its legacy new-chat identity when its pruned release re
     const backends = await f.open();
     await backends.request("thread/start", { fixtureId: "before-recovery", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" });
     f.setRuntime({ executable: join(f.directory, "codex"), binarySha256: "d".repeat(64), selectedModelCompaction: true, executorIdentity: true, codeModeHost: false });
+    await utimes(f.sdk, new Date(), new Date(Date.now() + 1000)); // The recovery is a change on disk, which is what makes the adapter verify again.
     const after = await backends.request("thread/start", { fixtureId: "after-recovery", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" });
     assert.equal(after.modelProvider, "subscription_gateway");
     assert.equal((await f.saved())["after-recovery"].requested, "subscription_gateway");
+    assert.equal((await f.launches()).filter(launch => launch.gateway).length, 2, "the recovered SDK runs as a new generation");
   } finally { await f.clean(); }
 });
 
@@ -191,7 +193,7 @@ test("an openai connection still refuses a missing recovered SDK", { timeout: 20
   try {
     const backends = await f.open();
     await backends.request("thread/start", { fixtureId: "before-loss", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" });
-    f.setRuntime(undefined);
+    await unlink(f.sdk); f.setRuntime(undefined); // The file is gone too: an unchanged SDK's answer is kept, so only its loss is news.
     await assert.rejects(backends.request("thread/start", { fixtureId: "after-loss", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" }),
       /executor changed while this desktop connection was open/);
   } finally { await f.clean(); }

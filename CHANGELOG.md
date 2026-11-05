@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Reconnecting no longer hangs on attachment requests. The app asks about dozens of chats
+  when it reconnects, and for each unloaded gateway chat the adapter hashed the whole
+  gateway SDK (367 MB) and sent the host its whole catalog (3 MB). Forty at once took about
+  35 seconds of hashing, then overflowed the socket's 16 MiB send limit, so most of them
+  failed with "send queue is full". Concurrent requests now share one acquire, and the adapter
+  does not hash an unchanged SDK again. Anything that spawns the SDK still verifies its bytes.
+
 - An older SSH listener now retires within about two minutes of being asked instead of
   declining indefinitely. A listener declines a request to retire when the connected app
   sent anything in the last 30 seconds, and the proxy's checks fell in step with the app's

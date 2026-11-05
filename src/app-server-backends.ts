@@ -9,7 +9,7 @@ import { ExecutionHostClient, nativeFallbackReason, type NativeFallbackReason, t
 import { nothingToJoin, type PrivateNativeLease } from "./native-execution-host-storage.js";
 import { privateNativeOwnership, refusedFallback, underPrivateLease } from "./native-fallback.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
-import type { ExecutionRecord } from "./execution-host-engine.js";
+import type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
 import { sameSocketIdentity, socketIdentity, type SocketIdentity } from "./execution-host-storage.js";
 import { CallbackHistoryFull, CallbackLedger, CallbackReplayed, PROTECTED_CALLBACKS } from "./callback-state.js";
 import { canonicalJson, isReleaseSkew } from "./execution-host-engine.js";
@@ -25,6 +25,7 @@ import { hostLossGraceMs, reconnectNativeHost } from "./native-host-reconnect.js
 import { setTimeout as delay } from "node:timers/promises";
 import { readServicePlan } from "./service-plan.js";
 import { gatewaySdkRuntime, type GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
+import { memoizedRuntime } from "./gateway-runtime-memo.js";
 import { nativeThreadAbsent } from "./native-thread-absence.js";
 import { withStagedQueueInput } from "./queued-attachments.js";
 import { BoundedIdSet } from "./bounded-id-set.js";
@@ -78,6 +79,8 @@ export class AppServerBackends {
   private closing = false;
   private creating: Promise<unknown> = Promise.resolve();
   private poolPending?: Promise<ExecutionHostClient | undefined>;
+  /** The acquire running for each generation, and the host connection it runs on; see `gateway()`. */
+  private readonly acquireFlights = new Map<string, { pool: ExecutionHostClient; acquiring: Promise<ExecutionRecord> }>();
   /** The last live host connection `pool()` handed out; a re-attach reads it, synchronously, for its reason. */
   private poolClient?: ExecutionHostClient;
   private nativeHost?: { client: ExecutionHostClient; record: NativeLaunchRecord };
@@ -110,6 +113,8 @@ export class AppServerBackends {
   private readonly catalogs: IdentityCatalogs = { aliases: () => this.gatewayAliases(), nativeSlugs: () => this.catalog.nativeSlugs ?? noSlugs };
   /** Finds and verifies the package's gateway SDK; a test can stand in for it. */
   resolveRuntime: () => Promise<GatewaySdkRuntime | undefined> = () => gatewaySdkRuntime();
+  /** The same answer without hashing the SDK again while its files are unchanged. It names the SDK; every spawn still verifies. */
+  private readonly knownRuntime = memoizedRuntime(() => this.resolveRuntime());
   private chatProvider?: string;
   /** How each gateway chat was loaded, and the one re-attach per chat at a time when its executor is gone. */
   private readonly loads = new ChatLoads();
@@ -759,13 +764,35 @@ export class AppServerBackends {
     if (owner.connection.closed) { owner.requests--; return undefined; }
     return { engine: owner, reserved: true };
   }
+  /** The generation this connection needs now, from the catalog it observed and the settings as they are at this moment. */
+  private async generationDescriptor(snapshot: ReturnType<DesktopCatalog["current"]>, runtime: GatewaySdkRuntime | undefined, provider: string, priority: boolean): Promise<{ descriptor: ExecutionDescriptor; compaction: CompactionSnapshot }> {
+    if (!this.initialized) throw new Error("Initialize the desktop connection before starting a gateway chat");
+    const latest = object((await this.native.request("config/read", {})).config);
+    const clientSettings = { ...this.settings, ...(latest.agents ? { agents: latest.agents } : {}) };
+    const omitted = new Set(["desktop", "model", "model_provider", "model_catalog_json", "model_reasoning_effort", "model_reasoning_summary", "service_tier", "model_providers", "openai_api_key", "forced_login_method", "forced_chatgpt_workspace_id"]);
+    // ChatGPT picks features by the native engine's version; the pinned gateway SDK is older, so trim both to its schema.
+    const stats = { count: 0 };
+    const settings = trimGatewayFeatureConfig(normalizeCodexFeatureConfig(Object.fromEntries(Object.entries(clientSettings).filter(([key, value]) => !omitted.has(key) && value !== undefined && value !== null))), stats);
+    const forwarded: string[] = [];
+    for (let index = 0; index < this.args.length; index++) {
+      if (["-p", "--profile", "--listen"].includes(this.args[index])) { index++; continue; }
+      if (!this.args[index].startsWith("--profile=") && !this.args[index].startsWith("--listen=") && this.args[index] !== "--stdio") forwarded.push(this.args[index]);
+    }
+    const overrides = { model: snapshot.models[0].slug, ...executorOverrides(provider, this.overrides), "features.step_model_switching": true, ...(priority ? { "features.fast_mode": true } : {}) };
+    const args = trimGatewayFeatureArgs(normalizeCodexFeatureArgs([...gatewayFeatureArgs(forwarded, priority), ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])], settings), stats);
+    reportGatewayFeatureTrim("spawn", stats);
+    const combined = this.catalog.combined(snapshot);
+    const sdk = runtime ? { gatewaySdkSha256: runtime.binarySha256 } : {};
+    const sharedRevision = createHash("sha256").update(canonicalJson({ catalog: combined, settings, args, ...sdk })).digest("hex");
+    return { descriptor: { revision: sharedRevision, args, settings, catalog: combined, aliases: snapshot.models.map(model => String(model.slug)), ...sdk }, compaction: { models: combined.models, settings, args } };
+  }
   private async gateway(): Promise<Engine> {
     if (this.closing) throw new Error("Codex desktop connection is closing");
     if (!this.catalog.current().models.length) await this.catalog.refresh(true);
     // Capture the request's catalog before awaiting the runtime. A concurrent start may refresh its own catalog while the
     // first lookup waits, but it must not change the first generation's observed model rows.
     const observed = this.catalog.current();
-    const runtime = await this.resolveRuntime();
+    const runtime = await this.knownRuntime();
     // An adapter can outlive its original package. The selected runtime, rather than the adapter's module path, decides whether
     // this generation may advertise Code Mode: a gateway SDK only through its verified receipt, the desktop's Codex by its host.
     const snapshot = (this.catalog as DesktopCatalog & { snapshotForExecutor?: (value: typeof observed, codeMode: boolean) => typeof observed })
@@ -778,27 +805,17 @@ export class AppServerBackends {
     const revision = createHash("sha256").update(snapshot.revision + (runtime?.binarySha256 || "") + provider).digest("hex");
     const pool = await this.pool();
     if (pool) {
-      if (!this.initialized) throw new Error("Initialize the desktop connection before starting a gateway chat");
-      const latest = object((await this.native.request("config/read", {})).config);
-      const clientSettings = { ...this.settings, ...(latest.agents ? { agents: latest.agents } : {}) };
-      const omitted = new Set(["desktop", "model", "model_provider", "model_catalog_json", "model_reasoning_effort", "model_reasoning_summary", "service_tier", "model_providers", "openai_api_key", "forced_login_method", "forced_chatgpt_workspace_id"]);
-      // ChatGPT picks features by the native engine's version; the pinned gateway SDK is older, so trim both to its schema.
-      const stats = { count: 0 };
-      const settings = trimGatewayFeatureConfig(normalizeCodexFeatureConfig(Object.fromEntries(Object.entries(clientSettings).filter(([key, value]) => !omitted.has(key) && value !== undefined && value !== null))), stats);
-      const forwarded: string[] = [];
-      for (let index = 0; index < this.args.length; index++) {
-        if (["-p", "--profile", "--listen"].includes(this.args[index])) { index++; continue; }
-        if (!this.args[index].startsWith("--profile=") && !this.args[index].startsWith("--listen=") && this.args[index] !== "--stdio") forwarded.push(this.args[index]);
+      const { descriptor, compaction } = await this.generationDescriptor(snapshot, runtime, provider, priority);
+      // The app asks about many unloaded chats at once when it reconnects, and each acquire carries the whole catalog (megabytes)
+      // over the host's one socket. Callers asking for the same generation on the same host connection share one acquire: the
+      // host keeps that connection's leases as a set, so one covers them all, and each caller still reserves the engine itself.
+      let flight = this.acquireFlights.get(descriptor.revision);
+      if (flight?.pool !== pool) {
+        const acquiring: Promise<ExecutionRecord> = this.releaseIdleShared(descriptor.revision).then(() => pool.acquire(descriptor)).catch(markHostFailure)
+          .finally(() => { if (this.acquireFlights.get(descriptor.revision)?.acquiring === acquiring) this.acquireFlights.delete(descriptor.revision); });
+        this.acquireFlights.set(descriptor.revision, flight = { pool, acquiring });
       }
-      const overrides = { model: snapshot.models[0].slug, ...executorOverrides(provider, this.overrides), "features.step_model_switching": true, ...(priority ? { "features.fast_mode": true } : {}) };
-      const args = trimGatewayFeatureArgs(normalizeCodexFeatureArgs([...gatewayFeatureArgs(forwarded, priority), ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])], settings), stats);
-      reportGatewayFeatureTrim("spawn", stats);
-      const combined = this.catalog.combined(snapshot);
-      const sdk = runtime ? { gatewaySdkSha256: runtime.binarySha256 } : {};
-      const sharedRevision = createHash("sha256").update(canonicalJson({ catalog: combined, settings, args, ...sdk })).digest("hex");
-      await this.releaseIdleShared(sharedRevision);
-      const record = await pool.acquire({ revision: sharedRevision, args, settings, catalog: combined, aliases: snapshot.models.map(model => String(model.slug)), ...sdk }).catch(markHostFailure);
-      return this.shared(record, { models: combined.models, settings, args }, provider);
+      return this.shared(await flight.acquiring, compaction, provider);
     }
     if (!snapshot.models.length) throw new Error("No gateway models are currently offered; check the gateway catalog");
     const ready = this.engines.find(engine => engine.revision === revision && !engine.connection.closed);
@@ -807,6 +824,9 @@ export class AppServerBackends {
       if (this.closing) throw new Error("Codex desktop connection is closing");
       const existing = this.engines.find(engine => engine.revision === revision && !engine.connection.closed);
       if (existing) { existing.requests++; return existing; }
+      // This connection is about to spawn the SDK itself, so the bytes are verified now rather than remembered.
+      const verified = await this.resolveRuntime();
+      if (verified?.binarySha256 !== runtime?.binarySha256 || verified?.executable !== runtime?.executable) throw Object.assign(new Error("The gateway executor changed while this desktop connection was open; reconnect to continue gateway chats"), { code: -32001 });
       for (let index = this.engines.length - 1; index >= 0; index--) {
         const old = this.engines[index];
         if (old.connection.closed || (!old.requests && !old.threads.size && !old.active.size)) { old.detaching = true; stopConnection(old.connection, "replaced"); await old.connection.exited; this.engines.splice(index, 1); }
