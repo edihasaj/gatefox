@@ -287,10 +287,37 @@ that is not listed here.
 
 | Field | Result |
 | --- | --- |
-| `safeguards` | Claude Code retries without it and uses its built-in auto-mode classifier. |
+| `safeguards` | Claude Code retries without it and uses its built-in auto-mode classifier; see [auto mode](#auto-mode). |
 | Tool `defer_loading` | Tool search is unsupported. From Claude Code 2.1.305 the client retries with every MCP tool loaded upfront. On 2.1.299, setting `ENABLE_TOOL_SEARCH=true` ends in `API Error: 400`. |
 | Mid-conversation `system` messages on `anthropic-api` routes | The route refuses them, and Claude Code 2.1.299 sends them on every request without recovering. **`anthropic-api` routes do not currently work with Claude Code.** The update check records this and continues. |
-| `stop_sequences` and `thinking: disabled` on side requests | The auto-mode classifier fails on these. **Auto mode cannot approve a guarded action through this gateway:** in the check, the action does not run. Claude Desktop has a separate [native review path](claude-desktop.md#native-auto-review). |
+
+## Auto mode
+
+Auto mode asks a classifier to review actions before Claude Code runs them. That
+request names `claude-sonnet-5`, disables thinking, and has no tools. Gateway sends
+exactly that shape to a real Claude model, through the same restricted one-turn,
+tool-free CLI run that Claude Desktop uses:
+
+```text
+classifier request
+  ├─ exact shape + one Claude subscription route → one-turn Claude review
+  └─ anything else → refused → Claude Code tries its fallback, then denies the action
+```
+
+The route must be unambiguous. With two Claude accounts, set `defaultForBareModels`
+on one, or the request is refused. Gateway invents no verdict: a refusal, a
+truncated reply or an unavailable CLI stays a failure. Requests are limited to
+256 KiB and two at a time, and each review spends the Claude subscription.
+
+| What to expect | Why |
+| --- | --- |
+| An action you asked for by name can run, even a risky one | Auto mode weighs user intent. It is not a sandbox. |
+| With no Claude route, a Chat Completions main model reviews its own actions | When the first review fails, Claude Code retries on the main model with `stop_sequences`. Chat routes accept that, so Qwen would act as the reviewer. Subscription and Responses routes refuse it, and the action is denied. |
+
+On November 6, 2026, real Claude Code 2.1.299 ran in auto mode with a scripted main
+model and real Claude review. It denied a piped remote script, a credential upload
+and `rm -rf ~/Documents`, none of which the user had asked for, and allowed `git
+status`. When the user asked by name for a piped script, it allowed the command.
 
 ## Verification
 

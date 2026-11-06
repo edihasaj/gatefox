@@ -124,3 +124,14 @@ test("Claude Code's hint headers reach routing only on Messages, and a subagent 
     assert.ok(contexts[3].sessionId?.startsWith(`${session}:agent-`));
   } finally { await gateway.close(); }
 });
+
+test("a classifier request with no Claude route stays refused and never reaches a provider", async () => {
+  let calls = 0;
+  const gateway = await fixture({ async *infer() { calls++; yield { type: "done", usage }; } });
+  try {
+    const classifier = { model: "claude-sonnet-5", max_tokens: 64, stop_sequences: ["</severity>"], thinking: { type: "disabled" }, messages: [{ role: "user", content: "review" }] };
+    const response = await gateway.post(classifier, { "x-claude-code-request-class": "auxiliary" });
+    assert.equal(response.status, 400);
+    assert.equal(calls, 0);
+  } finally { await gateway.close(); }
+});

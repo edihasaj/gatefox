@@ -17,6 +17,7 @@ import { ResponsesWriter } from "./protocol/responses.js";
 import { MessagesWriter, anthropicError } from "./protocol/messages.js";
 import { messagesToResponses } from "./protocol/messages-request.js";
 import { messagesAgentId, messagesRequestKind } from "./protocol/messages-session.js";
+import { nativeReviewTarget, serveNativeReview } from "./claude-native-review.js";
 import { messagesProviderRequest } from "./protocol/messages-routing.js";
 import { responsesToChatRequest } from "./protocol/request.js";
 import { reportDroppedSearch } from "./protocol/tool-search-bridge.js";
@@ -401,6 +402,14 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     res.once("close", cancel);
     try {
       const wire = await body(req);
+      const review = messagesProtocol && !countTokens ? await nativeReviewTarget(state.config, wire, req.headers) : undefined;
+      if (review) {
+        providerId = review.provider.id; providerType = review.provider.type; model = review.alias; requestedModel = review.nativeModel;
+        send(res, 200, { ...await serveNativeReview(review, req.headers, controller.signal), model: review.nativeModel });
+        telemetry("claude_native_review", { requestId, provider: providerId, durationMs: Date.now() - startedAt });
+        ledger("completed");
+        return;
+      }
       const translated = messagesProtocol ? messagesToResponses(wire, { countTokens, agentId: messagesAgentId(req.headers) }) : wire;
       // Internal wire fields and control items go once, here, whichever protocol the request arrived in.
       const internal = stripOpenAIInternal(translated); const request = internal.request; droppedControlItems = internal.droppedControlItems;
