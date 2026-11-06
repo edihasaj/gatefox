@@ -22,10 +22,14 @@ test('a known field is a recovered rejection, and an unknown one is a new shape'
   assert.equal(classifyRequest({ ...body, safeguards: [], brand_new_field: true }, gateway).verdict, 'new_rejection', 'a known field cannot hide a new one');
 });
 
-test('the classifier controls are only known on a side request', () => {
-  const classifier = { ...body, stop_sequences: ['x'], thinking: { type: 'disabled' } };
-  assert.equal(classifyRequest(classifier, gateway, undefined, 'auxiliary').verdict, 'known_rejection');
-  assert.equal(classifyRequest(classifier, gateway, undefined, 'main').verdict, 'new_rejection');
+const classifier = { model: 'claude-sonnet-5', max_tokens: 64, stop_sequences: ['</severity>'], thinking: { type: 'disabled' }, messages: [{ role: 'user', content: 'hi' }] };
+
+test('only the exact classifier shape on a side request counts as a native review', () => {
+  assert.equal(classifyRequest(classifier, gateway, undefined, 'auxiliary').verdict, 'native_review');
+  assert.equal(classifyRequest(classifier, gateway, undefined, 'main').verdict, 'new_rejection', 'the main conversation is never reviewed natively');
+  for (const changed of [{ max_tokens: 65 }, { stop_sequences: ['</verdict>'] }, { tools: [{ name: 't', input_schema: { type: 'object' } }] }, { thinking: { type: 'adaptive' } }, { stream: true }, { model: 'codex/gpt' }, { unknown_classifier_field: true }]) {
+    assert.notEqual(classifyRequest({ ...classifier, ...changed }, gateway, undefined, 'auxiliary').verdict, 'native_review', JSON.stringify(changed));
+  }
 });
 
 const accepted = { verdict: 'accepted', fields: [], topLevel: [], toolFields: [], betas: [], requestClass: 'main', agent: false, parentSessionId: 'session', sessionId: 'session' };
@@ -43,8 +47,10 @@ test('a clean run passes and every lost contract fails', () => {
   assert.ok(failing(plain, [{ ...accepted, parentSessionId: undefined }]).includes('session_identity_missing'));
   assert.ok(failing({ name: 'read', script: 'read' }, [accepted]).includes('tool_result_missing'));
   assert.ok(failing({ name: 'agent', expectSubagent: true }, [accepted, { ...accepted, agent: true }]).includes('subagent_identity_shared'));
-  assert.ok(failing({ name: 'auto', permissionMode: 'auto' }, [accepted, { ...accepted, agent: true, sessionId: 'child' }]).includes('auto_review_behavior_changed'));
+  const reviewed = { ...accepted, verdict: 'native_review' };
   assert.ok(failing({ name: 'auto', permissionMode: 'auto' }, [accepted]).includes('classifier_missing'), 'a run with no classifier proves nothing');
+  assert.ok(failing({ name: 'auto', permissionMode: 'auto' }, [accepted, reviewed]).includes('reviewed_action_did_not_run'));
+  assert.deepEqual(failing({ name: 'auto', permissionMode: 'auto' }, [accepted, reviewed, { ...accepted, agent: true, sessionId: 'child' }]), []);
   assert.ok(failing({ name: 'mcp', mcp: true }, [{ ...accepted, mcpTools: 0 }]).includes('mcp_tools_missing'));
   assert.deepEqual(failing({ name: 'mcp', mcp: true }, [{ ...accepted, mcpTools: 60 }]), []);
   assert.ok(failing(plain, [accepted], { ...finished, code: 1 }).includes('client_exit'), 'success text does not excuse a failed exit');

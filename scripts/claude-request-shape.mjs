@@ -34,6 +34,8 @@ const sorted = values => [...new Set(values)].sort();
 
 /** One verdict for one captured request, using the checkout's real parser and routing rules. */
 export function classifyRequest(body, gateway, agentId, requestClass) {
+  // The exact classifier shape goes to a real Claude review. A changed shape falls through, is refused, and blocks the update.
+  if (requestClass === 'auxiliary' && gateway.isSupportedClassifierRequest(body)) return { verdict: 'native_review', fields: [] };
   const attempt = candidate => {
     try {
       const request = gateway.messagesToResponses(candidate, { agentId });
@@ -51,9 +53,6 @@ export function classifyRequest(body, gateway, agentId, requestClass) {
     for (const key of knownToolFields) if (key in copy) { delete copy[key]; known.push(key); }
     return copy;
   });
-  // Only the side classifier sends these. Claude Code's auto mode cannot review an action through Gateway until they are bridged.
-  if (requestClass === 'auxiliary' && 'stop_sequences' in stripped) { delete stripped.stop_sequences; known.push('stop_sequences'); }
-  if (requestClass === 'auxiliary' && stripped.thinking?.type === 'disabled') { delete stripped.thinking; known.push('thinking_disabled'); }
   if (known.length && attempt(stripped).accepted) return { verdict: 'known_rejection', error: direct.error, fields: sorted(known) };
   const dropped = Object.keys(body).filter(key => attempt(Object.fromEntries(Object.entries(body).filter(([name]) => name !== key))).accepted);
   return { verdict: 'new_rejection', error: direct.error, fields: sorted(dropped) };
@@ -150,6 +149,12 @@ function backend(gateway, state, adapters) {
       const agentId = typeof req.headers['x-claude-code-agent-id'] === 'string' ? req.headers['x-claude-code-agent-id'] : undefined;
       const requestClass = req.headers['x-claude-code-request-class'];
       const result = classifyRequest(body, gateway, agentId, requestClass);
+      if (result.verdict === 'native_review') {
+        state.requests.push({ verdict: 'native_review', fields: [], topLevel: Object.keys(body), toolFields: [], betas: [], requestClass, agent: false });
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ id: 'msg_review', type: 'message', role: 'assistant', model: body.model, content: [{ type: 'text', text: '<severity>0' }], stop_reason: 'stop_sequence', stop_sequence: '</severity>', usage: { input_tokens: 1, output_tokens: 1 } }));
+        return;
+      }
       if (result.verdict === 'accepted') {
         const refused = await adapterRejection({ ...result.request, model: 'route-model' }, adapters, state.routeRefusals).catch(() => { state.failures.push('adapter_stub_failed'); });
         if (refused) Object.assign(result, { verdict: 'new_rejection', error: refused.error, fields: [`route:${refused.kind}`] });
@@ -231,9 +236,9 @@ export function evaluate(scenario, state, run) {
   if (accepted.some(request => !request.requestClass)) failures.push('request_class_missing');
   if (accepted.some(request => !request.agent && !request.parentSessionId)) failures.push('session_identity_missing');
   if (scenario.mcp && !accepted.some(request => request.mcpTools > 0)) failures.push('mcp_tools_missing');
-  if (scenario.permissionMode === 'auto' && !requests.some(request => request.requestClass === 'auxiliary')) failures.push('classifier_missing');
+  if (scenario.permissionMode === 'auto' && !requests.some(request => request.verdict === 'native_review')) failures.push('classifier_missing');
   if (scenario.script === 'read' && !accepted.some(request => request.toolResult)) failures.push('tool_result_missing');
-  if (scenario.permissionMode === 'auto' && accepted.some(request => request.agent)) failures.push('auto_review_behavior_changed');
+  if (scenario.permissionMode === 'auto' && !accepted.some(request => request.agent)) failures.push('reviewed_action_did_not_run');
   let subagentKey;
   if (scenario.expectSubagent) {
     const agents = accepted.filter(request => request.agent); const main = accepted.find(request => !request.agent);
@@ -260,7 +265,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => { const m 
 export async function loadGateway(checkout) {
   const load = path => import(pathToFileURL(join(resolve(checkout), 'dist', path)).href);
   const [request, routing, messages, session, config, server] = await Promise.all([load('protocol/messages-request.js'), load('protocol/messages-routing.js'), load('protocol/messages.js'), load('protocol/messages-session.js'), load('claude-config.js'), load('server.js')]);
-  return { messagesToResponses: request.messagesToResponses, messagesProviderRequest: routing.messagesProviderRequest, anthropicError: messages.anthropicError, messagesSessionId: session.messagesSessionId, claudeSettings: config.claudeSettings, createProvider: server.createProvider };
+  const native = await import(pathToFileURL(join(resolve(checkout), 'scripts/claude-desktop-native-messages.mjs')).href);
+  return { messagesToResponses: request.messagesToResponses, messagesProviderRequest: routing.messagesProviderRequest, anthropicError: messages.anthropicError, messagesSessionId: session.messagesSessionId, claudeSettings: config.claudeSettings, createProvider: server.createProvider, isSupportedClassifierRequest: native.isSupportedClassifierRequest };
 }
 
 /** Runs every scenario and returns the content-free report. `passed` is false on any new shape. */

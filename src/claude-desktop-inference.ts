@@ -12,6 +12,7 @@ import type { ClaudeLimit } from "./providers/claude-usage.js";
 import { telemetry } from "./telemetry.js";
 import { requestPath } from "./server-upgrade.js";
 import { cacheGuardedNativeMessages } from "./claude-native-cache.js";
+import { completedNativeMessage } from "./claude-native-review.js";
 import { ContextCacheBlocked } from "./context-cache-budget.js";
 
 const nativeRequestLimit = 256 * 1024;
@@ -240,17 +241,6 @@ function nativeCandidate(payload: unknown, routes: Map<string, NativeRoute>): { 
   return route ? { route, payload } : undefined;
 }
 
-function completedNativeMessage(value: unknown, nativeModel: string): Record<string, unknown> | undefined {
-  if (!isRecord(value) || value.type !== "message" || value.role !== "assistant" || value.model !== nativeModel
-    || typeof value.id !== "string" || !value.id || !Array.isArray(value.content) || !value.content.length || !isRecord(value.usage)
-    || !["end_turn", "stop_sequence"].includes(value.stop_reason as string) || (value.stop_reason === "stop_sequence" && typeof value.stop_sequence !== "string")
-    || (value.stop_reason === "end_turn" && value.stop_sequence !== null)) return;
-  const usage = value.usage;
-  if (value.content.some(block => !isRecord(block) || block.type !== "text" || typeof block.text !== "string")) return;
-  if (["input_tokens", "output_tokens"].some(key => typeof usage[key] !== "number" || !Number.isFinite(usage[key]) || usage[key] < 0)) return;
-  return value;
-}
-
 function proxyError(response: ServerResponse, path: string): void {
   if (!response.headersSent && !response.destroyed) writeError(response, path, 502, "upstream_unavailable", "Private gateway backend is unavailable");
   else response.destroy();
@@ -379,7 +369,7 @@ export async function startClaudeDesktopInference(gatewayConfigPath: string, nat
         },
       };
     };
-    backend = await (deps.backendFactory ?? (config => startGateway(config, factory)))({
+    backend = await (deps.backendFactory ?? (config => startGateway(config, factory, undefined, { claudeNativeReview: false })))({
       ...source, port: 0, providers: source.providers.map(provider => contextById.get(provider.id) ?? provider),
     });
     const backendPort = (backend.address() as { port?: number } | null)?.port;

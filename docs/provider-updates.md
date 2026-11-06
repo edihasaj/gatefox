@@ -139,7 +139,7 @@ account or paid inference is involved.
 | `mcp_tools` | A large MCP catalog finishes. |
 | `tool_round_trip` | A real tool call and result pass the parser. |
 | `subagent` | A real subagent keeps its own conversation key. |
-| `auto_review` | The auto-mode classifier fails only in the documented way. |
+| `auto_review` | The classifier keeps the exact shape Gateway reviews natively, and the reviewed action then runs. A changed shape is refused, which blocks the update. |
 
 The check also needs Claude Code's session UUID and request-class header on each
 accepted request, because live sessions and hint handling depend on them.

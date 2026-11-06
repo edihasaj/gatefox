@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Claude Code's auto mode now works through the gateway. Its safety classifier reaches a real Claude
+  model through a restricted, tool-free one-turn run. Previously every review was refused, so guarded
+  actions never ran. With no unambiguous Claude route the request stays refused, and a changed
+  classifier request blocks a Claude Code update.
+
 - A provider account with no balance now fails with a readable message instead of a vague 502.
 
 - Claude Code now works on Qwen and other routes without its default effort. `gateway claude-config`
