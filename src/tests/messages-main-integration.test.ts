@@ -135,3 +135,21 @@ test("a classifier request with no Claude route stays refused and never reaches 
     assert.equal(calls, 0);
   } finally { await gateway.close(); }
 });
+
+test("a backend with native review off refuses the classifier, so Desktop's frontend keeps its explicit settings", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-native-review-"));
+  const config: GatewayConfig = { version: 1, port: 0, stateDirectory: directory, maxConcurrent: 1, providers: [{ id: "claude", type: "claude-subscription", models: { "claude/sonnet": "claude-sonnet-5" } }] };
+  const handler = await createGatewayHandler(config, () => ({ async *infer() { yield { type: "done", usage }; } }), undefined, { onFailure() {}, claudeNativeReview: false });
+  const server = createServer(handler.handle);
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const classifier = { model: "claude-sonnet-5", max_tokens: 64, stop_sequences: ["</severity>"], thinking: { type: "disabled" }, messages: [{ role: "user", content: "review" }] };
+    const response = await fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}/v1/messages`, { method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": await gatewayToken(directory), "x-claude-code-request-class": "auxiliary" }, body: JSON.stringify(classifier) });
+    assert.equal(response.status, 400);
+  } finally {
+    handler.abortAll(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+    for (const until = Date.now() + 5000; !handler.isIdle() && Date.now() < until;) await delay(10);
+    await flushRecords(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});

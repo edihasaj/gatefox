@@ -7,12 +7,21 @@ import type { GatewayConfig, ProviderConfig } from "./config.js";
 import { ContextCacheBlocked } from "./context-cache-budget.js";
 import { nativeModelAlias } from "./model-routing.js";
 import { providerCommand } from "./provider-tool-runtime.js";
+import type { Usage } from "./protocol/types.js";
 import { ProviderError } from "./providers/provider.js";
 
 // Auto reviews already exceed 140 KiB. This is the limit the Desktop path uses, within the native runner's own cap.
 const maxRequestBytes = 262144;
 const reviewTimeoutMs = 60_000;
 const maxConcurrent = 2;
+const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+
+/** The gateway's usage counts for a native reply, which reports reads and writes apart from its input. */
+export function nativeReviewUsage(value: Record<string, unknown>): Usage {
+  const read = count(value.cache_read_input_tokens), written = count(value.cache_creation_input_tokens), output = count(value.output_tokens);
+  const input = count(value.input_tokens) + read + written;
+  return { input_tokens: input, output_tokens: output, total_tokens: input + output, input_tokens_details: { cached_tokens: read, cache_creation_tokens: written } };
+}
 let active = 0;
 
 export interface NativeMessagesOptions {
@@ -21,6 +30,7 @@ export interface NativeMessagesOptions {
 }
 export interface NativeRuntime {
   isNativeClassifierRequest?: (payload: unknown) => boolean;
+  isSupportedClassifierRequest?: (payload: unknown) => boolean;
   runNativeMessages?: (payload: Record<string, unknown>, model: string, options: NativeMessagesOptions) => Promise<Record<string, unknown>>;
 }
 let runtime: Promise<NativeRuntime> | undefined;
@@ -67,7 +77,7 @@ export async function nativeReviewTarget(config: GatewayConfig, wire: unknown, h
   const provider = alias ? config.providers.find(entry => Object.hasOwn(entry.models, alias)) : undefined;
   if (!alias || provider?.type !== "claude-subscription" || provider.models[alias] !== wire.model) return;
   const module = await load().catch(() => undefined);
-  if (module?.isNativeClassifierRequest?.(wire) !== true) return;
+  if (module?.isSupportedClassifierRequest?.(wire) !== true) return;
   return { alias, nativeModel: wire.model, provider, headers: reviewHeaders, payload: wire };
 }
 
@@ -82,7 +92,8 @@ async function absoluteClaude(): Promise<string> {
 }
 
 /** One restricted, tool-free Claude turn. Size, concurrency and cache budgets stay bounded, and any failure stays a failure. */
-export async function serveNativeReview(target: NativeReviewTarget, requestHeaders: IncomingHttpHeaders, signal: AbortSignal, load: () => Promise<NativeRuntime> = nativeRuntimeModule): Promise<Record<string, unknown>> {
+export async function serveNativeReview(target: NativeReviewTarget, requestHeaders: IncomingHttpHeaders, signal: AbortSignal, load: () => Promise<NativeRuntime> = nativeRuntimeModule,
+  onUsage?: (usage: Record<string, unknown>) => void): Promise<Record<string, unknown>> {
   if (Buffer.byteLength(JSON.stringify(target.payload)) > maxRequestBytes) throw new ProviderError("request_too_large", "Claude review request exceeds the allowed size", 413);
   if (active >= maxConcurrent) throw new ProviderError("rate_limit_exceeded", "Claude review concurrency is full; retry shortly", 429);
   active++;
@@ -91,9 +102,10 @@ export async function serveNativeReview(target: NativeReviewTarget, requestHeade
     if (!runNativeMessages) throw new ProviderError("upstream_unavailable", "Claude review is unavailable on this host", 503);
     const command = await absoluteClaude();
     const reply = completedNativeMessage(await cacheGuardedNativeMessages(target.provider, target.payload, requestHeaders, signal, observeCacheUsage =>
-      runNativeMessages(target.payload, target.nativeModel, { command, observeCacheUsage, headers: target.headers, signal, timeoutMs: reviewTimeoutMs, maxRequestBytes,
+      runNativeMessages(target.payload, target.nativeModel, { command, observeCacheUsage: usage => { onUsage?.(usage); observeCacheUsage(usage); }, headers: target.headers, signal, timeoutMs: reviewTimeoutMs, maxRequestBytes,
         ...(target.provider.authDirectory === undefined ? {} : { authDirectory: target.provider.authDirectory }) })), target.nativeModel);
     if (!reply) throw new ProviderError("upstream_unavailable", "Claude review returned an incomplete response", 502);
+    onUsage?.(reply.usage as Record<string, unknown>);
     return reply;
   } catch (error) {
     if (error instanceof ProviderError) throw error;

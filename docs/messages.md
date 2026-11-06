@@ -307,7 +307,9 @@ classifier request
 The route must be unambiguous. With two Claude accounts, set `defaultForBareModels`
 on one, or the request is refused. Gateway invents no verdict: a refusal, a
 truncated reply or an unavailable CLI stays a failure. Requests are limited to
-256 KiB and two at a time, and each review spends the Claude subscription.
+256 KiB and two at a time, take a normal provider admission slot, and appear in the
+usage ledger. Each review spends the Claude subscription. Claude Desktop's private
+backend turns this path off, because its frontend applies its own native settings.
 
 | What to expect | Why |
 | --- | --- |

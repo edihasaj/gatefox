@@ -280,7 +280,7 @@ before spawning. The adapter never truncates a review transcript to make it fit.
 
 Claude Code through the ordinary gateway reaches the same runner; see
 [auto mode](messages.md#auto-mode). This Desktop entry point stays separately
-configured, and it belongs only to the isolated Claude inference component inside
+configured, its backend does not use that general path, and it belongs only to the isolated Claude inference component inside
 the existing app-owned service. It does not share Codex's inference configuration
 or register a Codex client.
 Client cancellation also remains effective while asynchronous classifier

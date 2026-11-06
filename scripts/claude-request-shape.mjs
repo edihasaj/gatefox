@@ -35,7 +35,7 @@ const sorted = values => [...new Set(values)].sort();
 /** One verdict for one captured request, using the checkout's real parser and routing rules. */
 export function classifyRequest(body, gateway, agentId, requestClass) {
   // The exact classifier shape goes to a real Claude review. A changed shape falls through, is refused, and blocks the update.
-  if (requestClass === 'auxiliary' && gateway.isNativeClassifierRequest(body)) return { verdict: 'native_review', fields: [] };
+  if (requestClass === 'auxiliary' && gateway.isSupportedClassifierRequest(body)) return { verdict: 'native_review', fields: [] };
   const attempt = candidate => {
     try {
       const request = gateway.messagesToResponses(candidate, { agentId });
@@ -266,7 +266,7 @@ export async function loadGateway(checkout) {
   const load = path => import(pathToFileURL(join(resolve(checkout), 'dist', path)).href);
   const [request, routing, messages, session, config, server] = await Promise.all([load('protocol/messages-request.js'), load('protocol/messages-routing.js'), load('protocol/messages.js'), load('protocol/messages-session.js'), load('claude-config.js'), load('server.js')]);
   const native = await import(pathToFileURL(join(resolve(checkout), 'scripts/claude-desktop-native-messages.mjs')).href);
-  return { messagesToResponses: request.messagesToResponses, messagesProviderRequest: routing.messagesProviderRequest, anthropicError: messages.anthropicError, messagesSessionId: session.messagesSessionId, claudeSettings: config.claudeSettings, createProvider: server.createProvider, isNativeClassifierRequest: native.isNativeClassifierRequest };
+  return { messagesToResponses: request.messagesToResponses, messagesProviderRequest: routing.messagesProviderRequest, anthropicError: messages.anthropicError, messagesSessionId: session.messagesSessionId, claudeSettings: config.claudeSettings, createProvider: server.createProvider, isSupportedClassifierRequest: native.isSupportedClassifierRequest };
 }
 
 /** Runs every scenario and returns the content-free report. `passed` is false on any new shape. */

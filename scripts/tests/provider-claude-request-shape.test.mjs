@@ -27,7 +27,7 @@ const classifier = { model: 'claude-sonnet-5', max_tokens: 64, stop_sequences: [
 test('only the exact classifier shape on a side request counts as a native review', () => {
   assert.equal(classifyRequest(classifier, gateway, undefined, 'auxiliary').verdict, 'native_review');
   assert.equal(classifyRequest(classifier, gateway, undefined, 'main').verdict, 'new_rejection', 'the main conversation is never reviewed natively');
-  for (const changed of [{ max_tokens: 65 }, { stop_sequences: ['</verdict>'] }, { tools: [{ name: 't', input_schema: { type: 'object' } }] }, { thinking: { type: 'adaptive' } }, { stream: true }, { model: 'codex/gpt' }]) {
+  for (const changed of [{ max_tokens: 65 }, { stop_sequences: ['</verdict>'] }, { tools: [{ name: 't', input_schema: { type: 'object' } }] }, { thinking: { type: 'adaptive' } }, { stream: true }, { model: 'codex/gpt' }, { unknown_classifier_field: true }]) {
     assert.notEqual(classifyRequest({ ...classifier, ...changed }, gateway, undefined, 'auxiliary').verdict, 'native_review', JSON.stringify(changed));
   }
 });

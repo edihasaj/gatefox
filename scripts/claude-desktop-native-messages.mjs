@@ -58,6 +58,12 @@ export function isNativeClassifierRequest(payload) {
   return payload.max_tokens === 8192 && !Object.hasOwn(payload, "stop_sequences");
 }
 
+/** The exact classifier shape that this runner will also accept. The gateway and its update check share this one rule. */
+export function isSupportedClassifierRequest(payload) {
+  if (!isNativeClassifierRequest(payload)) return false;
+  try { requestBody(payload, payload.model); return true; } catch { return false; }
+}
+
 function requestBody(payload, nativeModel) {
   if (!object(payload)) throw failure("native Messages request must be an object", 400);
   for (const key of Object.keys(payload)) if (!ALLOWED_TOP_LEVEL.has(key)) throw failure("native Messages request contains an unsupported field", 400);

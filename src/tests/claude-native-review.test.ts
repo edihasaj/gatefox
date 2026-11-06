@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { completedNativeMessage, nativeReviewHeaders, nativeReviewTarget, serveNativeReview, type NativeRuntime } from "../claude-native-review.js";
+import { completedNativeMessage, nativeReviewHeaders, nativeReviewTarget, nativeReviewUsage, serveNativeReview, type NativeRuntime } from "../claude-native-review.js";
 import type { GatewayConfig } from "../config.js";
 import { ProviderError } from "../providers/provider.js";
 
@@ -17,6 +17,7 @@ test("only the exact classifier on one real Claude route reaches the native revi
     ["a changed stop sequence", { ...wire, stop_sequences: ["</verdict>"] }, auxiliary],
     ["a request with tools", { ...wire, tools: [{ name: "t" }] }, auxiliary],
     ["a streamed request", { ...wire, stream: true }, auxiliary],
+    ["a field the runner refuses", { ...wire, unknown_classifier_field: true }, auxiliary],
     ["thinking left on", { ...wire, thinking: { type: "adaptive" } }, auxiliary],
     ["the main conversation", wire, { "x-claude-code-request-class": "main" }],
     ["a subagent", wire, { "x-claude-code-request-class": "subagent" }],
@@ -58,4 +59,10 @@ test("the review reply passes through unchanged, and runner errors never reach t
 test("review headers carry only the side-request class and a printable beta list", () => {
   assert.deepEqual(nativeReviewHeaders({ "anthropic-beta": "a,b" }), { "x-claude-code-request-class": "auxiliary", "anthropic-beta": "a,b" });
   assert.equal(nativeReviewHeaders({ "anthropic-beta": "x".repeat(5000) }), undefined);
+});
+
+test("review spend uses the gateway's usage counts", () => {
+  assert.deepEqual(nativeReviewUsage({ input_tokens: 10, output_tokens: 4, cache_read_input_tokens: 30000, cache_creation_input_tokens: 200 }),
+    { input_tokens: 30210, output_tokens: 4, total_tokens: 30214, input_tokens_details: { cached_tokens: 30000, cache_creation_tokens: 200 } });
+  assert.equal(nativeReviewUsage({ input_tokens: "x", output_tokens: -1 }).total_tokens, 0);
 });

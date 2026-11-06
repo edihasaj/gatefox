@@ -17,7 +17,7 @@ import { ResponsesWriter } from "./protocol/responses.js";
 import { MessagesWriter, anthropicError } from "./protocol/messages.js";
 import { messagesToResponses } from "./protocol/messages-request.js";
 import { messagesAgentId, messagesRequestKind } from "./protocol/messages-session.js";
-import { nativeReviewTarget, serveNativeReview } from "./claude-native-review.js";
+import { nativeReviewTarget, nativeReviewUsage, serveNativeReview } from "./claude-native-review.js";
 import { messagesProviderRequest } from "./protocol/messages-routing.js";
 import { responsesToChatRequest } from "./protocol/request.js";
 import { reportDroppedSearch } from "./protocol/tool-search-bridge.js";
@@ -121,6 +121,8 @@ export interface GatewayFailure {
   durationMs: number; code: string; status: number; abortCause?: AbortCause;
 }
 export interface GatewayStartOptions {
+  /** Claude Desktop's private backend turns this off, because its frontend applies its own explicit native configuration. */
+  claudeNativeReview?: boolean;
   heartbeatMs?: number; onFailure?: (failure: GatewayFailure) => void;
   /** Test hook for observing one handler's admission lifetime. */
   admissionRegistry?: AdmissionRegistry;
@@ -402,11 +404,18 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     res.once("close", cancel);
     try {
       const wire = await body(req);
-      const review = messagesProtocol && !countTokens ? await nativeReviewTarget(state.config, wire, req.headers) : undefined;
-      if (review) {
-        providerId = review.provider.id; providerType = review.provider.type; model = review.alias; requestedModel = review.nativeModel;
-        send(res, 200, { ...await serveNativeReview(review, req.headers, controller.signal), model: review.nativeModel });
-        telemetry("claude_native_review", { requestId, provider: providerId, durationMs: Date.now() - startedAt });
+      const review = messagesProtocol && !countTokens && options.claudeNativeReview !== false ? await nativeReviewTarget(state.config, wire, req.headers) : undefined;
+      const reviewRoute = review ? state.routes.get(review.alias) : undefined;
+      if (review && reviewRoute) {
+        providerId = review.provider.id; providerType = review.provider.type; model = review.alias; requestedModel = review.nativeModel; admission = reviewRoute.admission;
+        admission.check();
+        releaseAdmission = await admission.acquire(controller.signal);
+        // The same order as ordinary inference: a review admitted after the drain began stops before any spend.
+        if (draining) active.get(controller)?.("shutdown");
+        controller.signal.throwIfAborted(); touch(); admittedAt = Date.now(); admitted.add(controller);
+        const reply = await serveNativeReview(review, req.headers, controller.signal, undefined, measured => { usage = nativeReviewUsage(measured); });
+        send(res, 200, reply);
+        telemetry("claude_native_review", { requestId, provider: providerId, durationMs: Date.now() - startedAt, inputTokens: usage?.input_tokens, cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens });
         ledger("completed");
         return;
       }

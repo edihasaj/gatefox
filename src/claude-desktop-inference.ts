@@ -369,7 +369,7 @@ export async function startClaudeDesktopInference(gatewayConfigPath: string, nat
         },
       };
     };
-    backend = await (deps.backendFactory ?? (config => startGateway(config, factory)))({
+    backend = await (deps.backendFactory ?? (config => startGateway(config, factory, undefined, { claudeNativeReview: false })))({
       ...source, port: 0, providers: source.providers.map(provider => contextById.get(provider.id) ?? provider),
     });
     const backendPort = (backend.address() as { port?: number } | null)?.port;
