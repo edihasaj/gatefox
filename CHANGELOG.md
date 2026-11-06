@@ -6,6 +6,7 @@
   `anthropic-api` routes. These messages retain their position and authority,
   including after tool results. The Claude Code update check now treats a route
   rejection as a compatibility failure instead of allowing this known defect.
+  Thanks to Edi Hasaj for reporting the incompatibility.
 
 - Restarting a Claude session no longer races the previous session's cleanup.
   Each generation now owns its working directory and files, so delayed cleanup
