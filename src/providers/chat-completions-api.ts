@@ -145,10 +145,7 @@ export class ChatCompletionsAPI implements Provider {
     const options = generationOptions(request, 2);
     const credential = await apiCredential(this.config);
     if (!credential) throw new ProviderError("authentication", "Chat API credential is missing", 401);
-    // Replayed reasoning replaces a public summary, which would otherwise merge into the answer and change the turn.
-    const translated = responsesToChatRequest(request, { reasoningSummaryMetadata: !!this.reasoningReplay });
-    const normalized = this.reasoningReplay ? { ...translated, messages: translated.messages.filter(message => !message.reasoningSummary) } : translated;
-    const tools = canonicalTools(normalized.tools || []);
+    const normalized = responsesToChatRequest(request); const tools = canonicalTools(normalized.tools || []);
     if (request.previous_response_id !== undefined) throw new ProviderError("invalid_request", "Chat API requires replayed history", 400);
     if (request.max_output_tokens !== undefined && (!Number.isInteger(request.max_output_tokens) || Number(request.max_output_tokens) < 1)) throw new ProviderError("invalid_request", "max_output_tokens must be a positive integer", 400);
     const modelAlias = Object.entries(this.config.models).find(([, model]) => model === request.model)?.[0];
@@ -173,7 +170,10 @@ export class ChatCompletionsAPI implements Provider {
     const conversation = compactAssistantReplay(normalized.messages, nativeName, name => tools.some(tool => tool.function.name === name), vision);
     // The contract applies only to requests carrying tools. Without the reasoning, thinking is off for this request, which the rule does not cover.
     const replayKey = providerConversationId(context);
-    const replayed = this.reasoningReplay && tools.length ? this.reasoningReplay.restore(replayKey, conversation) : conversation;
+    // A public summary merges into the answer, so turns are matched without it. Replayed reasoning then replaces it; otherwise it stays as history.
+    const turns = this.reasoningReplay ? compactAssistantReplay(responsesToChatRequest(request, { reasoningSummaryMetadata: true }).messages.filter(message => !message.reasoningSummary),
+      nativeName, name => tools.some(tool => tool.function.name === name), vision) : conversation;
+    const replayed = this.reasoningReplay && tools.length ? this.reasoningReplay.restore(replayKey, turns) : conversation;
     const reasoningLost = !replayed;
     if (reasoningLost) telemetry("chat_reasoning_replay_miss", { provider: this.config.id });
     const messages: ReplayMessage[] = replayed ?? conversation;
@@ -197,7 +197,7 @@ export class ChatCompletionsAPI implements Provider {
       const thoughts = this.reasoningReplay ? { reasoning: "", text: "" } : undefined;
       const outcome = yield* this.streamAttempt(request, signal, undefined, context, url, credential, body, tools, choice, reasoning, false, false, undefined, thoughts);
       yield* this.completed(outcome.calls, tools, choice);
-      if (thoughts && !reasoningLost) this.reasoningReplay!.remember(replayKey, conversation.filter(message => message.role === "assistant"), { content: thoughts.text, tool_calls: [...outcome.calls.values()] }, thoughts.reasoning);
+      if (thoughts && !reasoningLost) this.reasoningReplay!.remember(replayKey, turns.filter(message => message.role === "assistant"), { content: thoughts.text, tool_calls: [...outcome.calls.values()] }, thoughts.reasoning);
       yield { type: "done", usage: outcome.usage, ...(outcome.capped ? { stopReason: "max_tokens" as const } : {}) };
       return;
     }

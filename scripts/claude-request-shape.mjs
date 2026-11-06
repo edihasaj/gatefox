@@ -108,14 +108,15 @@ function adapterStub() {
 
 /** Sends one accepted request through each real adapter. Only the caller-visible 4xx refusals count here. */
 async function adapterRejection(request, adapters, known) {
-  // The stub answers with text, which a forced tool choice correctly refuses. Those requests stay covered by the parser and routing rules.
-  if (request.tool_choice && !['auto', 'none'].includes(request.tool_choice)) return;
+  // The stub answers with text, so a forced tool choice ends in a 5xx after the adapter has checked and sent the request.
+  const forced = request.tool_choice && !['auto', 'none'].includes(request.tool_choice);
   for (const { kind, provider } of adapters) {
     try { for await (const event of provider.infer(request, new AbortController().signal, { clientProtocol: 'messages' })) if (event.type === 'done') break; }
     catch (error) {
       // Claude Code does not recover from this one, so a live Anthropic route fails. It is recorded, and the rest of the run proves the other routes.
       if (kind === 'anthropic-api' && error.message.includes('mid-conversation system')) { known.add('anthropic_mid_conversation_system'); continue; }
       if (error.status >= 400 && error.status < 500) return { kind, error };
+      if (forced) continue;
       throw Object.assign(Error(`Adapter stub failed for ${kind}`), { cause: error });
     }
   }

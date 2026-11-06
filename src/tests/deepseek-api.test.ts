@@ -106,6 +106,14 @@ test("a Codex reasoning summary does not change the turn it belongs to", async t
   assert.equal(assistant(bodies[1])?.content, "answer");
   assert.equal(assistant(bodies[1])?.reasoning_content, "real thought");
   assert.equal(bodies[1].thinking, undefined);
+  const replay = { ...first, input: [user, { type: "reasoning", summary: [{ type: "summary_text", text: "public summary" }] }, { type: "message", role: "assistant", content: [{ type: "output_text", text: "answer" }] }, user] };
+  await run(new ChatCompletionsAPI(config()), replay);
+  assert.match(String(assistant(bodies[2])?.content), /public summary/, "with no reasoning to replace it, the summary stays as history");
+  assert.deepEqual(bodies[2].thinking, { type: "disabled" });
+  await run(new ChatCompletionsAPI(config()), { ...replay, tools: undefined });
+  assert.match(String(assistant(bodies[3])?.content), /public summary/, "a request without tools replays no reasoning, so it keeps the summary too");
+  assert.equal(bodies[3].thinking, undefined);
+  assert.equal(JSON.stringify(bodies).includes("reasoningSummary"), false, "the internal marker never reaches the wire");
 });
 
 test("DeepSeek's published efforts, window and default reach the catalog", async t => {
