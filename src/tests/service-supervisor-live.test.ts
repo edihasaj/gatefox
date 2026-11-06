@@ -125,19 +125,42 @@ test("with an app still connected the host moves to the new implementation once 
  const plan:ServicePlan={version:1,config:f.config,sharedExecutors:true,components:[relay]};
  const oldHost=async()=>({close:async()=>{oldCloses++;},prepareStop:async()=>false,prepareQuietStop:async(ms:number)=>{quietAsked.push(ms);return quiet;},resume:()=>{}});
  const newHost=async()=>{newStarts++;return {close:async()=>{},prepareStop:async()=>false,resume:()=>{}};};
- const quietHealing={hostQuietGraceMs:0,hostQuietRetryMs:0,hostQuietMs:1234};
+ const quietHealing={hostQuietGraceMs:0,hostQuietRetryMs:0,hostQuietMs:1234,appsAttached:async()=>false};
  const old=new ServiceSupervisor(plan,f.root,10,oldHost as never,unregistered,undefined,undefined,{...healing("1.1.8",schedules),...quietHealing});
  try{
   await old.start();const next=new ServiceSupervisor(plan,f.root,10,newHost as never,unregistered,undefined,undefined,{...healing("1.1.9",schedules),...quietHealing});
   assert.equal(await old.handover(next),true);
   const keeper=(next as unknown as {host:{restartHostWhenIdle():Promise<void>}}).host;
-  await until(()=>quietAsked.length>0);await keeper.restartHostWhenIdle();
+  await until(async()=>{await keeper.restartHostWhenIdle();return quietAsked.length>0;});await keeper.restartHostWhenIdle();
   assert.equal(oldCloses,0,"a running turn holds the host back");assert.equal(newStarts,0);
   assert.ok(quietAsked.every(ms=>ms===1234),"the quiet check gets the configured quiet time");
   quiet={loadedChats:3};
   await keeper.restartHostWhenIdle();await until(()=>newStarts===1);
   assert.equal(oldCloses,1,"the drained host closed once and the new implementation started");
   assert.ok((await f.state()).components.every(component=>component.restarts===0),"no other component restarted");
+ }finally{await old.stop();await f.cleanup();}
+});
+
+test("a live swap never moves the host under an attached app, however long the release has waited", {timeout:15000}, async()=>{
+ // 2026-11-06: the 1.7.1 install moved a host with 14 loaded chats 2 seconds after the swap. Each controller started with the
+ // hold open, the grace had long elapsed, and handover asks the keeper to move before the first process scan answers.
+ const f=await setup();const schedules={active:0,maximum:0};let quietAsked=0;let release!:(attached:boolean)=>void;
+ const scan=new Promise<boolean>(resolve=>{release=resolve;});
+ const relay=fixtureComponent(f.root,"native","native","setInterval(()=>{},1000)");
+ relay.args.push("--","--daemon","--codex",join(f.root,"sdk"),"--native-home",join(f.root,"native"),"--relay-home",join(f.root,"relay"));
+ const plan:ServicePlan={version:1,config:f.config,sharedExecutors:true,components:[relay]};
+ const oldHost=async()=>({close:async()=>{},prepareStop:async()=>false,prepareQuietStop:async()=>{quietAsked++;return {loadedChats:14};},resume:()=>{}});
+ const quietHealing={hostQuietGraceMs:0,hostQuietRetryMs:0,hostQuietMs:1234,kickGapMs:0};
+ const old=new ServiceSupervisor(plan,f.root,10,oldHost as never,unregistered,undefined,undefined,{...healing("1.1.8",schedules),...quietHealing,appsAttached:async()=>true});
+ try{
+  await old.start();const next=new ServiceSupervisor(plan,f.root,10,(async()=>({close:async()=>{},prepareStop:async()=>false,resume:()=>{}})) as never,unregistered,undefined,undefined,{...healing("1.1.9",schedules),...quietHealing,appsAttached:()=>scan});
+  assert.equal(await old.handover(next),true);
+  const keeper=(next as unknown as {host:{restartHostWhenIdle():Promise<void>}}).host;
+  const attempts=async()=>{for(let attempt=0;attempt<5;attempt++){await keeper.restartHostWhenIdle();await delay(20);}};
+  await attempts();
+  assert.equal(quietAsked,0,"before the first scan answers");
+  release(true);await delay(20);await attempts();
+  assert.equal(quietAsked,0,"and after it finds the app");
  }finally{await old.stop();await f.cleanup();}
 });
 

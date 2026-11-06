@@ -219,7 +219,7 @@ export class ServiceSupervisor {
     const installed = this.heal.releaseState()?.installed;
     const host = await this.host.executionStarting?.catch(() => undefined);
     const skew = !!installed && host?.skewRefused?.(installed) === true;
-    const held = !skew && await appsAttached();
+    const held = !skew && await (this.heal.appsAttached ?? appsAttached)();
     if (held && installed && !this.hostHoldLogged.has(installed)) {
       this.hostHoldLogged.add(installed); telemetry("execution_host_upgrade_waiting", { reason: "app_attached" });
     }

@@ -67,6 +67,8 @@ export interface SupervisorHealing {
    * quiet time it needs, and the least time between two quiet attempts. Defaults: `upgradeGraceMs`, `upgradeQuietMs`, 60 s.
    */
   hostQuietGraceMs?: number; hostQuietMs?: number; hostQuietRetryMs?: number;
+  /** Whether an app is attached to this Mac's gateway; tests replace the process scan. */
+  appsAttached?: () => Promise<boolean>;
 }
 export const defaultHealing: SupervisorHealing = { probeHost: probeExecutionHost, hostProbeMs: 60_000, watchKick: (home, onKick) => watchHostKick(home, onKick), kickGapMs: 5000, healthSchedule: scheduleServiceHealth,
   releaseState: () => releaseState() };
