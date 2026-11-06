@@ -121,8 +121,12 @@ export class ServiceSupervisor {
   private readonly upgradeWaits = new Set<string>();
   /** Makes the upgrade watcher look now (an urgent move, when the host says one is waiting); set while the watcher runs. */
   private nudgeUpgrade?: () => void;
-  /** Whether the execution host's quiet move to an installed release is held because an app is attached (see holdHostMove). */
-  private hostHeld = false;
+  /**
+   * Whether the execution host's quiet move to an installed release is held because an app is attached (see holdHostMove).
+   * A controller starts held: at a live swap the keeper's grace has often long elapsed, so an open hold would let the host move
+   * in the moments before this controller's first process scan answers.
+   */
+  private hostHeld = true;
   private hostHoldWatch?: NodeJS.Timeout;
   private hostHoldLogged = new Set<string>();
   private stoppedResolve: () => void = () => {};
@@ -216,7 +220,7 @@ export class ServiceSupervisor {
     const host = await this.host.executionStarting?.catch(() => undefined);
     const skew = !!installed && host?.skewRefused?.(installed) === true;
     const held = !skew && await appsAttached();
-    if (held && !this.hostHeld && installed && !this.hostHoldLogged.has(installed)) {
+    if (held && installed && !this.hostHoldLogged.has(installed)) {
       this.hostHoldLogged.add(installed); telemetry("execution_host_upgrade_waiting", { reason: "app_attached" });
     }
     if (held !== this.hostHeld) { this.hostHeld = held; void this.publish(); }

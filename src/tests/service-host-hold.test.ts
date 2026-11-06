@@ -21,6 +21,8 @@ test("while held, the keeper's quiet grace never elapses; released, it is the co
   const plan: ServicePlan = { version: 1, config: "/tmp/gateway.json", components: [] };
   const supervisor = new ServiceSupervisor(plan, "/tmp/gw-hold-state", 1000, undefined, undefined, undefined, undefined, { hostQuietGraceMs: 1234 });
   const heal = (supervisor as unknown as { heal: { hostQuietGraceMs?: number } }).heal;
+  assert.equal(heal.hostQuietGraceMs, Number.MAX_SAFE_INTEGER, "a new controller is held until its first scan, or a live swap could move the host");
+  (supervisor as unknown as { hostHeld: boolean }).hostHeld = false;
   assert.equal(heal.hostQuietGraceMs, 1234);
   (supervisor as unknown as { hostHeld: boolean }).hostHeld = true;
   assert.equal(heal.hostQuietGraceMs, Number.MAX_SAFE_INTEGER);

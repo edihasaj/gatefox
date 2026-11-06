@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Installing a release can no longer move the execution host under an open ChatGPT. The hold on
+  that move started open in each new service controller and only closed after its first process
+  scan. A release that had waited out the 15-minute grace could therefore move the host in those
+  moments, which happened on two Macs at the 1.7.1 install, and ChatGPT restarted on one of them
+  within about two minutes. A controller now starts held and releases only once a scan finds no
+  app attached.
+
 - `gateway health` no longer warns about a native relay that has nothing to update. Releases reuse
   a built relay, so a running relay can carry an older release label while its binary is
   byte-identical to the installed one. `gateway rollout` already compared the bytes, but health

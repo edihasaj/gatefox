@@ -817,7 +817,10 @@ controller holds that move while an app is attached, meaning a desktop adapter o
 listener is running (one `ps` scan every 15 s; an unreadable list counts as attached). It
 does this by making the keeper's quiet grace never elapse, which keepers older than the
 controller already read, so it takes effect at the live controller swap without a
-restart. The host still moves when no app is attached (the strict idle move), at the next
+restart. A new controller starts held and releases the hold only once its first scan
+finds no app attached, because a release can have outwaited the grace long before the
+swap. Until 1.7.1 the hold was open in those moments: installing 1.7.1 moved the host
+of a Mac with 14 loaded chats 2 seconds after the swap (6 Nov 2026). The host still moves when no app is attached (the strict idle move), at the next
 natural start, and at once when it refuses a newer adapter (the urgent skew move is never
 held). A held host is logged once per release as `execution_host_upgrade_waiting` with
 `reason: app_attached`, and the service status carries `hostMoveHeld: true`.
