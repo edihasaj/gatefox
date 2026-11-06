@@ -175,15 +175,11 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
       if (!victim) return { kind: "fallback", reason: "capacity" };
       registry.sessions.delete(victim.key); void victim.close("evicted");
     }
-    // While this attach starts the session, the key's starting entry is its own: a failed start removes the thread directory.
-    let booting = true;
     try {
       session = await ClaudeSession.start({
         key, fingerprint, window, effort: input.effort, args: input.spawn.args, env: input.spawn.env, mcpCatalog: input.spawn.mcpCatalog, systemPrompt: input.spawn.systemPrompt,
-        keyInUse: () => registry.sessions.has(key) || (!booting && registry.starting.has(key)),
         onClose: (closed, outcome, why) => ended(registry, closed, outcome, why),
       }, signal);
-      booting = false;
     } catch (error) {
       if (signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw cancelled();
       return { kind: "fallback", reason: error instanceof SessionStartFailure ? error.reason : "spawn_failed" };

@@ -12,6 +12,14 @@ import { modelLabel } from "./model-label.js";
 
 export { modelLabel };
 
+/** The floor a row gets when no window is known; it is a placeholder, not a measured window. */
+export const unknownContextWindow = 32768;
+/** Aliases with a real window, so one that equals the placeholder is not mistaken for it. Published rows stay unchanged. */
+export function knownContextWindows(config: GatewayConfig): Set<string> {
+  return new Set([...config.providers.flatMap(provider => Object.keys(provider.models).filter(alias => provider.modelMetadata?.[alias]?.contextWindow)),
+    ...Object.keys(config.managedRouting?.routes ?? {})]);
+}
+
 /** Honest startup metadata for Codex's native model picker and reasoning control. */
 export function modelCatalog(config: GatewayConfig): { models: Array<Record<string, unknown>> } {
   const groups = new Map<string, number>();
@@ -44,9 +52,9 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       support_verbosity: false, default_verbosity: null,
       truncation_policy: truncation ? { mode: truncation.mode, limit: truncation.limit } : { mode: "tokens", limit: codex ? 10000 : 12000 },
       experimental_supported_tools: [], input_modalities: metadata?.inputModalities || ["text"],
-      context_window: metadata?.contextWindow || 32768, effective_context_window_percent: metadata?.effectiveContextWindowPercent ?? (codex ? 95 : 90),
+      context_window: metadata?.contextWindow || unknownContextWindow, effective_context_window_percent: metadata?.effectiveContextWindowPercent ?? (codex ? 95 : 90),
       // Without its own maximum a row would inherit Codex's global cap (872K), which cuts Claude's 1M.
-      max_context_window: metadata?.maxContextWindow ?? (metadata?.contextWindow || 32768),
+      max_context_window: metadata?.maxContextWindow ?? (metadata?.contextWindow || unknownContextWindow),
       ...(metadata?.autoCompactTokenLimit !== undefined ? { auto_compact_token_limit: metadata.autoCompactTokenLimit } : {}),
       // Off unless the route bridges it (`toolSearch: "bridge"`): the ChatGPT backend refuses a forwarded tool_search, so a
       // plain Codex 2 row and every other row must not make Codex add the tool. The desktop adapter turns it off again on a

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { messagesSessionId } from "../protocol/messages-session.js";
+import { messagesAgentId, messagesRequestKind, messagesSessionId } from "../protocol/messages-session.js";
 import { messagesToResponses } from "../protocol/messages-request.js";
 import { inferenceContext, providerConversationId } from "../providers/provider.js";
 
@@ -29,4 +29,28 @@ test("session-only clients use a distinct provider key while existing threads ke
   assert.notEqual(providerConversationId({ sessionId: id }), providerConversationId({ threadId: id }));
   assert.equal(providerConversationId({ sessionId: id }), providerConversationId({ sessionId: id }));
   assert.equal(providerConversationId({}), undefined);
+});
+
+test("a subagent keeps a stable conversation of its own, apart from its parent", () => {
+  const parent = messagesSessionId(metadata); const child = messagesSessionId(metadata, "agent-a");
+  assert.equal(parent, id);
+  assert.notEqual(child, parent);
+  assert.equal(messagesSessionId(metadata, "agent-a"), child, "every turn of one subagent joins the same conversation");
+  assert.notEqual(messagesSessionId(metadata, "agent-b"), child);
+  assert.ok(child!.length <= 128 && /^[A-Za-z0-9._:-]+$/.test(child!), "the routing context accepts the key unchanged");
+  assert.equal(messagesSessionId(metadata, "teammate-name")!.includes("teammate-name"), false, "the raw agent name never becomes a routing value");
+  assert.equal(messagesSessionId({ user_id: "same-user" }, "agent-a"), undefined, "an agent alone never creates a conversation");
+  const request = messagesToResponses({ model: "alias", max_tokens: 8, metadata, messages: [{ role: "user", content: "hi" }] }, { agentId: "agent-a" });
+  assert.equal(inferenceContext({}, request).sessionId, child);
+});
+
+test("only Claude Code's explicit hints change a request's kind", () => {
+  assert.equal(messagesRequestKind({ "x-claude-code-request-class": "compaction" }), "compaction");
+  assert.equal(messagesRequestKind({ "x-claude-code-request-class": "main", "x-claude-code-compaction": "auto" }), "compaction");
+  assert.equal(messagesRequestKind({ "x-claude-code-request-class": "auxiliary" }), "auxiliary");
+  for (const value of ["main", "subagent", "workflow", "unknown-future-class"]) assert.equal(messagesRequestKind({ "x-claude-code-request-class": value }), undefined);
+  assert.equal(messagesRequestKind({}), undefined);
+  assert.equal(messagesRequestKind({ "x-claude-code-request-class": ["auxiliary", "main"] }), undefined, "a repeated header is ignored");
+  assert.equal(messagesAgentId({ "x-claude-code-agent-id": "x".repeat(257) }), undefined);
+  assert.equal(messagesAgentId({ "x-claude-code-agent-id": ["a", "b"] }), undefined);
 });

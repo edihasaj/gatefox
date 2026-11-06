@@ -2,6 +2,42 @@
 
 ## 1.7.1 — 2026-11-06
 
+- Restarting a Claude session no longer races the previous session's cleanup.
+  Each generation now owns its working directory and files, so delayed cleanup
+  cannot delete the replacement's directory and fail its startup. Thanks to Edi
+  Hasaj for reporting the failure.
+
+- Claude Code's auto mode now works through the gateway. Its safety classifier reaches a real Claude
+  model through a restricted, tool-free one-turn run. Previously every review was refused, so guarded
+  actions never ran. With no unambiguous Claude route the request stays refused, and a changed
+  classifier request blocks a Claude Code update.
+
+- A provider account with no balance now fails with a readable message instead of a vague 502.
+
+- Claude Code now works on Qwen and other routes without its default effort. `gateway claude-config`
+  starts on an effort the launch model offers. The update check now sends requests through the real
+  provider adapters, so a refusal like this one blocks an update.
+
+- Claude Code updates are now checked against the gateway's real Messages parser. Each candidate
+  runs real Claude Code through plain, recognized-model, MCP, tool, subagent and auto-mode scenarios
+  against a synthetic backend, and a request field the gateway does not recognize blocks the update
+  even when the client recovers by retrying. No provider or paid inference is used.
+
+- `gateway claude-config` now gives Claude Code a working setup. GPT and Qwen appear in `/model`,
+  where Claude Code's discovery would have hidden them; compaction uses the launch model's real
+  context window instead of an assumed 200K; and hint headers are turned on.
+
+- Claude Code side requests and subagents no longer disturb a live session. With hint headers on,
+  compaction requests take the compaction path and titles or classifiers run on their own. A subagent
+  now has its own conversation instead of sharing its parent's session key.
+
+- Installing a release can no longer move the execution host under an open ChatGPT. The hold on
+  that move started open in each new service controller and only closed after its first process
+  scan. A release that had waited out the 15-minute grace could therefore move the host in those
+  moments, which happened on two Macs at the 1.7.1 install, and ChatGPT restarted on one of them
+  within about two minutes. A controller now starts held and releases only once a scan finds no
+  app attached.
+
 - `gateway health` no longer warns about a native relay that has nothing to update. Releases reuse
   a built relay, so a running relay can carry an older release label while its binary is
   byte-identical to the installed one. `gateway rollout` already compared the bytes, but health

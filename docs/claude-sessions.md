@@ -82,7 +82,9 @@ finishes normally, then the session closes instead of remaining parked in replay
   Once the CLI has finished and no tools are pending, a changed prefix therefore
   uses one cache-budgeted replacement (`client_history_replaced`). Gateway does
   not infer compaction from prompt text or grant a separate compaction budget for
-  that unmarked request. Pending tool mismatches still preserve and refuse.
+  that unmarked request. With [hint headers](messages.md#hint-headers) on, the
+  summary request is marked as compaction and takes the compaction path instead.
+  Pending tool mismatches still preserve and refuse.
   Explicit thread IDs retain the preservation behavior above.
 - **Dead session:** a crashed CLI cannot be preserved. Its existing replay hold
   remains bounded by the shared cache guard and expires after an idle hour.
@@ -105,8 +107,8 @@ finishes normally, then the session closes instead of remaining parked in replay
   the default of one is cheap: the promoted
   session seed reads the cache the one-shot request wrote and writes only its new
   content.
-- **Standalone requests:** explicitly identified compaction, prewarm and memory
-  requests, first questions without a conversation ID, and configured warmup.
+- **Standalone requests:** explicitly identified compaction, prewarm, memory and
+  Claude Code side requests, first questions without a conversation ID, and configured warmup.
   Anonymous historical conversations require an ID instead of repeated replay.
 - **Continuity refusal:** capacity, concurrent requests, failed startup or an
   unavailable live adapter stop before one-shot replay. CLI failure remains final
@@ -233,8 +235,12 @@ kills the session as soon as the gateway reads that line, and the request fails 
 `CLAUDE_CODE_*` or `CLAUDE_AGENT_SDK_*` variables; the gateway sets its own, including
 `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`, so caller tool descriptions are not cut.
 Nothing is written to `~/.claude`: sessions use `--no-session-persistence` and a
-private working directory under `$TMPDIR/gateway-claude`, which the next start sweeps
-after a crash. Live sessions set `DISABLE_AUTO_COMPACT=1`; Codex owns compaction.
+private working directory inside its own generation under `$TMPDIR/gateway-claude-v2`.
+Closing a session removes only that generation, including its working directory.
+The next process start sweeps generations whose gateway owner has died. New
+generations sit outside the legacy per-thread tree, so cleanup by a session
+adopted from an older release cannot delete a replacement's files. Live sessions
+set `DISABLE_AUTO_COMPACT=1`; Codex owns compaction.
 
 ## Request rejections
 

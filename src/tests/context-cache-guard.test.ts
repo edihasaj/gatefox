@@ -150,3 +150,15 @@ test("compaction has a separate bounded budget and can recover an ordinary block
   await assert.rejects(turn("a".repeat(1000), true), { code: "invalid_request" });
   await turn("Short compacted conversation"); assert.equal(calls, 5);
 });
+
+test("a client's side requests neither trip nor inherit the conversation's cache stop", async () => {
+  const provider: Provider = { async *infer() { yield { type: "done", usage }; } };
+  const turn = async (auxiliary = false) => {
+    for await (const _ of cacheGuardedInference(provider, { model: "m", input: "a".repeat(1000) }, new AbortController().signal,
+      { sessionId: "side", ...(auxiliary ? { requestKind: "auxiliary" as const } : {}) }, "bounded-side-requests")) {}
+  };
+  await turn(); await turn();
+  await assert.rejects(turn(), { code: "invalid_request" });
+  await turn(true);
+  await assert.rejects(turn(), { code: "invalid_request" }, "a side request does not clear the conversation's stop");
+});

@@ -278,7 +278,9 @@ requests can exceed 140 KiB even for a short task. The macOS bound accommodates
 these requests; a platform's smaller environment limit can still refuse one
 before spawning. The adapter never truncates a review transcript to make it fit.
 
-This entry point belongs only to the isolated Claude inference component inside
+Claude Code through the ordinary gateway reaches the same runner; see
+[auto mode](messages.md#auto-mode). This Desktop entry point stays separately
+configured, its backend does not use that general path, and it belongs only to the isolated Claude inference component inside
 the existing app-owned service. It does not share Codex's inference configuration
 or register a Codex client.
 Client cancellation also remains effective while asynchronous classifier

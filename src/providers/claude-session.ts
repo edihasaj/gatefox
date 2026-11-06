@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { copyFile, lstat, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -29,8 +29,6 @@ export interface SessionOptions {
   env: NodeJS.ProcessEnv;
   mcpCatalog: ClaudeMcpTool[];
   systemPrompt: string;
-  /** Whether another session for this key exists or is starting; its directory then stays. */
-  keyInUse(): boolean;
   /** Called once when a started session ends, for the registry and telemetry. */
   onClose(session: ClaudeSession, outcome: SessionEnd, reason?: string): void;
 }
@@ -74,7 +72,7 @@ function foreignTool(name: unknown): ProviderError {
   return new ProviderError("invalid_tool_call", "Claude returned an unknown tool call", 502, { code: "unknown_tool", event: "claude.tool_use" });
 }
 
-const sessionsDirectory = () => join(tmpdir(), "gateway-claude");
+const sessionsDirectory = () => join(tmpdir(), "gateway-claude-v2");
 // A generation directory is named after the gateway process that owns it, so leftovers of a dead process are recognizable.
 const ownerAlive = (name: string) => {
   const pid = parseInt(name.split("-")[0], 36);
@@ -82,12 +80,18 @@ const ownerAlive = (name: string) => {
   try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 };
 
-/** Removes session files left behind by gateway processes that no longer run; working directories stay. */
+/** Removes dead generations, including their cwd; legacy per-thread working directories stay. */
 export async function sweepSessionDirectories(): Promise<void> {
   const base = sessionsDirectory();
-  for (const key of await readdir(base).catch(() => [] as string[])) {
-    for (const name of await readdir(join(base, key)).catch(() => [] as string[])) {
-      if (name !== "work" && !ownerAlive(name)) await rm(join(base, key, name), { recursive: true, force: true }).catch(() => {});
+  for (const name of await readdir(base).catch(() => [] as string[])) {
+    if (!ownerAlive(name)) await rm(join(base, name), { recursive: true, force: true }).catch(() => {});
+  }
+  // Old processes sweep the legacy tree too; neither layout may sweep a live
+  // generation of the other. Keep the new flat layout under its own root.
+  const legacy = join(tmpdir(), "gateway-claude");
+  for (const key of await readdir(legacy).catch(() => [] as string[])) {
+    for (const name of await readdir(join(legacy, key)).catch(() => [] as string[])) {
+      if (name !== "work" && !ownerAlive(name)) await rm(join(legacy, key, name), { recursive: true, force: true }).catch(() => {});
     }
   }
 }
@@ -117,7 +121,7 @@ export class ClaudeSession {
   readonly key: string; readonly fingerprint: string; readonly window: string; effort?: string;
   ledger: LedgerState = { items: [] }; pending: string[] = [];
   lastUse = Date.now(); perTurnEffort?: boolean; relay?: ClaudeRelay;
-  private child!: ChildProcessWithoutNullStreams; private directory?: string; private keyDirectory?: string;
+  private child!: ChildProcessWithoutNullStreams; private directory?: string;
   private attached?: Attached; private controls = new Map<string, (ok: boolean) => void>();
   private message?: string; private messageTool = false; private endedMessage?: string; private fastState?: string;
   private parkTimer?: NodeJS.Timeout; private interruptTimer?: NodeJS.Timeout; private exit?: Promise<void>; private closing?: Promise<void>;
@@ -146,11 +150,11 @@ export class ClaudeSession {
   }
 
   private async boot(): Promise<void> {
-    const base = sessionsDirectory(); this.keyDirectory = join(base, this.key.slice(0, 16));
-    const work = join(this.keyDirectory, "work");
-    for (const path of [base, this.keyDirectory, work]) await privateDirectory(path);
-    const directory = this.directory = join(this.keyDirectory, `${process.pid.toString(36)}-${randomBytes(2).toString("hex")}`);
-    await mkdir(directory, { mode: 0o700 });
+    const base = sessionsDirectory(); await privateDirectory(base);
+    // Each generation owns its cwd and files. Older adopted sessions can still delete
+    // a per-thread parent after checking it, so new generations live outside that tree.
+    const directory = this.directory = await mkdtemp(join(base, `${process.pid.toString(36)}-`));
+    const work = join(directory, "work"); await privateDirectory(work);
     let servers = {};
     if (this.options.mcpCatalog.length) {
       // The socket path must fit a Unix socket address (104 bytes on macOS, with its terminator).
@@ -444,10 +448,5 @@ export class ClaudeSession {
     this.kill(); this.relay?.close();
     await this.exited(1000);
     if (this.directory) await rm(this.directory, { recursive: true, force: true }).catch(() => {});
-    // The working directory stays while another session of this thread uses it.
-    if (this.keyDirectory && !this.options.keyInUse()) {
-      const left = await readdir(this.keyDirectory).catch(() => [] as string[]);
-      if (left.every(name => name === "work")) await rm(this.keyDirectory, { recursive: true, force: true }).catch(() => {});
-    }
   }
 }

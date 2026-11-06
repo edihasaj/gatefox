@@ -28,7 +28,7 @@ Normal gateway release and idle activation
 | Provider | Discovery | Compatibility gate |
 | --- | --- | --- |
 | Codex gateway SDK | Official stable GitHub release, tag resolved to its immutable commit | Archive SHA-256, sequential gateway patches, locked Rust build, all 34 identity/compaction/queue/client-tool/role-context/cache/background-completion regressions, release executable |
-| Claude Code | Official npm `latest` stable release and exact-version metadata | SHA-512 archive integrity, private native installation, version, required public flags, actual stream-json control initialization using the gateway's complete CLI arguments |
+| Claude Code | Official npm `latest` stable release and exact-version metadata | SHA-512 archive integrity, private native installation, version, required public flags, actual stream-json control initialization using the gateway's complete CLI arguments, [request shapes](#claude-code-request-shapes) through the candidate's Messages parser |
 | GitHub Copilot | Official npm `latest` stable release and exact-version metadata | SHA-512 archive integrity, private installation, version, required public flags, actual gateway RPC framing and protocol 3 handshake |
 | API-only providers | No local provider executable | Existing translation and transport tests; caller models, endpoints and credentials stay unchanged |
 
@@ -119,6 +119,49 @@ selection, while still verifying the archive, complete tree and build outputs.
 A private build lock serializes their temporary compaction-test isolation.
 After an interruption, only the authenticated original or reduced aggregator can
 be recovered automatically; other changes remain a blocked update.
+
+## Claude Code request shapes
+
+The stream-json check proves the CLI the gateway launches. It does not prove what
+Claude Code sends when it is the client, and the Messages parser accepts only the
+fields it knows. So the candidate also runs real Claude Code against a synthetic
+local backend that answers through the candidate's own parser, routing rules and
+error envelope. Each accepted request then runs through the real Chat Completions,
+Anthropic and Responses adapters against a local stub, on a route that offers only
+`low`, `medium` and `xhigh`. A refusal there reaches the client just as it would
+from Gateway, so a default effort a route rejects fails the check. No provider,
+account or paid inference is involved.
+
+| Scenario | What it proves |
+| --- | --- |
+| `opaque_alias` | A gateway alias finishes, and the declared context window is applied. |
+| `recognized_model` | A Claude model ID finishes; these IDs get different beta values. |
+| `mcp_tools` | A large MCP catalog finishes. |
+| `tool_round_trip` | A real tool call and result pass the parser. |
+| `subagent` | A real subagent keeps its own conversation key. |
+| `auto_review` | The classifier keeps the exact shape Gateway reviews natively, and the reviewed action then runs. A changed shape is refused, which blocks the update. |
+
+The check also needs Claude Code's session UUID and request-class header on each
+accepted request, because live sessions and hint handling depend on them.
+
+A rejection counts as known only when removing a field from the list in
+[Messages](messages.md#known-request-rejections) makes the request valid. Any
+other rejection blocks the candidate, **even when Claude Code recovers**, because
+a retry can turn a feature off without telling anyone. A client that cannot finish
+also blocks it. The last verified CLI stays selected until Gateway is updated.
+
+The candidate's `request-shape.json` report and the `requestShape` field in
+`provider-compatibility.json` hold field names, beta values and counts, never
+prompts or tool content. Comparing `requestShape` between versions shows what
+changed. To test any installed CLI by hand, build first and then run:
+
+```sh
+node scripts/claude-request-shape.mjs --claude /absolute/path/to/claude \
+  --package "$PWD" --root "$(mktemp -d /tmp/claude-request-shape.XXXXXX)"
+```
+
+The exit code is non-zero when the shape changed. This proves request shapes only.
+It does not prove model behavior, cache use or long sessions.
 
 ## Generated SDK inputs
 
