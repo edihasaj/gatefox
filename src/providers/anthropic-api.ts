@@ -56,14 +56,20 @@ export class AnthropicAPI implements Provider {
       if (index < 0) throw new ProviderError("invalid_request", "Historical tool is absent from the current catalog", 400);
       return `tool_${index}`;
     };
-    const messages: Array<{ role: "user" | "assistant"; content: Array<Record<string, unknown>> }> = [];
+    const messages: Array<{ role: "user" | "assistant" | "system"; content: Array<Record<string, unknown>> }> = [];
     const system: string[] = [];
     let sawConversation = false;
     // Calls to tools this request does not declare, and their results, stay in the history as text (historical-tools.ts).
     const absent = undeclaredCalls(normalized.messages, name => tools.some(tool => tool.function.name === name));
     for (const message of normalized.messages) {
       if (message.role === "system" || message.role === "developer") {
-        if (context.clientProtocol === "messages" && sawConversation) throw new ProviderError("invalid_request", "Anthropic Messages requests cannot represent mid-conversation system instructions", 400);
+        if (context.clientProtocol === "messages" && sawConversation) {
+          // Native Messages supports appended system instructions. Keep their position
+          // and authority; the upstream validates its model's placement rules.
+          const content = anthropicParts(message);
+          if (content.length) messages.push({ role: "system", content });
+          continue;
+        }
         if (message.content) system.push(message.content);
         continue;
       }

@@ -162,8 +162,14 @@ unsupported instructions, hosted tools, and destructive context edits must not
 disappear silently.
 
 The Anthropic API adapter keeps initial system text blocks separate so an
-attribution block cannot swallow later instructions. It rejects mid-conversation
-system messages rather than changing their position.
+attribution block cannot swallow later instructions. For native Messages clients,
+later system instructions keep their original positions as `role: "system"`
+messages. The upstream validates model support and placement according to
+[Anthropic's rules](https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages#limitations).
+For example, a system instruction can follow the user turn delivering tool
+results and precede the next assistant turn. The adapter preserves tool results
+and instruction authority across that boundary. Responses clients keep their
+existing leading-system normalization.
 
 Chat Completions uses its established leading-system representation for both
 client protocols: all system/developer instruction text is combined, in its
@@ -289,7 +295,6 @@ that is not listed here.
 | --- | --- |
 | `safeguards` | Claude Code retries without it and uses its built-in auto-mode classifier; see [auto mode](#auto-mode). |
 | Tool `defer_loading` | Tool search is unsupported. From Claude Code 2.1.305 the client retries with every MCP tool loaded upfront. On 2.1.299, setting `ENABLE_TOOL_SEARCH=true` ends in `API Error: 400`. |
-| Mid-conversation `system` messages on `anthropic-api` routes | The route refuses them, and Claude Code 2.1.299 sends them on every request without recovering. **`anthropic-api` routes do not currently work with Claude Code.** The update check records this and continues. |
 
 ## Auto mode
 

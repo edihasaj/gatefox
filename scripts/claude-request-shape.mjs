@@ -106,14 +106,12 @@ function adapterStub() {
 }
 
 /** Sends one accepted request through each real adapter. Only the caller-visible 4xx refusals count here. */
-async function adapterRejection(request, adapters, known) {
+async function adapterRejection(request, adapters) {
   // The stub answers with text, so a forced tool choice ends in a 5xx after the adapter has checked and sent the request.
   const forced = request.tool_choice && !['auto', 'none'].includes(request.tool_choice);
   for (const { kind, provider } of adapters) {
     try { for await (const event of provider.infer(request, new AbortController().signal, { clientProtocol: 'messages' })) if (event.type === 'done') break; }
     catch (error) {
-      // Claude Code does not recover from this one, so a live Anthropic route fails. It is recorded, and the rest of the run proves the other routes.
-      if (kind === 'anthropic-api' && error.message.includes('mid-conversation system')) { known.add('anthropic_mid_conversation_system'); continue; }
       if (error.status >= 400 && error.status < 500) return { kind, error };
       if (forced && /required tool/i.test(error.message ?? '') && error.status >= 500) continue;
       throw Object.assign(Error(`Adapter stub failed for ${kind}`), { cause: error });
@@ -156,7 +154,7 @@ function backend(gateway, state, adapters) {
         return;
       }
       if (result.verdict === 'accepted') {
-        const refused = await adapterRejection({ ...result.request, model: 'route-model' }, adapters, state.routeRefusals).catch(() => { state.failures.push('adapter_stub_failed'); });
+        const refused = await adapterRejection({ ...result.request, model: 'route-model' }, adapters).catch(() => { state.failures.push('adapter_stub_failed'); });
         if (refused) Object.assign(result, { verdict: 'new_rejection', error: refused.error, fields: [`route:${refused.kind}`] });
       }
       state.requests.push({ verdict: result.verdict, fields: result.fields ?? [], topLevel: Object.keys(body), toolFields: (body.tools || []).flatMap(tool => Object.keys(tool)),
@@ -194,7 +192,7 @@ function clientResult(stdout) {
 
 async function runScenario(scenario, { command, gateway, root }) {
   const home = join(root, scenario.name); const work = join(home, 'work'); mkdirSync(work, { recursive: true, mode: 0o700 });
-  const state = { requests: [], failures: [], routeRefusals: new Set(), script: scenario.script, proofFile: join(work, 'proof.txt') };
+  const state = { requests: [], failures: [], script: scenario.script, proofFile: join(work, 'proof.txt') };
   writeFileSync(state.proofFile, 'shape probe\n', { mode: 0o600 });
   const stub = adapterStub();
   await new Promise(done => stub.listen(0, '127.0.0.1', done));
@@ -249,7 +247,7 @@ export function evaluate(scenario, state, run) {
   const windows = Object.values(result?.modelUsage ?? {}).map(usage => usage?.contextWindow).filter(value => typeof value === 'number');
   if (scenario.window && !windows.includes(scenario.window)) failures.push('context_window_ignored');
   return { name: scenario.name, passed: !failures.length, failures: sorted(failures), requests: requests.length, accepted: accepted.length,
-    knownRejections: sorted([...requests.filter(request => request.verdict === 'known_rejection').flatMap(request => request.fields), ...(state.routeRefusals ?? [])]),
+    knownRejections: sorted(requests.filter(request => request.verdict === 'known_rejection').flatMap(request => request.fields)),
     newRejectionFields: sorted(fresh.flatMap(request => request.fields)), newRejectionClasses: sorted(fresh.map(request => request.requestClass ?? 'unknown')), topLevelFields: sorted(requests.flatMap(request => request.topLevel)),
     toolFields: sorted(requests.flatMap(request => request.toolFields)), betas: sorted(requests.flatMap(request => request.betas)),
     requestClasses: sorted(requests.map(request => request.requestClass).filter(Boolean)), ...(subagentKey ? { subagentKey } : {}), ...(scenario.window ? { contextWindow: windows[0] ?? null } : {}) };
