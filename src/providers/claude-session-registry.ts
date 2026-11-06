@@ -9,7 +9,7 @@ export function compactionCheckpoint(scope: string, threadId: string): (() => vo
   const key = sessionKey(scope, threadId), session = registry.sessions.get(key);
   if (!session || session.state === "closed") {
     const hold = registry.replayUntil.get(key), reason = replayPinned(registry, key);
-    if (!hold || !["prefix_diverged", "unexpected_tail", "forced_choice", "effort_midturn"].includes(reason ?? "")) return;
+    if (!hold || !["crashed", "prefix_diverged", "unexpected_tail", "forced_choice", "effort_midturn"].includes(reason ?? "")) return;
     return () => {
       if (!registry.sessions.has(key) && registry.replayUntil.get(key) === hold) {
         registry.replayUntil.delete(key); registry.ended.delete(key);

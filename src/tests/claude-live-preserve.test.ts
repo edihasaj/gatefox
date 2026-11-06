@@ -7,7 +7,7 @@ import { compactionCheckpoint, pinReplay, sessionRegistry } from "../providers/c
 import { ProviderError } from "../providers/provider.js";
 import { streamFailureCode } from "../provider-failure.js";
 import { ResponsesWriter } from "../protocol/responses.js";
-import { configureTelemetry, flushTelemetry } from "../telemetry.js";
+import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { installClaudeFixture } from "./claude-cli-fixture.js";
 import type { ResponsesInputItem, ResponsesRequest } from "../protocol/types.js";
 
@@ -70,12 +70,12 @@ test("an adopted history-mismatch replay hold refuses before starting any CLI", 
   }
 });
 
-test("successful compaction recovers an unchanged legacy mismatch hold", { timeout: 30000 }, async () => {
+for (const reason of ["unexpected_tail", "crashed"]) test(`successful compaction recovers an unchanged ${reason} hold`, { timeout: 30000 }, async () => {
   const fixture = await installClaudeFixture({ replies: [{ text: "Summary" }, { text: "Recovered" }] });
   configureTelemetry(fixture.directory, "test");
   const id = `legacy-compact-${process.pid}`, key = sessionKey(`${id}\0`, "old");
   const provider = new ClaudeSubscription({ id, type: "claude-subscription", models: { fixture: "fixture" }, claudeSessions: { mode: "live", warmup: 0 } });
-  pinReplay(sessionRegistry(), key, Date.now(), "unexpected_tail");
+  pinReplay(sessionRegistry(), key, Date.now(), reason);
   try {
     for await (const _ of provider.infer({ model: "fixture", input: "Summarize" }, new AbortController().signal, { threadId: "old", requestKind: "compaction" })) {}
     assert.equal(sessionRegistry().replayUntil.has(key), false);
@@ -91,6 +91,62 @@ test("successful compaction recovers an unchanged legacy mismatch hold", { timeo
     await claudeLive({ max: 6, parkMinutes: 60 }).stop();
     await flushTelemetry(); await fixture.restore();
   }
+});
+
+for (const ending of ["failed", "cancelled"] as const) test(`${ending} compaction preserves a Claude crash hold`, async () => {
+  const fixture = await installClaudeFixture({ replies: [{ fail: ending === "failed", slow: ending === "cancelled", text: "Summary" }] });
+  configureTelemetry(fixture.directory, "test");
+  const id = `dead-compact-${ending}-${process.pid}`, key = sessionKey(`${id}\0`, "held");
+  const provider = new ClaudeSubscription({ id, type: "claude-subscription", models: { fixture: "fixture" }, claudeSessions: { mode: "live", warmup: 0 } });
+  const registry = sessionRegistry(); pinReplay(registry, key, Date.now(), "crashed"); const hold = registry.replayUntil.get(key);
+  const controller = new AbortController();
+  try {
+    await assert.rejects(async () => {
+      for await (const event of provider.infer({ model: "fixture", input: "Summarize" }, controller.signal, { threadId: "held", requestKind: "compaction" })) {
+        if (ending === "cancelled" && event.type === "text") controller.abort();
+      }
+    });
+    assert.equal(registry.replayUntil.get(key), hold);
+  } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await flushTelemetry(); await fixture.restore(); }
+});
+
+test("a completed compaction cannot release a replacement crash hold or a new live session", () => {
+  const registry = sessionRegistry(), scope = "crash-compact-race", thread = "held", key = sessionKey(scope, thread);
+  pinReplay(registry, key, Date.now(), "crashed"); const replaced = compactionCheckpoint(scope, thread)!;
+  pinReplay(registry, key, Date.now(), "crashed"); const replacement = registry.replayUntil.get(key);
+  replaced(); assert.equal(registry.replayUntil.get(key), replacement);
+  const occupied = compactionCheckpoint(scope, thread)!;
+  registry.sessions.set(key, { state: "turn_done" } as never);
+  try { occupied(); assert.equal(registry.replayUntil.get(key), replacement); }
+  finally { registry.sessions.delete(key); registry.replayUntil.delete(key); registry.ended.delete(key); }
+});
+
+for (const nativeError of ["invalid_request", { toString: "private" }]) test(`late Claude output records safe ${typeof nativeError} categories and compaction recovers its held thread`, async () => {
+  const fixture = await installClaudeFixture({ replies: [{ calls: [{ tool: "read", input: {} }] }, { text: "Summary" }, { text: "Recovered" }] });
+  configureTelemetry(fixture.directory, "test"); const since = Date.now();
+  const id = `late-output-${process.pid}`, context = { threadId: "held" };
+  const provider = new ClaudeSubscription({ id, type: "claude-subscription", models: { fixture: "fixture" }, claudeSessions: { mode: "live", warmup: 0 } });
+  const drain = async (request: ResponsesRequest, compaction = false) => {
+    for await (const _ of provider.infer(request, new AbortController().signal, { ...context, ...(compaction ? { requestKind: "compaction" as const } : {}) })) {}
+  };
+  try {
+    await drain({ model: "fixture", input: "Read", tools });
+    const [session] = claudeLive({ max: 6, parkMinutes: 60 }).sessions();
+    (session as unknown as { detached(message: Record<string, unknown>, event?: string): void }).detached({
+      type: "assistant", error: nativeError, message: { id: "private-message-id", content: [{ type: "text", text: "private diagnostic prose" }] },
+    });
+    await session.close("closed", "test", true);
+    await assert.rejects(drain({ model: "fixture", input: "Continue" }), (error: unknown) => error instanceof ProviderError && error.upstream?.code === "session_continuity_unavailable");
+    assert.deepEqual((await fixture.capture()).filter(row => row.start).map(row => row.start), ["live"]);
+    await flushTelemetry(); const events = await readTelemetry(fixture.directory, since);
+    const violation = events.find(row => row.event === "claude_session_violation")!;
+    assert.equal(violation.messageKind, "assistant"); assert.equal(violation.nativeError, typeof nativeError === "string" ? nativeError : "other");
+    assert.equal(violation.state, "awaiting_outputs"); assert.equal(violation.pendingCalls, 1);
+    assert.equal(JSON.stringify(events).includes("private"), false);
+    await drain({ model: "fixture", input: "Summarize" }, true);
+    await drain({ model: "fixture", input: "Compacted history" });
+    assert.deepEqual((await fixture.capture()).filter(row => row.start).map(row => row.start), ["live", "oneshot", "live"]);
+  } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await flushTelemetry(); await fixture.restore(); }
 });
 
 for (const fails of [false, true]) test(`${fails ? "failed" : "completed"} client compaction ${fails ? "preserves" : "replaces"} the session without a window ID`, { timeout: 30000 }, async () => {

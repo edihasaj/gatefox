@@ -17,6 +17,7 @@ import { claudeToolName } from "./claude-tool-names.js";
 import { ClaudeRelay, type RelayContent } from "./claude-relay.js";
 import { echoDigests, partialDigest, type LedgerState } from "./claude-ledger.js";
 import { providerCommand } from "../provider-tool-runtime.js";
+import { telemetry } from "../telemetry.js";
 
 export type SessionState = "starting" | "generating" | "interrupting" | "awaiting_outputs" | "turn_done" | "closed";
 export type SessionEnd = "reaped" | "evicted" | "crashed" | "closed";
@@ -66,6 +67,7 @@ const maxLine = 8 * 1024 * 1024;
 /** Startup bound (spawn, initialize and the relay hello); tests shorten it. */
 export const sessionLimits = { startMs: 15000 };
 const eventType = (message: Record<string, unknown>) => message.type === "stream_event" ? (message.event as { type?: unknown } | undefined)?.type : undefined;
+const category = (value: unknown, allowed: string[]): string => typeof value === "string" && allowed.includes(value) ? value : "other";
 /** The typed failure for a tool the CLI must never run, classified like the one-shot path. */
 function foreignTool(name: unknown): ProviderError {
   try { nativeClaudeCalls([{ name: typeof name === "string" ? name : undefined }], []); } catch (error) { if (error instanceof ProviderError) return error; }
@@ -395,7 +397,16 @@ export class ClaudeSession {
     }
     if (this.state !== "awaiting_outputs" && this.state !== "turn_done") return;
     const echo = message.type === "assistant" && (message.message as { id?: unknown } | undefined)?.id === this.endedMessage;
-    if (message.type === "result" || (message.type === "assistant" && !echo) || event === "message_start" || event === "content_block_start" || event === "content_block_delta") void this.close("crashed", "unexpected_output", true);
+    if (message.type === "result" || (message.type === "assistant" && !echo) || event === "message_start" || event === "content_block_start" || event === "content_block_delta") {
+      telemetry("claude_session_violation", {
+        threadKey: this.key.slice(0, 8), state: this.state, pendingCalls: this.pending.length,
+        messageKind: category(message.type, ["assistant", "result", "stream_event"]),
+        eventKind: category(event, ["message_start", "content_block_start", "content_block_delta"]),
+        nativeError: category(message.type === "result" ? message.error_code : message.error, ["invalid_request", "authentication_failed", "billing_error", "rate_limit", "server_error"]),
+        isError: message.is_error === true || typeof message.error === "string", sameMessage: echo,
+      });
+      void this.close("crashed", "unexpected_output", true);
+    }
   }
 
   private control(subtype: string, fields: Record<string, unknown>, timeoutMs: number): Promise<boolean> {
