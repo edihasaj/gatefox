@@ -88,6 +88,10 @@ finishes normally, then the session closes instead of remaining parked in replay
   Explicit thread IDs retain the preservation behavior above.
 - **Dead session:** a crashed CLI cannot be preserved. Its existing replay hold
   remains bounded by the shared cache guard and expires after an idle hour.
+  Each ordinary retry restarts that hour. Explicit client compaction can recover
+  the same chat: only a successful, uncancelled compaction clears the unchanged
+  crash hold. A newer session or replacement hold remains protected. Gateway
+  does not replay the failed request automatically.
 - **Refused turn:** a `reasoning_extraction` refusal ends the session (`closed`,
   reason `refused`) without a hold, so the next message starts a new session and
   reaches Claude. Rebuilding the chat costs one full resend, and the

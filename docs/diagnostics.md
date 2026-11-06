@@ -10,6 +10,16 @@ read_when:
 The gateway keeps a private event log on every Mac and sends only exceptions to
 the private GlitchTip project. Neither runs on a request path.
 
+## Claude output between requests
+
+`claude_session_violation` records unexpected output after a Claude request has
+ended: the hashed thread key, session state, pending-call count, and fixed
+`messageKind`, `eventKind`, and `nativeError` categories. It also records whether
+the frame reports an error and whether an assistant frame matches the completed
+message. Unknown categories become `other`. No message text, IDs, tool arguments,
+or diagnostic prose are recorded. The session still closes without replay.
+Older `unexpected_output` records do not identify the frame that triggered them.
+
 ## Responses tool identity failures
 
 `tool_identity_failure` separates Responses catalog/name matching failures from
