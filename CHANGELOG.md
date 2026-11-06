@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- A provider account with no balance now fails with a readable message instead of a vague 502.
+
+- Claude Code now works on Qwen and other routes without its default effort. `gateway claude-config`
+  starts on an effort the launch model offers. The update check now sends requests through the real
+  provider adapters, so a refusal like this one blocks an update.
+
 - Claude Code updates are now checked against the gateway's real Messages parser. Each candidate
   runs real Claude Code through plain, recognized-model, MCP, tool, subagent and auto-mode scenarios
   against a synthetic backend, and a request field the gateway does not recognize blocks the update

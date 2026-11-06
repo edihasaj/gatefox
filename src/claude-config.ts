@@ -24,7 +24,7 @@ function apiKeyHelper(credentialArgs: string[]): string {
 
 /** The public catalog fields Claude settings use. A remote catalog is untrusted, so each is checked where it is read. */
 export interface ClaudeCatalog {
-  models: Array<{ slug?: unknown; display_name?: unknown; description?: unknown; visibility?: unknown; context_window?: unknown }>;
+  models: Array<{ slug?: unknown; display_name?: unknown; description?: unknown; visibility?: unknown; context_window?: unknown; default_reasoning_level?: unknown; supported_reasoning_levels?: unknown }>;
   /** Known only where the gateway's configuration is available; a remote client sees just the public catalog. */
   knownWindows?: ReadonlySet<string>;
 }
@@ -48,11 +48,22 @@ function contextWindow(model: string, catalog: ClaudeCatalog): Record<string, st
   return known && typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(value) } : {};
 }
 
+// The values Claude Code keeps from settings; it silently drops any other.
+const settingsEfforts = new Set(["low", "medium", "high", "xhigh"]);
+/** Claude Code picks its own default effort, which a route may not offer. A supported default lets a fresh session work. */
+function launchEffort(model: string, catalog: ClaudeCatalog): { effortLevel?: string } {
+  const row = catalog.models.find(entry => entry.slug === model);
+  const level = text(row?.default_reasoning_level);
+  const offered = Array.isArray(row?.supported_reasoning_levels) && row.supported_reasoning_levels.some(entry => (entry as { effort?: unknown } | null)?.effort === level);
+  return level && offered && settingsEfforts.has(level) ? { effortLevel: level } : {};
+}
+
 export function claudeSettings(model: string, endpoint: string, credentialArgs: string[], catalog: ClaudeCatalog = { models: [] }): string {
   return JSON.stringify({
     model,
     env: { ANTHROPIC_BASE_URL: claudeBaseURL(endpoint), CLAUDE_CODE_GATEWAY_HINT_HEADERS: "1", ...contextWindow(model, catalog) },
     apiKeyHelper: apiKeyHelper(credentialArgs),
+    ...launchEffort(model, catalog),
     ...modelPicker(model, catalog),
   }, null, 2) + "\n";
 }

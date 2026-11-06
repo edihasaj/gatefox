@@ -258,7 +258,7 @@ export class ChatCompletionsAPI implements Provider {
           const overflow = rejected === undefined ? undefined : chatContextFailure(rejected);
           if (overflow) { await response.body?.cancel().catch(() => {}); throw overflow; }
         }
-        const typed = await responsesHttpError(response); if (typed.code === "context_length_exceeded" || response.status === 429) throw typed;
+        const typed = await responsesHttpError(response); if (typed.code === "context_length_exceeded" || typed.code === "insufficient_quota" || response.status === 429) throw typed;
         throw new ProviderError(response.status === 429 ? "usage_limit" : response.status === 401 ? "authentication" : "upstream_error", `Chat API returned HTTP ${response.status}`, [400, 401, 403, 429].includes(response.status) ? response.status : 502);
       }
       if (!response.body) throw incomplete("Chat API returned no stream");

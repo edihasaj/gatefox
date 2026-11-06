@@ -75,6 +75,25 @@ test('a new field blocks even when the client finishes, and the report names it 
   assert.equal(JSON.stringify(report).includes('private prompt text'), false);
 });
 
+test('a request a real adapter refuses blocks the update, as the Qwen effort failure would have', async () => {
+  const { script, root } = fakeClaude({ output_config: { effort: 'high' } });
+  const report = await probeClaudeRequestShape({ command: script, checkout, root, only: [scenarios[1]] });
+  assert.equal(report.passed, false);
+  assert.deepEqual(report.scenarios[0].newRejectionFields, ['route:chat-completions-api']);
+});
+
+test('a valid forced tool choice is not mistaken for a refusal', async () => {
+  const { script, root } = fakeClaude({ tools: [{ name: 'lookup', input_schema: { type: 'object' } }], tool_choice: { type: 'any' } });
+  const report = await probeClaudeRequestShape({ command: script, checkout, root, only: [scenarios[1]] });
+  assert.deepEqual(report.scenarios[0].failures, []);
+});
+
+test('a forced tool choice is still checked by the real adapters', async () => {
+  const { script, root } = fakeClaude({ tools: [{ name: 'lookup', input_schema: { type: 'object' } }], tool_choice: { type: 'any' }, output_config: { effort: 'high' } });
+  const report = await probeClaudeRequestShape({ command: script, checkout, root, only: [scenarios[1]] });
+  assert.deepEqual(report.scenarios[0].newRejectionFields, ['route:chat-completions-api']);
+});
+
 test('an unchanged shape passes and records the fields and betas it saw', async () => {
   const { script, root } = fakeClaude({});
   const report = await probeClaudeRequestShape({ command: script, checkout, root, only: [scenarios[1]] });
