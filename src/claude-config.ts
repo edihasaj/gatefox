@@ -23,7 +23,11 @@ function apiKeyHelper(credentialArgs: string[]): string {
 }
 
 /** The public catalog fields Claude settings use. A remote catalog is untrusted, so each is checked where it is read. */
-export interface ClaudeCatalog { models: Array<{ slug?: unknown; display_name?: unknown; description?: unknown; visibility?: unknown; context_window?: unknown }> }
+export interface ClaudeCatalog {
+  models: Array<{ slug?: unknown; display_name?: unknown; description?: unknown; visibility?: unknown; context_window?: unknown }>;
+  /** Known only where the gateway's configuration is available; a remote client sees just the public catalog. */
+  knownWindows?: ReadonlySet<string>;
+}
 const text = (value: unknown): string | undefined => typeof value === "string" && value ? value : undefined;
 
 /**
@@ -40,7 +44,8 @@ function modelPicker(model: string, catalog: ClaudeCatalog) {
 /** Claude Code assumes 200K for an unknown ID. The setting is per process, so it describes the launch model only. */
 function contextWindow(model: string, catalog: ClaudeCatalog): Record<string, string> {
   const value = catalog.models.find(row => row.slug === model)?.context_window;
-  return typeof value === "number" && Number.isSafeInteger(value) && value > unknownContextWindow ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(value) } : {};
+  const known = catalog.knownWindows?.has(model) === true || value !== unknownContextWindow;
+  return known && typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(value) } : {};
 }
 
 export function claudeSettings(model: string, endpoint: string, credentialArgs: string[], catalog: ClaudeCatalog = { models: [] }): string {

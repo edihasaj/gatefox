@@ -93,7 +93,11 @@ test("Claude settings declare a known context window and ask for hint headers", 
   assert.equal(generated("qwen/flash").env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined, "the catalog's placeholder floor is not a real window");
   const bare = JSON.parse(claudeSettings("codex/sol", "http://127.0.0.1:3457/v1", [])) as Record<string, unknown>;
   assert.equal(bare.modelPicker, undefined);
-  for (const context_window of ["500000", 1.5, -1]) {
+  const small = JSON.parse(claudeSettings("m", "http://127.0.0.1:3457/v1", [], { models: [{ slug: "m", context_window: 16384 }] })) as { env: Record<string, string> };
+  assert.equal(small.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "16384", "a small known window matters most");
+  const exact = JSON.parse(claudeSettings("m", "http://127.0.0.1:3457/v1", [], { models: [{ slug: "m", context_window: 32768 }], knownWindows: new Set(["m"]) })) as { env: Record<string, string> };
+  assert.equal(exact.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "32768", "a real window that equals the placeholder is still declared");
+  for (const context_window of ["500000", 1.5, -1, 0]) {
     const hostile = JSON.parse(claudeSettings("m", "http://127.0.0.1:3457/v1", [], { models: [{ slug: "m", context_window }] })) as { env: Record<string, string> };
     assert.equal(hostile.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined);
   }

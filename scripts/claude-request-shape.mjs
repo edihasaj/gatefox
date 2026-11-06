@@ -108,7 +108,8 @@ function backend(gateway, state) {
       state.requests.push({ verdict: result.verdict, fields: result.fields ?? [], topLevel: Object.keys(body), toolFields: (body.tools || []).flatMap(tool => Object.keys(tool)),
         betas: String(req.headers['anthropic-beta'] ?? '').split(',').map(value => value.trim()).filter(Boolean),
         requestClass, agent: agentId !== undefined,
-        sessionId: result.request?.client_metadata?.session_id, parentSessionId: gateway.messagesSessionId(body.metadata), toolResult: hasToolResult(body) });
+        sessionId: result.request?.client_metadata?.session_id, parentSessionId: gateway.messagesSessionId(body.metadata), toolResult: hasToolResult(body),
+        mcpTools: (body.tools || []).filter(tool => tool.name?.startsWith('mcp__stub')).length });
       if (result.verdict !== 'accepted') {
         res.writeHead(result.error.status ?? 400, { 'content-type': 'application/json' });
         res.end(JSON.stringify(gateway.anthropicError(result.error.code, result.error.message, result.error.status)));
@@ -166,6 +167,7 @@ export function evaluate(scenario, state, run) {
   const result = clientResult(run.stdout ?? '');
   if (run.timedOut) failures.push('client_timeout');
   if (run.spawnFailed) failures.push('client_spawn');
+  if (!run.timedOut && !run.spawnFailed && run.code !== 0) failures.push('client_exit');
   if (!result || result.is_error || !String(result.result ?? '').includes(marker)) failures.push('client_did_not_finish');
   const requests = state.requests; const accepted = requests.filter(request => request.verdict === 'accepted');
   const fresh = requests.filter(request => request.verdict === 'new_rejection');
@@ -173,6 +175,8 @@ export function evaluate(scenario, state, run) {
   if (!accepted.length) failures.push('no_accepted_request');
   if (accepted.some(request => !request.requestClass)) failures.push('request_class_missing');
   if (accepted.some(request => !request.agent && !request.parentSessionId)) failures.push('session_identity_missing');
+  if (scenario.mcp && !accepted.some(request => request.mcpTools > 0)) failures.push('mcp_tools_missing');
+  if (scenario.permissionMode === 'auto' && !requests.some(request => request.requestClass === 'auxiliary')) failures.push('classifier_missing');
   if (scenario.script === 'read' && !accepted.some(request => request.toolResult)) failures.push('tool_result_missing');
   if (scenario.permissionMode === 'auto' && accepted.some(request => request.agent)) failures.push('auto_review_behavior_changed');
   let subagentKey;
@@ -183,7 +187,7 @@ export function evaluate(scenario, state, run) {
     if (subagentKey !== 'separate') failures.push('subagent_identity_shared');
   }
   const windows = Object.values(result?.modelUsage ?? {}).map(usage => usage?.contextWindow).filter(value => typeof value === 'number');
-  if (scenario.window && windows.length && !windows.includes(scenario.window)) failures.push('context_window_ignored');
+  if (scenario.window && !windows.includes(scenario.window)) failures.push('context_window_ignored');
   return { name: scenario.name, passed: !failures.length, failures: sorted(failures), requests: requests.length, accepted: accepted.length,
     knownRejections: sorted(requests.filter(request => request.verdict === 'known_rejection').flatMap(request => request.fields)),
     newRejectionFields: sorted(fresh.flatMap(request => request.fields)), newRejectionClasses: sorted(fresh.map(request => request.requestClass ?? 'unknown')), topLevelFields: sorted(requests.flatMap(request => request.topLevel)),

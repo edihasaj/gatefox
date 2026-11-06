@@ -29,7 +29,7 @@ test('the classifier controls are only known on a side request', () => {
 });
 
 const accepted = { verdict: 'accepted', fields: [], topLevel: [], toolFields: [], betas: [], requestClass: 'main', agent: false, parentSessionId: 'session', sessionId: 'session' };
-const finished = { stdout: JSON.stringify({ type: 'result', is_error: false, result: 'SHAPE_OK', modelUsage: {} }) };
+const finished = { code: 0, stdout: JSON.stringify({ type: 'result', is_error: false, result: 'SHAPE_OK', modelUsage: {} }) };
 const state = requests => ({ requests, failures: [] });
 const plain = { name: 'plain' };
 
@@ -44,7 +44,12 @@ test('a clean run passes and every lost contract fails', () => {
   assert.ok(failing({ name: 'read', script: 'read' }, [accepted]).includes('tool_result_missing'));
   assert.ok(failing({ name: 'agent', expectSubagent: true }, [accepted, { ...accepted, agent: true }]).includes('subagent_identity_shared'));
   assert.ok(failing({ name: 'auto', permissionMode: 'auto' }, [accepted, { ...accepted, agent: true, sessionId: 'child' }]).includes('auto_review_behavior_changed'));
-  const window = { stdout: JSON.stringify({ type: 'result', is_error: false, result: 'SHAPE_OK', modelUsage: { m: { contextWindow: 200000 } } }) };
+  assert.ok(failing({ name: 'auto', permissionMode: 'auto' }, [accepted]).includes('classifier_missing'), 'a run with no classifier proves nothing');
+  assert.ok(failing({ name: 'mcp', mcp: true }, [{ ...accepted, mcpTools: 0 }]).includes('mcp_tools_missing'));
+  assert.deepEqual(failing({ name: 'mcp', mcp: true }, [{ ...accepted, mcpTools: 60 }]), []);
+  assert.ok(failing(plain, [accepted], { ...finished, code: 1 }).includes('client_exit'), 'success text does not excuse a failed exit');
+  assert.ok(failing({ name: 'window', window: 400000 }, [accepted]).includes('context_window_ignored'), 'a run that reports no window proves nothing');
+  const window = { code: 0, stdout: JSON.stringify({ type: 'result', is_error: false, result: 'SHAPE_OK', modelUsage: { m: { contextWindow: 200000 } } }) };
   assert.ok(failing({ name: 'window', window: 400000 }, [accepted], window).includes('context_window_ignored'));
 });
 

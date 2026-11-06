@@ -14,6 +14,11 @@ export { modelLabel };
 
 /** The floor a row gets when no window is known; it is a placeholder, not a measured window. */
 export const unknownContextWindow = 32768;
+/** Aliases with a real window, so one that equals the placeholder is not mistaken for it. Published rows stay unchanged. */
+export function knownContextWindows(config: GatewayConfig): Set<string> {
+  return new Set([...config.providers.flatMap(provider => Object.keys(provider.models).filter(alias => provider.modelMetadata?.[alias]?.contextWindow)),
+    ...Object.keys(config.managedRouting?.routes ?? {})]);
+}
 
 /** Honest startup metadata for Codex's native model picker and reasoning control. */
 export function modelCatalog(config: GatewayConfig): { models: Array<Record<string, unknown>> } {
