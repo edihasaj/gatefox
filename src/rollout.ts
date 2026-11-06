@@ -1,7 +1,6 @@
 import { sameGatewaySdk } from "./release-sdk-match.js";
 import { readHealthTelemetry, unansweredSkewRefusals, type HealthEvent } from "./health-telemetry.js";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -16,6 +15,7 @@ import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import { readPendingNativeSharing } from "./service-native-staging.js";
 import { readPendingClaudeConsolidation } from "./service-claude-staging.js";
 import { locateInstall, parsePs, runVersions, type VersionsResult } from "./versions.js";
+import { sameRelayBinary } from "./relay-binary.js";
 
 export type RolloutState = "ready" | "pending" | "blocked" | "failed";
 export type RolloutReason =
@@ -278,17 +278,6 @@ async function requiredComponentPending(plan: ServicePlan, rawStatus: unknown, v
   return false;
 }
 
-/** The native relay binary of a release, hashed; undefined when it cannot be read. */
-async function relayDigest(root: string, release: string): Promise<string | undefined> {
-  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.[0-9]$/.test(release)) return;
-  try { return createHash("sha256").update(await readFile(resolve(root, "releases", release, "package/native/gateway-native-relay"))).digest("hex"); }
-  catch { return; }
-}
-async function sameRelayBinary(running: string, installed: string): Promise<boolean> {
-  const root = locateInstall().roots[0]; if (!root) return false;
-  const [mine, theirs] = await Promise.all([relayDigest(root, running), relayDigest(root, installed)]);
-  return !!mine && mine === theirs;
-}
 /**
  * Processes that keep an older release label by design once a release moved without a restart (docs/rollout.md): the
  * service root, only while its live controller already runs the installed release, and the native relay, only while its

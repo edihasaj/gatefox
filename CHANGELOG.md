@@ -2,6 +2,12 @@
 
 ## 1.7.0 — 2026-11-05
 
+- `gateway health` no longer warns about a native relay that has nothing to update. Releases reuse
+  a built relay, so a running relay can carry an older release label while its binary is
+  byte-identical to the installed one. `gateway rollout` already compared the bytes, but health
+  compared only the label, so all three Macs reported `lagging native-relay` after every release.
+  A relay whose bytes differ still warns.
+
 - A Claude refusal no longer holds the chat. Gateway treated a `reasoning_extraction` refusal as a
   crashed CLI, so every later message in that chat failed before reaching Claude until it had been
   quiet for an hour, and each attempt restarted the hour. The next message now starts a new session

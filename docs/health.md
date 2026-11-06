@@ -53,6 +53,11 @@ JavaScript, and a floating `current` command path can otherwise follow a new
 installation before the service actually moves. Missing, malformed, mismatched,
 or older status snapshots do not override the inventory.
 
+A native relay whose binary is byte-identical to the installed release's is not
+lagging or stale. Releases reuse a built relay, so its release label can stay old
+with nothing to move to. `gateway versions` still prints that label, and
+`gateway rollout` counts it as retained. A relay with different bytes still warns.
+
 A section that cannot be read says so once, as a warning (`versions unreadable`,
 `telemetry unreadable`, `inference unreadable`), and the rest of the run
 continues, push included. A watchdog that could not run `ps` is degraded, not
