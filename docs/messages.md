@@ -110,6 +110,7 @@ is accepted by the generator and normalized for this purpose.
 | `env.ANTHROPIC_BASE_URL` | Points Claude Code at this gateway. |
 | `env.CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` | Asks Claude Code to label compaction and side requests; see [hint headers](#hint-headers). |
 | `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS` | Declares the launch model's catalog window so compaction runs at the right point. It is left out when the model's window is unknown, because the catalog's 32,768 placeholder does not describe the model. A remote client sees only the public catalog, so a model there whose real window is exactly 32,768 is also left out. |
+| `effortLevel` | Starts on the launch model's default effort when the model offers one, because Claude Code's own default can be a level the route refuses. |
 | `modelPicker` | Lists the catalog's visible aliases in `/model`, plus the launch model. Claude Code's own discovery keeps only IDs containing `claude` or `anthropic`, so it would hide GPT and Qwen. |
 
 `modelPicker` replaces the built-in rows because they name models this gateway may
@@ -117,6 +118,10 @@ not serve. Claude Code keeps its own **Default** row, which still names a Claude
 model. The context window is a per-process value, so it stays at the launch model's
 size after a `/model` switch: generate settings for the model you start on, and
 rely on the `prompt is too long` recovery below if you switch to a smaller one.
+The effort also carries across a switch. A route that does not offer it refuses the
+request with `does not support this reasoning effort`; choose another with `/effort`.
+A Chat Completions route with no reasoning levels refuses every effort, so Claude
+Code needs a route whose levels are known.
 
 The helper command uses POSIX shell quoting. Settings generation on Windows is
 explicitly unsupported rather than emitting an unsafe command string. The HTTP
@@ -284,6 +289,7 @@ that is not listed here.
 | --- | --- |
 | `safeguards` | Claude Code retries without it and uses its built-in auto-mode classifier. |
 | Tool `defer_loading` | Tool search is unsupported. From Claude Code 2.1.305 the client retries with every MCP tool loaded upfront. On 2.1.299, setting `ENABLE_TOOL_SEARCH=true` ends in `API Error: 400`. |
+| Mid-conversation `system` messages on `anthropic-api` routes | The route refuses them, and Claude Code 2.1.299 sends them on every request without recovering. **`anthropic-api` routes do not currently work with Claude Code.** The update check records this and continues. |
 | `stop_sequences` and `thinking: disabled` on side requests | The auto-mode classifier fails on these. **Auto mode cannot approve a guarded action through this gateway:** in the check, the action does not run. Claude Desktop has a separate [native review path](claude-desktop.md#native-auto-review). |
 
 ## Verification

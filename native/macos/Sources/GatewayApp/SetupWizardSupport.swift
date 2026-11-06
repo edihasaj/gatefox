@@ -50,6 +50,7 @@ enum ProviderChoice: String, CaseIterable, Identifiable {
     case openCodeConsole = "opencode-console"
     case openCodeGo = "opencode-go"
     case openRouter = "openrouter"
+    case deepSeek = "deepseek"
 
     var id: String { rawValue }
     var title: String {
@@ -64,6 +65,7 @@ enum ProviderChoice: String, CaseIterable, Identifiable {
         case .openCodeConsole: "OpenCode Console"
         case .openCodeGo: "OpenCode Go"
         case .openRouter: "OpenRouter"
+        case .deepSeek: "DeepSeek"
         }
     }
     var detail: String { isSubscription ? "Use your subscription" : "Connect with an API or local server" }
@@ -75,6 +77,8 @@ enum ProviderChoice: String, CaseIterable, Identifiable {
             "Choose the API format for this connection, then enter your OpenCode API key. Add model IDs manually when its catalog is unavailable."
         case .openRouter:
             "Enter your OpenRouter API key. We’ll find available models before you save, or you can add model IDs manually."
+        case .deepSeek:
+            "Enter your DeepSeek API key. Usage is billed to your DeepSeek balance. V4 Flash is selected by default."
         default:
             isSubscription ? "Connect your subscription in browser, or use an available sign-in on this Mac." : "Enter your server address. We’ll find its available models before you save."
         }
@@ -93,12 +97,16 @@ enum ProviderChoice: String, CaseIterable, Identifiable {
         default: []
         }
     }
+    /** DeepSeek's connection starts on Flash. Pricier models stay available but need a deliberate choice. */
+    static func startsSelected(_ modelID: String, endpoint: String?) -> Bool {
+        endpoint != ProviderChoice.deepSeek.defaultEndpoint || modelID == "deepseek-flash"
+    }
     var supportsAPIFormat: Bool { self == .openCodeConsole || self == .openCodeGo }
     func effectiveBackendType(for apiFormat: APIFormat = .responses) -> String {
         switch self {
         case .grokAPI:
             "responses-api"
-        case .openRouter:
+        case .openRouter, .deepSeek:
             "chat-completions-api"
         case .openCodeConsole, .openCodeGo:
             apiFormat.backendType
@@ -113,6 +121,7 @@ enum ProviderChoice: String, CaseIterable, Identifiable {
         case .localOpenAI: "http://127.0.0.1:11434/v1"
         case .grokAPI: "https://api.x.ai/v1"
         case .openRouter: "https://openrouter.ai/api/v1"
+        case .deepSeek: "https://api.deepseek.com"
         case .openCodeConsole:
             switch apiFormat {
             case .anthropic: "https://opencode.ai/inference/anthropic/v1"

@@ -99,6 +99,9 @@ export async function responsesHttpError(response: Response): Promise<ProviderEr
   }
   if ([500, 502, 503, 504].includes(response.status)) return new ProviderError("upstream_unavailable", "Provider temporarily failed; retry when it is available", 503,
     { code: typeof code === "string" && knownCodes.has(code) ? code : "unknown", event: "http" });
+  // A client cannot retry its way out of an empty account, so this is final and says what to do.
+  if (response.status === 402 || names.includes("insufficient_balance_error")) return new ProviderError("insufficient_quota", "The provider account has no usable balance. Add credit with the provider, then retry.", 402,
+    { code: "insufficient_quota", event: "http", httpStatus: response.status, ...requestIdOf(response.headers.get("x-request-id")) });
   if (names.includes("context_length_exceeded")) return contextError();
   const rejection = names.find(name => Object.hasOwn(rejections, name));
   const upstream = { code: rejection ?? names.find(name => knownCodes.has(name)) ?? "unknown", event: "http", httpStatus: response.status, ...requestIdOf(response.headers.get("x-request-id")) };

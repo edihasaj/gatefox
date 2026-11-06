@@ -87,6 +87,13 @@ test("Claude settings list what the gateway serves, because discovery drops non-
   assert.deepEqual(generated("codex/retired").modelPicker.options.map(row => row.model), ["codex/sol", "codex/retired", "qwen/flash"], "a hidden launch model stays selectable");
 });
 
+test("Claude settings start on an effort the launch model offers", () => {
+  const settings = (row: Record<string, unknown>) => JSON.parse(claudeSettings("m", "http://127.0.0.1:3457/v1", [], { models: [{ slug: "m", ...row }] })) as { effortLevel?: string };
+  assert.equal(settings({ default_reasoning_level: "medium", supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "xhigh" }] }).effortLevel, "medium");
+  assert.equal(settings({ default_reasoning_level: "high", supported_reasoning_levels: [{ effort: "low" }] }).effortLevel, undefined, "a default the model does not offer is not written");
+  assert.equal(settings({ default_reasoning_level: null, supported_reasoning_levels: [] }).effortLevel, undefined);
+});
+
 test("Claude settings declare a known context window and ask for hint headers", () => {
   assert.equal(generated("codex/sol").env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "500000");
   assert.equal(generated("codex/sol").env.CLAUDE_CODE_GATEWAY_HINT_HEADERS, "1");

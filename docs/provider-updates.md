@@ -126,7 +126,11 @@ The stream-json check proves the CLI the gateway launches. It does not prove wha
 Claude Code sends when it is the client, and the Messages parser accepts only the
 fields it knows. So the candidate also runs real Claude Code against a synthetic
 local backend that answers through the candidate's own parser, routing rules and
-error envelope. No provider, account or paid inference is involved.
+error envelope. Each accepted request then runs through the real Chat Completions,
+Anthropic and Responses adapters against a local stub, on a route that offers only
+`low`, `medium` and `xhigh`. A refusal there reaches the client just as it would
+from Gateway, so a default effort a route rejects fails the check. No provider,
+account or paid inference is involved.
 
 | Scenario | What it proves |
 | --- | --- |

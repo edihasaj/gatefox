@@ -15,7 +15,10 @@ const declaredWindow = 400000;
 // Rejections Claude Code is known to recover from. Anything else is a new shape and blocks the update.
 const knownTopLevel = ['safeguards'];
 const knownToolFields = ['defer_loading'];
-const routeKinds = ['claude-subscription', 'codex-subscription', 'responses-api'];
+const routeKinds = ['claude-subscription', 'codex-subscription', 'responses-api', 'chat-completions-api', 'anthropic-api'];
+const adapterKinds = ['chat-completions-api', 'anthropic-api', 'responses-api'];
+// A route's reasoning levels can leave out Claude Code's default, as Qwen's do.
+const routeLevels = ['low', 'medium', 'xhigh'];
 const scenarioLimitMs = 60_000;
 
 export const scenarios = [
@@ -77,6 +80,45 @@ function sse(res, model, blocks, stopReason) {
 
 const hasToolResult = body => body.messages?.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'tool_result'));
 
+/** The answers a provider adapter needs to finish, so that only its own request handling can fail. */
+function adapterStub() {
+  return createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const send = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+      if (req.url.endsWith('/chat/completions')) {
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant', content: marker }, finish_reason: 'stop' }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+      } else if (req.url.endsWith('/messages')) {
+        send('message_start', { message: { id: 'msg_stub', type: 'message', role: 'assistant', model: 'stub', content: [], stop_reason: null, usage: { input_tokens: 1, output_tokens: 1 } } });
+        send('content_block_start', { index: 0, content_block: { type: 'text', text: '' } });
+        send('content_block_delta', { index: 0, delta: { type: 'text_delta', text: marker } });
+        send('content_block_stop', { index: 0 });
+        send('message_delta', { delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } });
+        send('message_stop', {});
+      } else {
+        send('response.output_text.delta', { item_id: 'item', output_index: 0, content_index: 0, delta: marker });
+        send('response.completed', { response: { id: 'resp_stub', status: 'completed', output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
+      }
+      res.end();
+    });
+  });
+}
+
+/** Sends one accepted request through each real adapter. Only the caller-visible 4xx refusals count here. */
+async function adapterRejection(request, adapters, known) {
+  for (const { kind, provider } of adapters) {
+    try { for await (const event of provider.infer(request, new AbortController().signal, { clientProtocol: 'messages' })) if (event.type === 'done') break; }
+    catch (error) {
+      // Claude Code does not recover from this one, so a live Anthropic route fails. It is recorded, and the rest of the run proves the other routes.
+      if (kind === 'anthropic-api' && error.message.includes('mid-conversation system')) { known.add('anthropic_mid_conversation_system'); continue; }
+      if (error.status >= 400 && error.status < 500) return { kind, error };
+      throw Object.assign(Error(`Adapter stub failed for ${kind}`), { cause: error });
+    }
+  }
+}
+
 /** Decides the synthetic reply. A scripted scenario makes one tool call, then finishes. */
 function reply(state, body, agentId) {
   const text = [{ type: 'text', text: marker }];
@@ -92,11 +134,11 @@ function reply(state, body, agentId) {
 }
 
 /** The synthetic backend. It records structure only and fails exactly as Gateway would. */
-function backend(gateway, state) {
+function backend(gateway, state, adapters) {
   return createServer((req, res) => {
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));
-    req.on('end', () => {
+    req.on('end', async () => {
       const path = new URL(req.url, 'http://probe').pathname;
       if (req.method === 'GET' && path === '/v1/models') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"data":[]}'); return; }
       if (req.method !== 'POST' || path !== '/v1/messages') { res.writeHead(404); res.end(); return; }
@@ -105,6 +147,10 @@ function backend(gateway, state) {
       const agentId = typeof req.headers['x-claude-code-agent-id'] === 'string' ? req.headers['x-claude-code-agent-id'] : undefined;
       const requestClass = req.headers['x-claude-code-request-class'];
       const result = classifyRequest(body, gateway, agentId, requestClass);
+      if (result.verdict === 'accepted') {
+        const refused = await adapterRejection({ ...result.request, model: 'route-model' }, adapters, state.routeRefusals).catch(() => { state.failures.push('adapter_stub_failed'); });
+        if (refused) Object.assign(result, { verdict: 'new_rejection', error: refused.error, fields: [`route:${refused.kind}`] });
+      }
       state.requests.push({ verdict: result.verdict, fields: result.fields ?? [], topLevel: Object.keys(body), toolFields: (body.tools || []).flatMap(tool => Object.keys(tool)),
         betas: String(req.headers['anthropic-beta'] ?? '').split(',').map(value => value.trim()).filter(Boolean),
         requestClass, agent: agentId !== undefined,
@@ -140,12 +186,18 @@ function clientResult(stdout) {
 
 async function runScenario(scenario, { command, gateway, root }) {
   const home = join(root, scenario.name); const work = join(home, 'work'); mkdirSync(work, { recursive: true, mode: 0o700 });
-  const state = { requests: [], failures: [], script: scenario.script, proofFile: join(work, 'proof.txt') };
+  const state = { requests: [], failures: [], routeRefusals: new Set(), script: scenario.script, proofFile: join(work, 'proof.txt') };
   writeFileSync(state.proofFile, 'shape probe\n', { mode: 0o600 });
-  const server = backend(gateway, state);
+  const stub = adapterStub();
+  await new Promise(done => stub.listen(0, '127.0.0.1', done));
+  const credentialFile = join(home, 'stub-credential'); writeFileSync(credentialFile, 'stub-credential\n', { mode: 0o600 });
+  const adapters = adapterKinds.map(kind => ({ kind, provider: gateway.createProvider({ id: 'route', type: kind, baseUrl: `http://127.0.0.1:${stub.address().port}/v1`, credentialFile,
+    models: { route: 'route-model' }, modelMetadata: { route: { reasoningEfforts: routeLevels } } }) }));
+  const server = backend(gateway, state, adapters);
   await new Promise(done => server.listen(0, '127.0.0.1', done));
   const endpoint = `http://127.0.0.1:${server.address().port}/v1`;
-  const catalog = { models: [{ slug: scenario.model, display_name: 'Shape · Probe', visibility: 'list', context_window: scenario.window ?? 200000 }] };
+  const catalog = { models: [{ slug: scenario.model, display_name: 'Shape · Probe', visibility: 'list', context_window: scenario.window ?? 200000,
+    default_reasoning_level: 'medium', supported_reasoning_levels: routeLevels.map(effort => ({ effort })) }] };
   const settings = JSON.parse(gateway.claudeSettings(scenario.model, endpoint, ['--file', join(home, 'unused')], catalog));
   settings.apiKeyHelper = '/bin/echo fixture-token';
   const settingsPath = join(home, 'settings.json'); writeFileSync(settingsPath, JSON.stringify(settings), { mode: 0o600 });
@@ -158,7 +210,7 @@ async function runScenario(scenario, { command, gateway, root }) {
   const env = { PATH: process.env.PATH, LANG: 'en_US.UTF-8', HOME: home, TMPDIR: home, CLAUDE_CONFIG_DIR: join(home, '.claude'),
     DISABLE_AUTOUPDATER: '1', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
   const run = await runClient(command, args, env, work);
-  await new Promise(done => { server.close(done); server.closeAllConnections(); });
+  for (const owned of [server, stub]) await new Promise(done => { owned.close(done); owned.closeAllConnections(); });
   return evaluate(scenario, state, run);
 }
 
@@ -189,7 +241,7 @@ export function evaluate(scenario, state, run) {
   const windows = Object.values(result?.modelUsage ?? {}).map(usage => usage?.contextWindow).filter(value => typeof value === 'number');
   if (scenario.window && !windows.includes(scenario.window)) failures.push('context_window_ignored');
   return { name: scenario.name, passed: !failures.length, failures: sorted(failures), requests: requests.length, accepted: accepted.length,
-    knownRejections: sorted(requests.filter(request => request.verdict === 'known_rejection').flatMap(request => request.fields)),
+    knownRejections: sorted([...requests.filter(request => request.verdict === 'known_rejection').flatMap(request => request.fields), ...(state.routeRefusals ?? [])]),
     newRejectionFields: sorted(fresh.flatMap(request => request.fields)), newRejectionClasses: sorted(fresh.map(request => request.requestClass ?? 'unknown')), topLevelFields: sorted(requests.flatMap(request => request.topLevel)),
     toolFields: sorted(requests.flatMap(request => request.toolFields)), betas: sorted(requests.flatMap(request => request.betas)),
     requestClasses: sorted(requests.map(request => request.requestClass).filter(Boolean)), ...(subagentKey ? { subagentKey } : {}), ...(scenario.window ? { contextWindow: windows[0] ?? null } : {}) };
@@ -204,8 +256,8 @@ readline.createInterface({ input: process.stdin }).on('line', line => { const m 
 
 export async function loadGateway(checkout) {
   const load = path => import(pathToFileURL(join(resolve(checkout), 'dist', path)).href);
-  const [request, routing, messages, session, config] = await Promise.all([load('protocol/messages-request.js'), load('protocol/messages-routing.js'), load('protocol/messages.js'), load('protocol/messages-session.js'), load('claude-config.js')]);
-  return { messagesToResponses: request.messagesToResponses, messagesProviderRequest: routing.messagesProviderRequest, anthropicError: messages.anthropicError, messagesSessionId: session.messagesSessionId, claudeSettings: config.claudeSettings };
+  const [request, routing, messages, session, config, server] = await Promise.all([load('protocol/messages-request.js'), load('protocol/messages-routing.js'), load('protocol/messages.js'), load('protocol/messages-session.js'), load('claude-config.js'), load('server.js')]);
+  return { messagesToResponses: request.messagesToResponses, messagesProviderRequest: routing.messagesProviderRequest, anthropicError: messages.anthropicError, messagesSessionId: session.messagesSessionId, claudeSettings: config.claudeSettings, createProvider: server.createProvider };
 }
 
 /** Runs every scenario and returns the content-free report. `passed` is false on any new shape. */

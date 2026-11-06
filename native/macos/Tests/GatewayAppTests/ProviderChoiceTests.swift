@@ -25,8 +25,16 @@ final class ProviderChoiceTests: XCTestCase {
         XCTAssertEqual(ProviderChoice.openCodeGo.defaultEndpoint(for: .anthropic), "https://opencode.ai/inference/go/anthropic/v1")
     }
 
+    func testDeepSeekConnectsDirectlyAndStartsOnFlashOnly() {
+        XCTAssertEqual(ProviderChoice.deepSeek.effectiveBackendType(), "chat-completions-api")
+        XCTAssertEqual(ProviderChoice.deepSeek.defaultEndpoint, "https://api.deepseek.com")
+        XCTAssertTrue(ProviderChoice.startsSelected("deepseek-flash", endpoint: "https://api.deepseek.com"))
+        XCTAssertFalse(ProviderChoice.startsSelected("deepseek-v4-pro", endpoint: "https://api.deepseek.com"))
+        XCTAssertTrue(ProviderChoice.startsSelected("any-model", endpoint: "https://openrouter.ai/api/v1"))
+    }
+
     func testNamedAPIPresetsRequireKeysAndKeepDistinctChoiceIdentity() {
-        let choices: [ProviderChoice] = [.grokAPI, .openCodeConsole, .openCodeGo, .openRouter]
+        let choices: [ProviderChoice] = [.grokAPI, .openCodeConsole, .openCodeGo, .openRouter, .deepSeek]
         XCTAssertTrue(choices.allSatisfy(\.requiresKey))
         XCTAssertTrue(choices.allSatisfy(\.requiresEndpoint))
         XCTAssertEqual(Set(choices.map(\.id)).count, choices.count)

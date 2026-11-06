@@ -14,8 +14,8 @@ normal tool execution, permissions and instructions:
 Codex / Claude / other client → Harness Gateway → API model service
 ```
 
-Add connection offers named presets for Grok API, OpenCode Console, OpenCode Go
-and OpenRouter. Each connection has its own credential and model aliases. The
+Add connection offers named presets for Grok API, OpenCode Console, OpenCode Go,
+OpenRouter and DeepSeek. Each connection has its own credential and model aliases. The
 existing Responses, Anthropic and OpenAI-compatible choices accept other
 compatible services through a custom URL.
 
@@ -24,6 +24,7 @@ compatible services through a custom URL.
 | Grok/xAI API | `responses-api` | `https://api.x.ai/v1` |
 | Anthropic API | `anthropic-api` | `https://api.anthropic.com/v1` |
 | OpenRouter | `chat-completions-api` | `https://openrouter.ai/api/v1` |
+| DeepSeek | `chat-completions-api` | `https://api.deepseek.com` |
 | OpenCode Console Responses | `responses-api` | `https://opencode.ai/inference/openai/v1` |
 | OpenCode Console Chat Completions | `chat-completions-api` | `https://opencode.ai/inference/openai/v1` |
 | OpenCode Console Anthropic | `anthropic-api` | `https://opencode.ai/inference/anthropic/v1` |
@@ -62,6 +63,33 @@ opt-in because only servers whose chat template supports these fields can honor
 it. With the option absent, the standard `reasoning_effort` field is unchanged.
 Keep the model's advertised levels aligned with its actual template, and verify
 the router preserves these kwargs before enabling the option.
+
+## DeepSeek
+
+DeepSeek connects directly with an API key. Usage is billed to the DeepSeek
+balance, and the account needs credit before any request works. An empty account
+fails with a readable `no usable balance` error. A new connection starts on
+`deepseek-flash`; `deepseek-v4-pro` costs more and is a deliberate choice. Use these
+exact IDs, because DeepSeek's Anthropic endpoint silently maps `claude-opus` names
+to V4 Pro. Discovery reads each model's window and its effort levels, which are
+`low`, `high` and `max`.
+
+```json
+{ "id": "deepseek", "type": "chat-completions-api", "baseUrl": "https://api.deepseek.com",
+  "credentialFile": "/absolute/path/to/deepseek.token", "models": { "deepseek/deepseek-flash": "deepseek-flash" } }
+```
+
+DeepSeek requires `reasoning_content` back on every later request that carries
+tools and answers 400 without it, but clients do not return it. For
+`https://api.deepseek.com` only, Gateway keeps it in a private, bounded store in
+process memory, and sends it back on the matching turn. It is never logged or
+written to disk. After a restart, or when history came from another model, the
+reasoning is gone, so Gateway turns thinking off for that conversation rather than
+fail it. The `chat_reasoning_replay_miss` event records each such request. Other
+chat services keep their exact request.
+
+This path has fixture coverage only: the live account had no balance when it was
+added, so real DeepSeek tool loops still need a run.
 
 ## Grok API credits
 

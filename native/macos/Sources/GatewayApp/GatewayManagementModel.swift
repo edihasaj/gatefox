@@ -206,7 +206,8 @@ final class GatewayConnectionsModel: ObservableObject {
             applyInspection(result, providers: providers, prerequisites: result.prerequisites)
         }
         availableModels = models
-        selectedModels = Set(models.filter { isDraft || $0.enabled }.map(\.id))
+        let draftEndpoint = draft?.provider.baseUrl
+        selectedModels = Set(models.filter { isDraft ? ProviderChoice.startsSelected($0.id, endpoint: draftEndpoint) : $0.enabled }.map(\.id))
         return true
     }
 
