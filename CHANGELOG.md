@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `gateway claude-config` now keeps Claude Code's auto mode working on 2.1.319 and later. That
+  release asks the server for its safety review, which this gateway does not offer, so it denied
+  every reviewed action. Generated settings turn that off so the client-side classifier is used.
+  Regenerate existing Claude settings to pick this up.
+
 - Native Messages requests can now use later system instructions through
   `anthropic-api` routes. These messages retain their position and authority,
   including after tool results. The Claude Code update check now treats a route
