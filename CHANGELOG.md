@@ -1,11 +1,13 @@
 # Changelog
 
-## 1.7.1 — 2026-11-06
+## 1.7.4 — 2026-11-06
 
 - Successful client compaction can recover a Claude chat held after its live
   session crashed. Previously compaction left the crash hold in place, so even
   a compacted chat remained blocked. The dead-session error now explains that
   retrying restarts the idle-hour wait. Thanks to Edi Hasaj for the report.
+
+## 1.7.1 — 2026-11-06
 
 - `gateway claude-config` now keeps Claude Code's auto mode working on 2.1.319 and later. That
   release asks the server for its safety review, which this gateway does not offer, so it denied
