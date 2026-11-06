@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { handleManagement } from "../app-management.js";
 import { providerRoute } from "../app-management/aliases.js";
@@ -49,7 +49,16 @@ test("a Grok connection with a written credential is ready, and a missing CLI is
   assert.equal(missing.result.providers![0].authState, "missing-cli"); assert.equal(missing.result.providers![0].canReconnect, false);
 });
 
-test("Grok reconnect runs the CLI's device-code login in the gateway's private home", async () => {
+/** The login itself is mocked, so these tests must not depend on Grok Build being installed on this host. */
+async function installedGrok(t: test.TestContext): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-grok-cli-")); const previous = process.env.PATH;
+  await writeFile(join(directory, "grok"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  process.env.PATH = `${directory}${delimiter}${previous ?? ""}`;
+  t.after(() => { process.env.PATH = previous; });
+}
+
+test("Grok reconnect runs the CLI's device-code login in the gateway's private home", async t => {
+  await installedGrok(t);
   const f = await fixture(); const snapshot = await inspect(f.path); const before = await readFile(f.path, "utf8");
   const calls: Array<{ command: string; args: string[]; home?: string }> = [];
   const signed = await handleManagement({ operation: "authenticate", configPath: f.path, providerId: "grok", revision: snapshot.revision }, { ...dependencies,

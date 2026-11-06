@@ -2,6 +2,17 @@
 
 ## 1.7.1 — 2026-11-06
 
+- `gateway claude-config` now keeps Claude Code's auto mode working on 2.1.319 and later. That
+  release asks the server for its safety review, which this gateway does not offer, so it denied
+  every reviewed action. Generated settings turn that off so the client-side classifier is used.
+  Regenerate existing Claude settings to pick this up.
+
+- Native Messages requests can now use later system instructions through
+  `anthropic-api` routes. These messages retain their position and authority,
+  including after tool results. The Claude Code update check now treats a route
+  rejection as a compatibility failure instead of allowing this known defect.
+  Thanks to Edi Hasaj for reporting the incompatibility.
+
 - Restarting a Claude session no longer races the previous session's cleanup.
   Each generation now owns its working directory and files, so delayed cleanup
   cannot delete the replacement's directory and fail its startup. Thanks to Edi

@@ -110,6 +110,7 @@ is accepted by the generator and normalized for this purpose.
 | `env.ANTHROPIC_BASE_URL` | Points Claude Code at this gateway. |
 | `env.CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` | Asks Claude Code to label compaction and side requests; see [hint headers](#hint-headers). |
 | `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS` | Declares the launch model's catalog window so compaction runs at the right point. It is left out when the model's window is unknown, because the catalog's 32,768 placeholder does not describe the model. A remote client sees only the public catalog, so a model there whose real window is exactly 32,768 is also left out. |
+| `env.CLAUDE_CODE_AUTO_MODE_SERVER=0` | Keeps auto mode on its client-side classifier. Claude Code 2.1.319 otherwise asks the server for the review, which this gateway does not offer, and denies every reviewed action. |
 | `effortLevel` | Starts on the launch model's default effort when the model offers one and it is a level Claude Code keeps from settings (`low`, `medium`, `high`, `xhigh`), because Claude Code's own default can be a level the route refuses. |
 | `modelPicker` | Lists the catalog's visible aliases in `/model`, plus the launch model. Claude Code's own discovery keeps only IDs containing `claude` or `anthropic`, so it would hide GPT and Qwen. |
 
@@ -162,8 +163,14 @@ unsupported instructions, hosted tools, and destructive context edits must not
 disappear silently.
 
 The Anthropic API adapter keeps initial system text blocks separate so an
-attribution block cannot swallow later instructions. It rejects mid-conversation
-system messages rather than changing their position.
+attribution block cannot swallow later instructions. For native Messages clients,
+later system instructions keep their original positions as `role: "system"`
+messages. The upstream validates model support and placement according to
+[Anthropic's rules](https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages#limitations).
+For example, a system instruction can follow the user turn delivering tool
+results and precede the next assistant turn. The adapter preserves tool results
+and instruction authority across that boundary. Responses clients keep their
+existing leading-system normalization.
 
 Chat Completions uses its established leading-system representation for both
 client protocols: all system/developer instruction text is combined, in its
@@ -287,9 +294,8 @@ that is not listed here.
 
 | Field | Result |
 | --- | --- |
-| `safeguards` | Claude Code retries without it and uses its built-in auto-mode classifier; see [auto mode](#auto-mode). |
+| `safeguards` | Sent only without generated settings. Claude Code 2.1.318 and earlier retry without it and use the client-side classifier. From 2.1.319 the client denies reviewed actions instead, so set `CLAUDE_CODE_AUTO_MODE_SERVER=0`; see [auto mode](#auto-mode). |
 | Tool `defer_loading` | Tool search is unsupported. From Claude Code 2.1.305 the client retries with every MCP tool loaded upfront. On 2.1.299, setting `ENABLE_TOOL_SEARCH=true` ends in `API Error: 400`. |
-| Mid-conversation `system` messages on `anthropic-api` routes | The route refuses them, and Claude Code 2.1.299 sends them on every request without recovering. **`anthropic-api` routes do not currently work with Claude Code.** The update check records this and continues. |
 
 ## Auto mode
 

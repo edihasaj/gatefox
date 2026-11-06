@@ -66,11 +66,14 @@ test("API adapters validate and forward Messages generation options", async () =
       { type: "text", text: "Follow the caller's actual instruction.", cache_control: { type: "ephemeral" } },
     ]);
     assert.deepEqual((anthropicBodies.at(-1)!.messages as Array<{ content: Array<Record<string, unknown>> }>)[0]!.content[0], { type: "text", text: "Continue", cache_control: { type: "ephemeral" } });
-    const beforeMidSystem = anthropicBodies.length;
-    await assert.rejects(drain(anthropic.infer({ model: "anthropic-model", input: [
+    await drain(anthropic.infer({ model: "anthropic-model", input: [
       { role: "user", content: "First" }, { role: "system", content: "Late instruction" },
-    ] }, new AbortController().signal, { clientProtocol: "messages" })), error => error instanceof ProviderError && error.status === 400);
-    assert.equal(anthropicBodies.length, beforeMidSystem);
+    ] }, new AbortController().signal, { clientProtocol: "messages" }));
+    assert.deepEqual(anthropicBodies.at(-1)!.system, []);
+    assert.deepEqual(anthropicBodies.at(-1)!.messages, [
+      { role: "user", content: [{ type: "text", text: "First", cache_control: { type: "ephemeral" } }] },
+      { role: "system", content: [{ type: "text", text: "Late instruction", cache_control: { type: "ephemeral" } }] },
+    ]);
 
     await drain(chat.infer({ model: "chat-model", input: [
       { role: "user", content: "First" }, { role: "system", content: "Late instruction" }, { role: "user", content: "Second" },

@@ -107,6 +107,13 @@ test('an unchanged shape passes and records the fields and betas it saw', async 
   assert.ok(report.topLevelFields.includes('metadata')); assert.deepEqual(report.betas, ['probe-beta']);
 });
 
+test('later system instructions pass through every real API adapter without a compatibility exemption', async () => {
+  const { script, root } = fakeClaude({ messages: [{ role: 'user', content: 'hi' }, { role: 'system', content: 'Keep the caller rule' }] });
+  const report = await probeClaudeRequestShape({ command: script, checkout, root, only: [scenarios[1]] });
+  assert.equal(report.passed, true);
+  assert.deepEqual(report.knownRejections, []);
+});
+
 test('the update gate keeps only the field receipt and refuses a report that did not pass', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'gateway-shape-gate-'));
   const receipt = { knownRejections: ['safeguards'], topLevelFields: ['model'], toolFields: [], betas: ['b'], requestClasses: ['main'] };

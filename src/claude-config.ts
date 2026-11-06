@@ -61,7 +61,7 @@ function launchEffort(model: string, catalog: ClaudeCatalog): { effortLevel?: st
 export function claudeSettings(model: string, endpoint: string, credentialArgs: string[], catalog: ClaudeCatalog = { models: [] }): string {
   return JSON.stringify({
     model,
-    env: { ANTHROPIC_BASE_URL: claudeBaseURL(endpoint), CLAUDE_CODE_GATEWAY_HINT_HEADERS: "1", ...contextWindow(model, catalog) },
+    env: { ANTHROPIC_BASE_URL: claudeBaseURL(endpoint), CLAUDE_CODE_GATEWAY_HINT_HEADERS: "1", CLAUDE_CODE_AUTO_MODE_SERVER: "0", ...contextWindow(model, catalog) },
     apiKeyHelper: apiKeyHelper(credentialArgs),
     ...launchEffort(model, catalog),
     ...modelPicker(model, catalog),
