@@ -98,6 +98,7 @@ test("Claude settings start on an effort the launch model offers", () => {
 test("Claude settings declare a known context window and ask for hint headers", () => {
   assert.equal(generated("codex/sol").env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "500000");
   assert.equal(generated("codex/sol").env.CLAUDE_CODE_GATEWAY_HINT_HEADERS, "1");
+  assert.equal(generated("codex/sol").env.CLAUDE_CODE_AUTO_MODE_SERVER, "0", "this gateway reviews through the client-side classifier, not server safeguards");
   assert.equal(generated("qwen/flash").env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined, "the catalog's placeholder floor is not a real window");
   const bare = JSON.parse(claudeSettings("codex/sol", "http://127.0.0.1:3457/v1", [])) as Record<string, unknown>;
   assert.equal(bare.modelPicker, undefined);
