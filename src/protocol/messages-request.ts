@@ -184,7 +184,7 @@ function controls(value: Data, catalog: Set<string>, effort: string | undefined)
 }
 
 /** Converts the supported native Anthropic Messages subset without weakening caller semantics. */
-export function messagesToResponses(value: unknown, options: { countTokens?: boolean } = {}): ResponsesRequest {
+export function messagesToResponses(value: unknown, options: { countTokens?: boolean; agentId?: string } = {}): ResponsesRequest {
   const request = object(value);
   const allowed = new Set(["model", "max_tokens", "messages", "system", "tools", "tool_choice", "temperature", "top_p", "stop_sequences", "stream", "thinking", "output_config", "context_management", "metadata", "cache_control", "service_tier"]);
   for (const key of Object.keys(request)) if (!allowed.has(key)) invalid();
@@ -233,7 +233,7 @@ export function messagesToResponses(value: unknown, options: { countTokens?: boo
   if ([...replay.calls.keys()].some(id => !replay.results.has(id))) invalid();
   const control = controls(request, declared, effort);
   const stream = request.stream;
-  const sessionId = messagesSessionId(request.metadata);
+  const sessionId = messagesSessionId(request.metadata, options.agentId);
   return { model, input: replay.items, ...(request.max_tokens === undefined ? {} : { max_output_tokens: positiveInteger(request.max_tokens) }), ...(stream === undefined ? {} : { stream: stream as boolean }),
     ...(sessionId ? { client_metadata: { session_id: sessionId } } : {}),
     ...(catalog.length ? { tools: catalog } : {}), ...control };

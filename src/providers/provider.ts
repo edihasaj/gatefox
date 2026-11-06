@@ -18,7 +18,8 @@ export class ProviderError extends Error {
       /** Token counts an upstream context overflow reported (numbers only); a Messages client uses them to size its compaction. */
       contextTokens?: { used: number; maximum: number } }) { super(message); }
 }
-export type InferenceRequestKind = "turn" | "compaction" | "prewarm" | "memory";
+/** `auxiliary` is a Claude Code side request (title, classifier, summary); it comes only from that client's hint header. */
+export type InferenceRequestKind = "turn" | "compaction" | "prewarm" | "memory" | "auxiliary";
 /** Internal count-only observation; never serialized into provider requests or client metadata. */
 export interface ProviderCacheUsage { inputTokens?: number; inputTokensLowerBound?: number; cachedTokens?: number; cacheWriteTokens?: number }
 /** Caller routing identifiers and the gateway-selected ingress protocol; never request content. */

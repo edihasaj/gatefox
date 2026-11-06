@@ -71,3 +71,34 @@ test("remote Claude settings reject redirects, malformed catalogs, and catalogs 
     await assert.rejects(remoteClaudeSettings("same", redirect.endpoint, tokenFile));
   } finally { await Promise.all([malformed.close(), oversized.close(), redirect.close()]); }
 });
+
+const catalog = { models: [
+  { slug: "codex/sol", display_name: "Codex · Sol", description: "account route codex", visibility: "list", context_window: 500000 },
+  { slug: "codex/retired", display_name: "Codex · Retired", visibility: "hide", context_window: 272000 },
+  { slug: "qwen/flash", display_name: "Qwen · Flash", visibility: "list", context_window: 32768 },
+] };
+const generated = (model: string) => JSON.parse(claudeSettings(model, "http://127.0.0.1:3457/v1", ["--file", "/tmp/client-token"], catalog)) as {
+  env: Record<string, string>; modelPicker: { replaceBuiltInOptions: boolean; options: Array<{ model: string; label?: string; description?: string }> } };
+
+test("Claude settings list what the gateway serves, because discovery drops non-Claude IDs", () => {
+  const { modelPicker } = generated("codex/sol");
+  assert.equal(modelPicker.replaceBuiltInOptions, true);
+  assert.deepEqual(modelPicker.options, [{ model: "codex/sol", label: "Codex · Sol", description: "account route codex" }, { model: "qwen/flash", label: "Qwen · Flash" }]);
+  assert.deepEqual(generated("codex/retired").modelPicker.options.map(row => row.model), ["codex/sol", "codex/retired", "qwen/flash"], "a hidden launch model stays selectable");
+});
+
+test("Claude settings declare a known context window and ask for hint headers", () => {
+  assert.equal(generated("codex/sol").env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "500000");
+  assert.equal(generated("codex/sol").env.CLAUDE_CODE_GATEWAY_HINT_HEADERS, "1");
+  assert.equal(generated("qwen/flash").env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined, "the catalog's placeholder floor is not a real window");
+  const bare = JSON.parse(claudeSettings("codex/sol", "http://127.0.0.1:3457/v1", [])) as Record<string, unknown>;
+  assert.equal(bare.modelPicker, undefined);
+  const small = JSON.parse(claudeSettings("m", "http://127.0.0.1:3457/v1", [], { models: [{ slug: "m", context_window: 16384 }] })) as { env: Record<string, string> };
+  assert.equal(small.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "16384", "a small known window matters most");
+  const exact = JSON.parse(claudeSettings("m", "http://127.0.0.1:3457/v1", [], { models: [{ slug: "m", context_window: 32768 }], knownWindows: new Set(["m"]) })) as { env: Record<string, string> };
+  assert.equal(exact.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, "32768", "a real window that equals the placeholder is still declared");
+  for (const context_window of ["500000", 1.5, -1, 0]) {
+    const hostile = JSON.parse(claudeSettings("m", "http://127.0.0.1:3457/v1", [], { models: [{ slug: "m", context_window }] })) as { env: Record<string, string> };
+    assert.equal(hostile.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, undefined);
+  }
+});

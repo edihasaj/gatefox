@@ -83,7 +83,8 @@ test("standalone requests run one-shot; forced and disabled tool choices are ser
     const provider = adapter(); const creates = async () => (await h.log()).filter(entry => entry.op === "create");
     await turn(provider, [user("hello")], { context: {} });
     await turn(provider, [user("hello")], { context: { threadId: "thread-1", requestKind: "compaction" } });
-    assert.equal(live().sessions().length, 0, "no session was started"); assert.equal((await creates()).length, 2, "both ran one-shot");
+    await turn(provider, [user("hello")], { context: { threadId: "thread-1", requestKind: "auxiliary" } });
+    assert.equal(live().sessions().length, 0, "no session was started"); assert.equal((await creates()).length, 3, "all ran one-shot");
     assert.ok(await until(async () => (await h.liveDirs()).length === 0), "one-shot folders are removed too");
     const a = await turn(provider, [user("start")]); assert.equal(live().sessions().length, 1);
     const [pid] = [(await h.pids()).at(-1)!];
@@ -100,10 +101,10 @@ test("standalone requests run one-shot; forced and disabled tool choices are ser
     await assert.rejects(turn(provider, third, { extra: { tool_choice: "required" } }),
       (failure: unknown) => failure instanceof ProviderError && failure.status === 400 && failure.upstream?.code === "copilot_session_preserved");
     assert.ok((await h.sessions()).some(entry => entry.outcome === "preserved" && entry.missReason === "forced_choice"));
-    assert.equal((await creates()).length, 3, "nothing was reseeded or replayed"); assert.equal(live().sessions()[0].pid, pid); assert.ok(alive(pid));
+    assert.equal((await creates()).length, 4, "nothing was reseeded or replayed"); assert.equal(live().sessions()[0].pid, pid); assert.ok(alive(pid));
     assert.ok(!(await h.log()).some(entry => entry.op === "deliver"), "the outputs were not handed to the session");
     // The same outputs under the ordinary choice continue that very session.
-    await turn(provider, third); assert.equal((await creates()).length, 3); assert.equal(live().sessions()[0].pid, pid);
+    await turn(provider, third); assert.equal((await creates()).length, 4); assert.equal(live().sessions()[0].pid, pid);
     // `none` keeps the catalog and adds a line instead of emptying it.
     const before = (await creates()).length;
     await turn(provider, [user("fresh")], { context: { threadId: "thread-none" }, extra: { tool_choice: "none" } });

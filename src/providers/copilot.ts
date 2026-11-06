@@ -41,7 +41,7 @@ export function copilotEffort(config: ProviderConfig, request: ResponsesRequest)
 }
 
 // Codex owns these requests' history shape, so they never join or seed a live session.
-const oneShotKinds = new Set<unknown>(["compaction", "prewarm", "memory"]);
+const oneShotKinds = new Set<unknown>(["compaction", "prewarm", "memory", "auxiliary"]);
 const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
 
 /** One request, translated and rendered once for whichever path serves it. */

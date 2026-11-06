@@ -4,6 +4,20 @@ import { join } from 'node:path';
 import { officialBytes } from './provider-release-discovery.mjs';
 import { runValidation, validationEnvironment } from './provider-maintenance-process.mjs';
 
+/**
+ * Real Claude Code against this checkout's Messages parser. A new request shape blocks the candidate, even when the client
+ * recovers by retrying, because that recovery can silently turn a feature off. The report stays with the failed candidate.
+ */
+export async function qualifyClaudeRequestShape(command, checkout, directory, env, run = runValidation) {
+  const report = join(directory, 'request-shape.json');
+  const output = await run(process.execPath, [join(checkout, 'scripts/claude-request-shape.mjs'), '--claude', command, '--package', checkout,
+    '--root', join(directory, 'request-shape'), '--report', report], { cwd: directory, env, timeoutMs: 420_000 });
+  const parsed = JSON.parse(output);
+  if (parsed.passed !== true) throw Error('Claude Code request shape changed');
+  const { knownRejections, topLevelFields, toolFields, betas, requestClasses } = parsed;
+  return { knownRejections, topLevelFields, toolFields, betas, requestClasses };
+}
+
 /** Install only in the candidate's private validation prefix. No global installs or provider logins. */
 export async function validateProviderCli(kind, release, directory, checkout) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -24,10 +38,11 @@ export async function validateProviderCli(kind, release, directory, checkout) {
   if (flags.some(flag => !help.includes(flag))) throw Error('Required provider CLI flags changed');
   await runValidation(process.execPath, [join(checkout, 'scripts/probe-provider-cli.mjs'), kind, command, checkout, directory, release.version],
     { cwd: directory, env, timeoutMs: 30_000 });
+  const requestShape = kind === 'claude' ? await qualifyClaudeRequestShape(command, checkout, directory, env) : undefined;
   // Keep upstream terms with the private candidate. These packages are never redistributed.
   const manifest = JSON.parse(readFileSync(join(directory, 'node_modules', release.package, 'package.json'), 'utf8'));
   if (!manifest.license) throw Error('Provider package license metadata is missing');
   chmodSync(directory, 0o700);
-  return { ...release, checks: ['version', 'required_flags', kind === 'copilot' ? 'rpc_v3' : 'stream_json_control'],
-    license: manifest.license };
+  return { ...release, checks: ['version', 'required_flags', ...(kind === 'copilot' ? ['rpc_v3'] : ['stream_json_control', 'messages_request_shape'])],
+    ...(requestShape ? { requestShape } : {}), license: manifest.license };
 }

@@ -22,6 +22,7 @@ test("claude-config emits scoped settings without installing them or creating a 
   assert.match(settings.apiKeyHelper, /token/); assert.match(settings.apiKeyHelper, /--config/);
   assert.deepEqual(await readdir(directory), ["gateway.json"]);
   assert.equal(settings.permissions, undefined);
+  assert.deepEqual(settings.modelPicker.options.map((row: { model: string }) => row.model), ["claude/example"]);
   await assert.rejects(run(process.execPath, [cli, "claude-config", "--model", "unknown", "--config", config]), /configured alias/);
 });
 
