@@ -36,7 +36,7 @@ export interface FixtureScenario { replies: FixtureReply[]; exitAtSpawn?: boolea
   /** Report cache tokens from what this CLI was actually sent, the way Claude bills a growing prefix; see `cacheModel`. */
   cache?: boolean }
 export interface FixtureEntry {
-  pid: number; start?: string; advisorOff?: boolean; toolSearchOff?: boolean; mcpPid?: number; mcpTools?: number; maxResult?: number;
+  pid: number; start?: string; cwd?: string; advisorOff?: boolean; toolSearchOff?: boolean; mcpPid?: number; mcpTools?: number; maxResult?: number;
   /** CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH, and the --system-prompt-file content (test data). */
   descriptionLimit?: string; system?: string;
   /** Names (never values) of the Claude Code session variables the CLI inherited. */
@@ -69,7 +69,7 @@ async function fixtureMain(): Promise<void> {
     try { process.kill(priorLive, 0); priorLiveAlive = true; } catch { priorLiveAlive = false; }
   }
   const argv = process.argv.slice(2);
-  log({ start: live ? "live" : "oneshot", advisorOff: env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL === "1", toolSearchOff: env.ENABLE_TOOL_SEARCH === "false",
+  log({ start: live ? "live" : "oneshot", cwd: process.cwd(), advisorOff: env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL === "1", toolSearchOff: env.ENABLE_TOOL_SEARCH === "false",
     claudeVars: Object.keys(env).filter(name => /^(CLAUDECODE$|CLAUDE_CODE_|CLAUDE_AGENT_SDK_)/.test(name)).sort(),
     descriptionLimit: env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH, system: fs.readFileSync(argv[argv.indexOf("--system-prompt-file") + 1], "utf8"), priorLiveAlive });
   if (live && scenario.exitAtSpawn) process.exit(3);

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ClaudeSubscription } from "../providers/claude.js";
 import { claudeLive } from "../providers/claude-live.js";
 import { ProviderError, type InferenceContext } from "../providers/provider.js";
@@ -295,7 +295,10 @@ test("a live request whose CLI exits at spawn refuses instead of replaying", { t
       (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
     assert.deepEqual((await f.capture()).filter(entry => entry.start).map(entry => entry.start), ["live"], "no one-shot replay was started");
     assert.deepEqual((await sessions()).map(entry => [entry.outcome, entry.missReason]), [["fallback", "spawn_failed"], ["blocked", "spawn_failed"]]);
-    assert.equal(existsSync(join(tmpdir(), "gateway-claude", sessionKey("thread-1").slice(0, 16))), false, "a failed start leaves no thread directory behind");
+    const cwd = (await f.capture()).find(entry => entry.start === "live")?.cwd;
+    assert.ok(cwd, "the fixture recorded the failed CLI's actual working directory");
+    assert.equal(existsSync(cwd), false, "a failed start removes its working directory");
+    assert.equal(existsSync(dirname(cwd)), false, "and its generation's control files");
   } finally { await teardown(f); }
 });
 
