@@ -93,9 +93,6 @@ export async function discoverModels(provider: ProviderConfig, options: AccessTo
     const id = model.slug || model.id;
     if (typeof id !== "string" || !id) throw new Error("Provider returned an invalid model ID");
     const levels = model.supported_reasoning_levels as Array<{ effort: string }> | undefined;
-    // DeepSeek publishes its levels as `effort`, not as the Codex catalog's field.
-    const effort = model.effort && typeof model.effort === "object" ? model.effort as { supported_levels?: unknown; default_level?: unknown } : undefined;
-    const published = Array.isArray(effort?.supported_levels) && effort.supported_levels.every(level => typeof level === "string") ? effort.supported_levels as string[] : undefined;
     return { model: id, metadata: {
       ...readPublicServiceTierMetadata(model),
       ...(typeof model.display_name === "string" ? { displayName: modelLabel(model.display_name) }
@@ -103,8 +100,7 @@ export async function discoverModels(provider: ProviderConfig, options: AccessTo
       ...releasedAtMetadata(model),
       ...(typeof (model.context_window ?? model.max_model_len) === "number" ? { contextWindow: (model.context_window ?? model.max_model_len) as number } : {}),
       ...(typeof model.priority === "number" ? { priority: model.priority } : {}),
-      ...(Array.isArray(levels) ? { reasoningEfforts: levels.map(level => level.effort) } : published ? { reasoningEfforts: published } : {}),
-      ...(published && typeof effort?.default_level === "string" && published.includes(effort.default_level) ? { defaultReasoningEffort: effort.default_level } : {}),
+      ...(Array.isArray(levels) ? { reasoningEfforts: levels.map(level => level.effort) } : {}),
       // Ultra's delegation comes from these catalog fields; the client runs it.
       ...(typeof model.multi_agent_version === "string" && /^v[0-9]{1,3}$/.test(model.multi_agent_version) ? { multiAgentVersion: model.multi_agent_version } : {}),
       ...(typeof model.use_responses_lite === "boolean" ? { useResponsesLite: model.use_responses_lite } : {}),

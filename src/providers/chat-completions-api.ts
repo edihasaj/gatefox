@@ -2,7 +2,7 @@ import { apiCredential, type ProviderConfig } from "../config.js";
 import { responsesToChatRequest } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, Usage, OpenAIChatMessage } from "../protocol/types.js";
-import { ProviderError, providerConversationId, type InferenceContext, type Provider } from "./provider.js";
+import { ProviderError, type InferenceContext, type Provider } from "./provider.js";
 import { apiRoutingHeaders } from "./api-routing.js";
 import { generationOptions } from "./generation-options.js";
 import { tailnetFetch, type TailnetSeams } from "../tailnet.js";
@@ -12,7 +12,6 @@ import { boundedJson, chatContextFailure } from "./context-errors.js";
 import { chatRejection } from "./chat-rejections.js";
 import { imagesOf, imageUrlPart, toolImagesMessage, userContent, type ChatContentPart } from "./chat-images.js";
 import { telemetry } from "../telemetry.js";
-import { isDeepSeekApi, ReasoningReplay } from "./deepseek-reasoning.js";
 import { largeUncachedUsage } from "../cache-guarded-inference.js";
 import { canonicalTools } from "./tool-catalog.js";
 import { connectChatProvider } from "./chat-connect.js";
@@ -138,9 +137,8 @@ type AttemptOutcome = {
 /** Chat Completions transport for local vLLM and compatible API servers. */
 export class ChatCompletionsAPI implements Provider {
   private readonly tailnet?: ReturnType<typeof tailnetFetch>;
-  private readonly reasoningReplay?: ReasoningReplay;
   /** `seams` exist for tests of a `tailnet: true` provider; production never passes them. */
-  constructor(private readonly config: ProviderConfig, seams?: TailnetSeams, private readonly recovery?: ChatCompletionRecoveryPolicy) { if (isDeepSeekApi(config.baseUrl)) this.reasoningReplay = new ReasoningReplay(); if (config.tailnet) this.tailnet = tailnetFetch(config.id, seams); }
+  constructor(private readonly config: ProviderConfig, seams?: TailnetSeams, private readonly recovery?: ChatCompletionRecoveryPolicy) { if (config.tailnet) this.tailnet = tailnetFetch(config.id, seams); }
   async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
     const options = generationOptions(request, 2);
     const credential = await apiCredential(this.config);
@@ -167,22 +165,13 @@ export class ChatCompletionsAPI implements Provider {
     // Strict chat templates reject later system messages. Keep every instruction
     // at system priority and in source order; conversation replay keeps its order.
     const system = normalized.messages.filter(message => message.role === "system" || message.role === "developer").map(message => message.content || "").filter(Boolean).join("\n\n");
-    const conversation = compactAssistantReplay(normalized.messages, nativeName, name => tools.some(tool => tool.function.name === name), vision);
-    // The contract applies only to requests carrying tools. Without the reasoning, thinking is off for this request, which the rule does not cover.
-    const replayKey = providerConversationId(context);
-    // A public summary merges into the answer, so turns are matched without it. Replayed reasoning then replaces it; otherwise it stays as history.
-    const turns = this.reasoningReplay ? compactAssistantReplay(responsesToChatRequest(request, { reasoningSummaryMetadata: true }).messages.filter(message => !message.reasoningSummary),
-      nativeName, name => tools.some(tool => tool.function.name === name), vision) : conversation;
-    const replayed = this.reasoningReplay && tools.length ? this.reasoningReplay.restore(replayKey, turns) : conversation;
-    const reasoningLost = !replayed;
-    if (reasoningLost) telemetry("chat_reasoning_replay_miss", { provider: this.config.id });
-    const messages: ReplayMessage[] = replayed ?? conversation;
+    const messages: ReplayMessage[] = compactAssistantReplay(normalized.messages, nativeName, name => tools.some(tool => tool.function.name === name), vision);
     if (system) messages.unshift({ role: "system", content: system });
     const url = `${this.config.baseUrl!.replace(/\/$/, "")}/chat/completions`;
     const body = JSON.stringify({ model: request.model, messages, stream: true, stream_options: { include_usage: true },
         ...(tools.length ? { tools: tools.map(({ function: fn }, index) => ({ type: "function", function: { name: wireNames[index], description: fn.description, parameters: fn.parameters || { type: "object", properties: {} } } })) } : {}),
         ...(choice ? { tool_choice: typeof choice === "object" ? { type: "function", function: { name: nativeName(choice.function.name) } } : choice } : {}),
-        ...(reasoningLost ? { thinking: { type: "disabled" } } : reasoning?.effort === undefined ? {} : this.config.chatTemplateReasoningEffort
+        ...(reasoning?.effort === undefined ? {} : this.config.chatTemplateReasoningEffort
           ? { chat_template_kwargs: { reasoning_effort: reasoning.effort, enable_thinking: reasoning.effort !== "none" } }
           : { reasoning_effort: reasoning.effort }),
         ...(request.max_output_tokens !== undefined ? { max_tokens: request.max_output_tokens } : {}),
@@ -194,10 +183,8 @@ export class ChatCompletionsAPI implements Provider {
     const recover = this.recovery && this.recovery.models.includes(request.model) && context.clientProtocol === "messages"
       && choice !== "required" && typeof choice !== "object" && !options.stop?.length;
     if (!recover) {
-      const thoughts = this.reasoningReplay ? { reasoning: "", text: "" } : undefined;
-      const outcome = yield* this.streamAttempt(request, signal, undefined, context, url, credential, body, tools, choice, reasoning, false, false, undefined, thoughts);
+      const outcome = yield* this.streamAttempt(request, signal, undefined, context, url, credential, body, tools, choice, reasoning, false);
       yield* this.completed(outcome.calls, tools, choice);
-      if (thoughts && !reasoningLost) this.reasoningReplay!.remember(replayKey, turns.filter(message => message.role === "assistant"), { content: thoughts.text, tool_calls: [...outcome.calls.values()] }, thoughts.reasoning);
       yield { type: "done", usage: outcome.usage, ...(outcome.capped ? { stopReason: "max_tokens" as const } : {}) };
       return;
     }
@@ -244,8 +231,7 @@ export class ChatCompletionsAPI implements Provider {
 
   private async *streamAttempt(request: ResponsesRequest, caller: AbortSignal, deadline: AbortSignal | undefined, context: InferenceContext, url: string, credential: string, body: string,
     tools: NonNullable<ReturnType<typeof responsesToChatRequest>["tools"]>, choice: ReturnType<typeof responsesToChatRequest>["tool_choice"],
-    reasoning: { effort?: unknown; summary?: unknown } | undefined, reportUsage: boolean, strictEmpty = false, eofTimeoutMs = recoveryEofMs,
-    thoughts?: { reasoning: string; text: string }): AsyncGenerator<InferenceEvent, AttemptOutcome> {
+    reasoning: { effort?: unknown; summary?: unknown } | undefined, reportUsage: boolean, strictEmpty = false, eofTimeoutMs = recoveryEofMs): AsyncGenerator<InferenceEvent, AttemptOutcome> {
     const started = Date.now(); const eof = new AbortController();
     const signal = AbortSignal.any([caller, eof.signal, ...(deadline ? [deadline] : [])]);
     let eofTimer: NodeJS.Timeout | undefined; let eofExpired = false;
@@ -277,9 +263,9 @@ export class ChatCompletionsAPI implements Provider {
       }
       if (!response.body) throw incomplete("Chat API returned no stream");
       for await (const event of readEvents(response.body, "chat")) {
-        const observed = event.usage as { prompt_tokens?: number; prompt_cache_hit_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } | undefined;
+        const observed = event.usage as { prompt_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } | undefined;
         if (observed && typeof observed === "object") context.observeCacheUsage?.({ inputTokens: observed.prompt_tokens,
-          cachedTokens: observed.prompt_tokens_details?.cached_tokens ?? observed.prompt_cache_hit_tokens });
+          cachedTokens: observed.prompt_tokens_details?.cached_tokens });
         if (done) throw incomplete("Chat API returned data after completion");
         if (strictEmpty && (nullOnly(event, ["prompt_token_ids", "prompt_text"]) || unknownFields(event, chatEnvelopeFields))) refusedOrMalformed = true;
         if (event.type === "error") {
@@ -308,13 +294,13 @@ export class ChatCompletionsAPI implements Provider {
         }
         if (event.model !== undefined && event.model !== request.model) throw new ProviderError("model_route", "Chat API returned a different model", 502);
         if (strictEmpty && event.usage != null && (typeof event.usage !== "object" || Array.isArray(event.usage))) throw incomplete("Chat API returned invalid usage");
-        const wireUsage = event.usage as { prompt_cache_hit_tokens?: unknown; prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: unknown } | null } | null | undefined;
+        const wireUsage = event.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: unknown } | null } | null | undefined;
         if (wireUsage) {
           if (strictEmpty && [wireUsage.prompt_tokens, wireUsage.completion_tokens, wireUsage.total_tokens].some(value => value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0))) {
             throw incomplete("Chat API returned invalid usage");
           }
-          // vLLM and OpenAI report prefix-cache reuse as prompt_tokens_details.cached_tokens, and DeepSeek as prompt_cache_hit_tokens; carry it so cache hits are visible.
-          const wireCached = wireUsage.prompt_tokens_details?.cached_tokens ?? wireUsage.prompt_cache_hit_tokens;
+          // vLLM and OpenAI report prefix-cache reuse as prompt_tokens_details.cached_tokens; carry it so cache hits are visible.
+          const wireCached = wireUsage.prompt_tokens_details?.cached_tokens;
           const cached = typeof wireCached === "number" && Number.isFinite(wireCached) && wireCached >= 0
             && typeof wireUsage.prompt_tokens === "number" && wireCached <= wireUsage.prompt_tokens ? Math.floor(wireCached) : undefined;
           usage = { input_tokens: wireUsage.prompt_tokens || 0, output_tokens: wireUsage.completion_tokens || 0, total_tokens: wireUsage.total_tokens || 0,
@@ -342,8 +328,6 @@ export class ChatCompletionsAPI implements Provider {
           const rawReasoningContent = typeof delta.reasoning_content === "string";
           const rawReasoning = typeof delta.reasoning === "string";
           const thought = rawReasoningContent ? delta.reasoning_content : rawReasoning ? delta.reasoning : undefined;
-          if (thoughts && typeof thought === "string") thoughts.reasoning += thought;
-          if (thoughts && typeof delta.content === "string") thoughts.text += delta.content;
           if (reasoning?.summary !== "none" && typeof thought === "string" && thought) yield { type: "reasoning", text: thought };
           if (delta.tool_calls?.length) toolFragments = true;
           for (const part of delta.tool_calls || []) {
