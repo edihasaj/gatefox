@@ -241,6 +241,8 @@ The next process start sweeps generations whose gateway owner has died. New
 generations sit outside the legacy per-thread tree, so cleanup by a session
 adopted from an older release cannot delete a replacement's files. Live sessions
 set `DISABLE_AUTO_COMPACT=1`; Codex owns compaction.
+Legacy per-thread working directories remain when sweeping old storage, because
+an older process may still be starting a session there.
 
 ## Request rejections
 
