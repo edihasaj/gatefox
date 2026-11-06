@@ -116,7 +116,7 @@ async function adapterRejection(request, adapters, known) {
       // Claude Code does not recover from this one, so a live Anthropic route fails. It is recorded, and the rest of the run proves the other routes.
       if (kind === 'anthropic-api' && error.message.includes('mid-conversation system')) { known.add('anthropic_mid_conversation_system'); continue; }
       if (error.status >= 400 && error.status < 500) return { kind, error };
-      if (forced) continue;
+      if (forced && /required tool/i.test(error.message ?? '') && error.status >= 500) continue;
       throw Object.assign(Error(`Adapter stub failed for ${kind}`), { cause: error });
     }
   }
