@@ -13,12 +13,14 @@ export function isDeepSeekApi(baseUrl: string | undefined): boolean {
 
 interface AssistantTurn { content?: unknown; tool_calls?: ReadonlyArray<{ id: string }> }
 
-const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
-/** Tool call IDs identify a turn exactly. A plain answer is identified by its text, within one conversation. */
-function turnKey(conversation: string, turn: AssistantTurn): string {
+/** A turn is its tool call IDs or, without calls, its answer. */
+const turnIdentity = (turn: AssistantTurn): unknown => {
   const calls = turn.tool_calls?.map(call => call.id) ?? [];
-  return digest(JSON.stringify([conversation, calls.length ? calls : [typeof turn.content === "string" ? turn.content : ""]]));
-}
+  return calls.length ? calls : typeof turn.content === "string" ? turn.content : "";
+};
+/** The chain of assistant turns tells two identical answers in one chat apart, and survives a client editing its user messages. */
+const chainKey = (conversation: string, turns: readonly unknown[]): string =>
+  createHash("sha256").update(JSON.stringify([conversation, turns])).digest("hex");
 
 /**
  * DeepSeek requires `reasoning_content` back on later requests that carry tools, but clients do not return it.
@@ -28,8 +30,10 @@ export class ReasoningReplay {
   private readonly turns = new Map<string, string>();
   private bytes = 0;
 
-  remember(conversation: string, turn: AssistantTurn, reasoning: string): void {
-    const key = turnKey(conversation, turn); const size = Buffer.byteLength(reasoning);
+  /** Without a stable conversation identity nothing is stored, because another request could match it. */
+  remember(conversation: string | undefined, history: readonly AssistantTurn[], turn: AssistantTurn, reasoning: string): void {
+    if (conversation === undefined) return;
+    const key = chainKey(conversation, [...history.map(turnIdentity), turnIdentity(turn)]); const size = Buffer.byteLength(reasoning);
     if (size > byteLimit) return;
     this.forget(key);
     this.turns.set(key, reasoning); this.bytes += size;
@@ -40,11 +44,13 @@ export class ReasoningReplay {
   }
 
   /** Every assistant turn with its reasoning, or undefined when any is unknown, because a partial replay is still refused. */
-  restore<T extends AssistantTurn & { role: string }>(conversation: string, messages: readonly T[]): Array<T & { reasoning_content?: string }> | undefined {
-    const restored: Array<T & { reasoning_content?: string }> = [];
+  restore<T extends AssistantTurn & { role: string }>(conversation: string | undefined, messages: readonly T[]): Array<T & { reasoning_content?: string }> | undefined {
+    const restored: Array<T & { reasoning_content?: string }> = []; const chain: unknown[] = [];
     for (const message of messages) {
       if (message.role !== "assistant") { restored.push(message); continue; }
-      const reasoning = this.turns.get(turnKey(conversation, message));
+      if (conversation === undefined) return undefined;
+      chain.push(turnIdentity(message));
+      const reasoning = this.turns.get(chainKey(conversation, chain));
       if (reasoning === undefined) return undefined;
       restored.push(reasoning ? { ...message, reasoning_content: reasoning } : message);
     }

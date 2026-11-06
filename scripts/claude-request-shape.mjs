@@ -108,6 +108,8 @@ function adapterStub() {
 
 /** Sends one accepted request through each real adapter. Only the caller-visible 4xx refusals count here. */
 async function adapterRejection(request, adapters, known) {
+  // The stub answers with text, which a forced tool choice correctly refuses. Those requests stay covered by the parser and routing rules.
+  if (request.tool_choice && !['auto', 'none'].includes(request.tool_choice)) return;
   for (const { kind, provider } of adapters) {
     try { for await (const event of provider.infer(request, new AbortController().signal, { clientProtocol: 'messages' })) if (event.type === 'done') break; }
     catch (error) {

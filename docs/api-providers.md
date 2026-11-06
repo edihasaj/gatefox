@@ -83,9 +83,10 @@ DeepSeek requires `reasoning_content` back on every later request that carries
 tools and answers 400 without it, but clients do not return it. For
 `https://api.deepseek.com` only, Gateway keeps it in a private, bounded store in
 process memory, and sends it back on the matching turn. It is never logged or
-written to disk. After a restart, or when history came from another model, the
-reasoning is gone, so Gateway turns thinking off for that conversation rather than
-fail it. The `chat_reasoning_replay_miss` event records each such request. Other
+written to disk. After a restart, when history came from another model or was
+edited, or for a request with no conversation identity, the reasoning is unknown,
+so Gateway turns thinking off for that request rather than fail it. Later requests
+in that conversation stay off, because the turn has no reasoning to return. The `chat_reasoning_replay_miss` event records each such request. Other
 chat services keep their exact request.
 
 This path has fixture coverage only: the live account had no balance when it was

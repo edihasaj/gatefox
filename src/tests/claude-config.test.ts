@@ -92,6 +92,7 @@ test("Claude settings start on an effort the launch model offers", () => {
   assert.equal(settings({ default_reasoning_level: "medium", supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "xhigh" }] }).effortLevel, "medium");
   assert.equal(settings({ default_reasoning_level: "high", supported_reasoning_levels: [{ effort: "low" }] }).effortLevel, undefined, "a default the model does not offer is not written");
   assert.equal(settings({ default_reasoning_level: null, supported_reasoning_levels: [] }).effortLevel, undefined);
+  for (const level of ["none", "minimal", "max", "ultra"]) assert.equal(settings({ default_reasoning_level: level, supported_reasoning_levels: [{ effort: level }] }).effortLevel, undefined, level);
 });
 
 test("Claude settings declare a known context window and ask for hint headers", () => {

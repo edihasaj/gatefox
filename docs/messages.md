@@ -110,7 +110,7 @@ is accepted by the generator and normalized for this purpose.
 | `env.ANTHROPIC_BASE_URL` | Points Claude Code at this gateway. |
 | `env.CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` | Asks Claude Code to label compaction and side requests; see [hint headers](#hint-headers). |
 | `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS` | Declares the launch model's catalog window so compaction runs at the right point. It is left out when the model's window is unknown, because the catalog's 32,768 placeholder does not describe the model. A remote client sees only the public catalog, so a model there whose real window is exactly 32,768 is also left out. |
-| `effortLevel` | Starts on the launch model's default effort when the model offers one, because Claude Code's own default can be a level the route refuses. |
+| `effortLevel` | Starts on the launch model's default effort when the model offers one and it is a level Claude Code keeps from settings (`low`, `medium`, `high`, `xhigh`), because Claude Code's own default can be a level the route refuses. |
 | `modelPicker` | Lists the catalog's visible aliases in `/model`, plus the launch model. Claude Code's own discovery keeps only IDs containing `claude` or `anthropic`, so it would hide GPT and Qwen. |
 
 `modelPicker` replaces the built-in rows because they name models this gateway may

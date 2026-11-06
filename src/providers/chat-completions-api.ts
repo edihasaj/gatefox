@@ -145,7 +145,10 @@ export class ChatCompletionsAPI implements Provider {
     const options = generationOptions(request, 2);
     const credential = await apiCredential(this.config);
     if (!credential) throw new ProviderError("authentication", "Chat API credential is missing", 401);
-    const normalized = responsesToChatRequest(request); const tools = canonicalTools(normalized.tools || []);
+    // Replayed reasoning replaces a public summary, which would otherwise merge into the answer and change the turn.
+    const translated = responsesToChatRequest(request, { reasoningSummaryMetadata: !!this.reasoningReplay });
+    const normalized = this.reasoningReplay ? { ...translated, messages: translated.messages.filter(message => !message.reasoningSummary) } : translated;
+    const tools = canonicalTools(normalized.tools || []);
     if (request.previous_response_id !== undefined) throw new ProviderError("invalid_request", "Chat API requires replayed history", 400);
     if (request.max_output_tokens !== undefined && (!Number.isInteger(request.max_output_tokens) || Number(request.max_output_tokens) < 1)) throw new ProviderError("invalid_request", "max_output_tokens must be a positive integer", 400);
     const modelAlias = Object.entries(this.config.models).find(([, model]) => model === request.model)?.[0];
@@ -169,7 +172,7 @@ export class ChatCompletionsAPI implements Provider {
     const system = normalized.messages.filter(message => message.role === "system" || message.role === "developer").map(message => message.content || "").filter(Boolean).join("\n\n");
     const conversation = compactAssistantReplay(normalized.messages, nativeName, name => tools.some(tool => tool.function.name === name), vision);
     // The contract applies only to requests carrying tools. Without the reasoning, thinking is off for this request, which the rule does not cover.
-    const replayKey = providerConversationId(context) ?? "";
+    const replayKey = providerConversationId(context);
     const replayed = this.reasoningReplay && tools.length ? this.reasoningReplay.restore(replayKey, conversation) : conversation;
     const reasoningLost = !replayed;
     if (reasoningLost) telemetry("chat_reasoning_replay_miss", { provider: this.config.id });
@@ -194,7 +197,7 @@ export class ChatCompletionsAPI implements Provider {
       const thoughts = this.reasoningReplay ? { reasoning: "", text: "" } : undefined;
       const outcome = yield* this.streamAttempt(request, signal, undefined, context, url, credential, body, tools, choice, reasoning, false, false, undefined, thoughts);
       yield* this.completed(outcome.calls, tools, choice);
-      if (thoughts && !reasoningLost) this.reasoningReplay!.remember(replayKey, { content: thoughts.text, tool_calls: [...outcome.calls.values()] }, thoughts.reasoning);
+      if (thoughts && !reasoningLost) this.reasoningReplay!.remember(replayKey, conversation.filter(message => message.role === "assistant"), { content: thoughts.text, tool_calls: [...outcome.calls.values()] }, thoughts.reasoning);
       yield { type: "done", usage: outcome.usage, ...(outcome.capped ? { stopReason: "max_tokens" as const } : {}) };
       return;
     }
@@ -269,7 +272,7 @@ export class ChatCompletionsAPI implements Provider {
           const overflow = rejected === undefined ? undefined : chatContextFailure(rejected);
           if (overflow) { await response.body?.cancel().catch(() => {}); throw overflow; }
         }
-        const typed = await responsesHttpError(response); if (typed.code === "context_length_exceeded" || response.status === 429) throw typed;
+        const typed = await responsesHttpError(response); if (typed.code === "context_length_exceeded" || typed.code === "insufficient_quota" || response.status === 429) throw typed;
         throw new ProviderError(response.status === 429 ? "usage_limit" : response.status === 401 ? "authentication" : "upstream_error", `Chat API returned HTTP ${response.status}`, [400, 401, 403, 429].includes(response.status) ? response.status : 502);
       }
       if (!response.body) throw incomplete("Chat API returned no stream");

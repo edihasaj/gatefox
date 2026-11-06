@@ -48,12 +48,14 @@ function contextWindow(model: string, catalog: ClaudeCatalog): Record<string, st
   return known && typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(value) } : {};
 }
 
+// The values Claude Code keeps from settings; it silently drops any other.
+const settingsEfforts = new Set(["low", "medium", "high", "xhigh"]);
 /** Claude Code picks its own default effort, which a route may not offer. A supported default lets a fresh session work. */
 function launchEffort(model: string, catalog: ClaudeCatalog): { effortLevel?: string } {
   const row = catalog.models.find(entry => entry.slug === model);
   const level = text(row?.default_reasoning_level);
   const offered = Array.isArray(row?.supported_reasoning_levels) && row.supported_reasoning_levels.some(entry => (entry as { effort?: unknown } | null)?.effort === level);
-  return level && offered ? { effortLevel: level } : {};
+  return level && offered && settingsEfforts.has(level) ? { effortLevel: level } : {};
 }
 
 export function claudeSettings(model: string, endpoint: string, credentialArgs: string[], catalog: ClaudeCatalog = { models: [] }): string {
