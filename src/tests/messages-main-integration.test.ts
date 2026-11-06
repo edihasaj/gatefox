@@ -108,3 +108,19 @@ test("Messages drain rejects queued work while the admitted native stream finish
     assert.equal(calls, 1);
   } finally { release(); await gateway.close(); }
 });
+
+test("Claude Code's hint headers reach routing only on Messages, and a subagent gets its own conversation", async () => {
+  const contexts: InferenceContext[] = [];
+  const gateway = await fixture({ async *infer(_request, _signal, context) { contexts.push(context!); yield { type: "done", usage }; } });
+  const session = "019a1234-5678-7890-abcd-0123456789ab";
+  const native = { ...input, metadata: { user_id: JSON.stringify({ device_id: "d", account_uuid: "a", session_id: session }) } };
+  try {
+    await collect(await gateway.post(native, { "x-claude-code-request-class": "main" }));
+    await collect(await gateway.post(native, { "x-claude-code-request-class": "auxiliary" }));
+    await collect(await gateway.post(native, { "x-claude-code-request-class": "compaction", "x-claude-code-compaction": "manual" }));
+    await collect(await gateway.post(native, { "x-claude-code-request-class": "subagent", "x-claude-code-agent-id": "agent-a" }));
+    assert.deepEqual(contexts.map(context => context.requestKind), [undefined, "auxiliary", "compaction", undefined]);
+    assert.deepEqual(contexts.slice(0, 3).map(context => context.sessionId), [session, session, session]);
+    assert.ok(contexts[3].sessionId?.startsWith(`${session}:agent-`));
+  } finally { await gateway.close(); }
+});

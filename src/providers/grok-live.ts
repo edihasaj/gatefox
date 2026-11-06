@@ -54,7 +54,7 @@ const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499)
 const sha = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 /** Request kinds that are deliberately served outside the conversation's session. */
-export const grokOneShotKinds = new Set<unknown>(["compaction", "prewarm", "memory"]);
+export const grokOneShotKinds = new Set<unknown>(["compaction", "prewarm", "memory", "auxiliary"]);
 
 function registry(): Registry {
   const scope = globalThis as unknown as Record<symbol, Registry | undefined>;

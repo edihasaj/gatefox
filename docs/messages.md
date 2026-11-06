@@ -46,6 +46,11 @@ Device and account identity fields are not forwarded. Live Claude and Copilot
 adapters can use this session identity without a Codex thread header. Each client
 still owns its saved chat, archive, permissions, instructions and tool execution.
 
+A subagent reuses its parent's UUID with a different history. Gateway combines it
+with a hash of `x-claude-code-agent-id` so each subagent has its own conversation
+and cannot disturb its parent's live session. Each one can therefore hold its own
+live session, which counts toward `claudeSessions.max`.
+
 Token counting is optional in the Claude Code gateway contract. The gateway does
 not return fabricated exact token counts. Endpoint absence or the unsupported
 response lets Claude Code use its own character-based estimate.
@@ -94,11 +99,24 @@ configured catalog. The generator validates the choice. It does not register a
 provider, log in to an account, rewrite the user's main Claude settings, or
 generate agent roles.
 
-The file contains `model`, `env.ANTHROPIC_BASE_URL`, and an `apiKeyHelper` command.
+The file contains `model`, `env`, `modelPicker`, and an `apiKeyHelper` command.
 The helper reads the existing scoped client credential when Claude needs it;
 the settings contain no token value. The SDK base URL omits a trailing `/v1`
 because Claude Code appends `/v1/messages` itself. An endpoint ending in `/v1`
 is accepted by the generator and normalized for this purpose.
+
+| Setting | Why it is there |
+| --- | --- |
+| `env.ANTHROPIC_BASE_URL` | Points Claude Code at this gateway. |
+| `env.CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` | Asks Claude Code to label compaction and side requests; see [hint headers](#hint-headers). |
+| `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS` | Declares the launch model's catalog window so compaction runs at the right point. It is left out when the catalog has only its placeholder window. |
+| `modelPicker` | Lists the catalog's visible aliases in `/model`, plus the launch model. Claude Code's own discovery keeps only IDs containing `claude` or `anthropic`, so it would hide GPT and Qwen. |
+
+`modelPicker` replaces the built-in rows because they name models this gateway may
+not serve. Claude Code keeps its own **Default** row, which still names a Claude
+model. The context window is a per-process value, so it stays at the launch model's
+size after a `/model` switch: generate settings for the model you start on, and
+rely on the `prompt is too long` recovery below if you switch to a smaller one.
 
 The helper command uses POSIX shell quoting. Settings generation on Windows is
 explicitly unsupported rather than emitting an unsafe command string. The HTTP
@@ -181,6 +199,19 @@ does not promise native Anthropic cache-boundary fidelity. A tool result marked
 `is_error` becomes a client tool result with a fixed `[Tool error] ` text prefix;
 empty tool results and empty stop-sequence lists remain valid no-ops.
 
+## Hint headers
+
+Generated settings turn on Claude Code's hint headers. A client that does not send
+them keeps the behavior it had before.
+
+| Header | Gateway behavior |
+| --- | --- |
+| `x-claude-code-compaction`, or request class `compaction` | Runs as a `compaction` request: one-shot, with the separate compaction cache budget, and a success permits one replacement history. |
+| Request class `auxiliary` | Runs as an `auxiliary` request: one-shot and outside the conversation's replay and cache budgets, so a title or classifier cannot replace a live session's history. |
+| Any other class, or an unknown value | Treated as an ordinary turn. |
+
+Gateway reads these headers on Messages requests only, and does not forward them.
+
 ## Context overflow
 
 When the upstream rejects a request for exceeding the model's context window, the
@@ -242,6 +273,18 @@ routes, the cache writes. Copilot reports no separate cache-write field to the
 reply, so its cache writes stay inside `input_tokens`. Copilot credits, reasoning
 token counts and the Copilot cache-write figure stay in the local ledger and never
 appear in the reply. A Responses reply never carries cache writes.
+
+## Known request rejections
+
+Claude Code sends some fields Gateway cannot honor. Each one fails clearly, and the
+[update check](provider-updates.md#claude-code-request-shapes) fails on any field
+that is not listed here.
+
+| Field | Result |
+| --- | --- |
+| `safeguards` | Claude Code retries without it and uses its built-in auto-mode classifier. |
+| Tool `defer_loading` | Tool search is unsupported. From Claude Code 2.1.305 the client retries with every MCP tool loaded upfront. On 2.1.299, setting `ENABLE_TOOL_SEARCH=true` ends in `API Error: 400`. |
+| `stop_sequences` and `thinking: disabled` on side requests | The auto-mode classifier fails on these. **Auto mode cannot approve a guarded action through this gateway:** in the check, the action does not run. Claude Desktop has a separate [native review path](claude-desktop.md#native-auto-review). |
 
 ## Verification
 

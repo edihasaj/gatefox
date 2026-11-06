@@ -74,8 +74,10 @@ async function credentialBackoff(signal: AbortSignal): Promise<boolean> {
     signal.addEventListener("abort", abort, { once: true });
   });
 }
-// Codex owns these requests' history shape, so they never join or seed a live session.
-const oneShotKinds = new Set<unknown>(["compaction", "prewarm", "memory"]);
+// The client owns these requests' history shape, so they never join or seed a live session.
+const oneShotKinds = new Set<unknown>(["compaction", "prewarm", "memory", "auxiliary"]);
+// These sit beside the conversation, so they neither use up nor wait on its replay budget.
+const outsideReplayBudget = new Set<unknown>(["compaction", "auxiliary"]);
 const liveModules = new Map<string, Promise<ClaudeLiveModule | undefined>>(); const unavailable = new Set<string>();
 /** B2's module ships separately; the variable specifier keeps this build independent of it. */
 function loadLive(specifier: string): Promise<ClaudeLiveModule | undefined> {
@@ -92,7 +94,7 @@ export class ClaudeSubscription implements Provider {
     private readonly onContextWindow?: (model: string, contextWindow: number) => void, private readonly liveModule = "./claude-live.js") {}
   async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
     const budget = claudeReplayBudget(this.scope(), providerConversationId(context), claudeCliModel(request.model), Buffer.byteLength(JSON.stringify(request.input)));
-    const finishActivity = context.requestKind === "compaction" ? () => {} : budget.track();
+    const finishActivity = outsideReplayBudget.has(context.requestKind) ? () => {} : budget.track();
     try { yield* this.inferWithBudget(request, signal, context, budget); }
     finally { finishActivity(); }
   }
@@ -115,8 +117,8 @@ export class ClaudeSubscription implements Provider {
       // The same key the live registry derives, so one thread's one-shot and live events line up.
       ...(conversationId ? { threadKey: sessionKey(this.scope(), conversationId).slice(0, 8) } : {}) };
     {
-      run.replayBudget = { beforeRequest: mode => { if (context.requestKind !== "compaction") budget.beforeRequest(mode); }, record: (tokens, outcome) => {
-        if (context.requestKind !== "compaction") budget.record(tokens, { cancelled: context.callerCancelled?.(), refused: outcome?.refused });
+      run.replayBudget = { beforeRequest: mode => { if (!outsideReplayBudget.has(context.requestKind)) budget.beforeRequest(mode); }, record: (tokens, outcome) => {
+        if (!outsideReplayBudget.has(context.requestKind)) budget.record(tokens, { cancelled: context.callerCancelled?.(), refused: outcome?.refused });
         const measured = tokens?.input !== undefined && tokens.cacheRead !== undefined && tokens.cacheWrite !== undefined;
         context.observeCacheUsage?.({ ...(measured ? { inputTokens: tokens.input! + tokens.cacheRead! + tokens.cacheWrite! } : {}),
           ...(!measured ? { inputTokensLowerBound: [tokens?.input, tokens?.cacheRead, tokens?.cacheWrite].reduce<number>((sum, value) => sum + (value ?? 0), 0) } : {}),

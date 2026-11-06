@@ -82,7 +82,9 @@ finishes normally, then the session closes instead of remaining parked in replay
   Once the CLI has finished and no tools are pending, a changed prefix therefore
   uses one cache-budgeted replacement (`client_history_replaced`). Gateway does
   not infer compaction from prompt text or grant a separate compaction budget for
-  that unmarked request. Pending tool mismatches still preserve and refuse.
+  that unmarked request. With [hint headers](messages.md#hint-headers) on, the
+  summary request is marked as compaction and takes the compaction path instead.
+  Pending tool mismatches still preserve and refuse.
   Explicit thread IDs retain the preservation behavior above.
 - **Dead session:** a crashed CLI cannot be preserved. Its existing replay hold
   remains bounded by the shared cache guard and expires after an idle hour.
@@ -105,8 +107,8 @@ finishes normally, then the session closes instead of remaining parked in replay
   the default of one is cheap: the promoted
   session seed reads the cache the one-shot request wrote and writes only its new
   content.
-- **Standalone requests:** explicitly identified compaction, prewarm and memory
-  requests, first questions without a conversation ID, and configured warmup.
+- **Standalone requests:** explicitly identified compaction, prewarm, memory and
+  Claude Code side requests, first questions without a conversation ID, and configured warmup.
   Anonymous historical conversations require an ID instead of repeated replay.
 - **Continuity refusal:** capacity, concurrent requests, failed startup or an
   unavailable live adapter stop before one-shot replay. CLI failure remains final

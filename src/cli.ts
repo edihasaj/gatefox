@@ -284,7 +284,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (!values.model || !catalog.models.some(model => model.slug === values.model)) throw new Error("--model must name a configured alias");
     if (!config.port) throw new Error("Use a fixed port before generating client configuration");
     if (command === "claude-config") {
-      process.stdout.write(claudeSettings(values.model, `http://127.0.0.1:${config.port}/v1`, config.clientOnly ? ["--file", resolve(config.stateDirectory, "client-token")] : ["--config", path])); return;
+      process.stdout.write(claudeSettings(values.model, `http://127.0.0.1:${config.port}/v1`, config.clientOnly ? ["--file", resolve(config.stateDirectory, "client-token")] : ["--config", path], catalog)); return;
     }
     const catalogPath = resolve(config.stateDirectory, "codex-models.json");
     await writePrivateJson(catalogPath, catalog);

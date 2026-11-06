@@ -331,12 +331,13 @@ test("a live CLI killed after text was streamed ends the request as a final refu
   } finally { await teardown(f); }
 });
 
-test("compaction requests and requests without a thread run one-shot", { timeout: 30000 }, async () => {
-  const { f } = await setup({ replies: [{ text: "a" }, { text: "b" }] });
+test("compaction, side requests and requests without a thread run one-shot", { timeout: 30000 }, async () => {
+  const { f } = await setup({ replies: [{ text: "a" }, { text: "b" }, { text: "c" }] });
   try {
     await turn(adapter(), [user("compact")], { context: { threadId: "thread-1", requestKind: "compaction" } });
+    await turn(adapter(), [user("title this chat")], { context: { sessionId: "session-1", requestKind: "auxiliary" } });
     await turn(adapter(), [user("no thread")], { context: {} });
-    assert.deepEqual((await f.capture()).filter(entry => entry.start).map(entry => entry.start), ["oneshot", "oneshot"]);
+    assert.deepEqual((await f.capture()).filter(entry => entry.start).map(entry => entry.start), ["oneshot", "oneshot", "oneshot"]);
   } finally { await teardown(f); }
 });
 

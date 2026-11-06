@@ -16,6 +16,7 @@ import { ProviderError, inferenceContext, maxTurnStateLength, type InferenceCont
 import { ResponsesWriter } from "./protocol/responses.js";
 import { MessagesWriter, anthropicError } from "./protocol/messages.js";
 import { messagesToResponses } from "./protocol/messages-request.js";
+import { messagesAgentId, messagesRequestKind } from "./protocol/messages-session.js";
 import { messagesProviderRequest } from "./protocol/messages-routing.js";
 import { responsesToChatRequest } from "./protocol/request.js";
 import { reportDroppedSearch } from "./protocol/tool-search-bridge.js";
@@ -400,10 +401,11 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     res.once("close", cancel);
     try {
       const wire = await body(req);
-      const translated = messagesProtocol ? messagesToResponses(wire, { countTokens }) : wire;
+      const translated = messagesProtocol ? messagesToResponses(wire, { countTokens, agentId: messagesAgentId(req.headers) }) : wire;
       // Internal wire fields and control items go once, here, whichever protocol the request arrived in.
       const internal = stripOpenAIInternal(translated); const request = internal.request; droppedControlItems = internal.droppedControlItems;
-      context = { ...inferenceContext(req.headers, request), ...(messagesProtocol ? { clientProtocol: "messages" as const,
+      const claudeCodeKind = messagesProtocol ? messagesRequestKind(req.headers) : undefined;
+      context = { ...inferenceContext(req.headers, request), ...(claudeCodeKind ? { requestKind: claudeCodeKind } : {}), ...(messagesProtocol ? { clientProtocol: "messages" as const,
         ...((wire.thinking as { type?: string } | undefined)?.type === "adaptive" ? { adaptiveThinking: true } : {}) } : {}) };
       // Sub-agents that Codex spawns from a gateway chat inherit the gateway provider
       // but take a bare model name from the user's agent roles. Serve that same model
