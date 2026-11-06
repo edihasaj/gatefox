@@ -1,4 +1,5 @@
 import { sameGatewaySdk } from "./release-sdk-match.js";
+import { sameRelayBinary } from "./relay-binary.js";
 import { parseConfigRejection } from "./config-rejection.js";
 import { access, constants, lstat, readFile as readTextFile } from "node:fs/promises";
 import { readServicePlan, serviceStatusPath, type ServicePlan } from "./service-plan.js";
@@ -43,6 +44,8 @@ export interface HealthOptions {
 
 /** Every side effect the checks have, so a test can hand them fixtures instead of a machine. */
 export interface HealthDeps {
+  /** Whether two releases ship the same native relay bytes. */
+  sameRelay?: (running: string, installed: string) => Promise<boolean>;
   /** Whether release `running` ships the installed release's gateway SDK (see src/release-sdk-match.ts). */
   sameSdk?: (running: string, installed: string) => Promise<boolean>;
   now?: () => number;
@@ -97,6 +100,14 @@ async function deferredAdapters(versions: VersionsResult, sameSdk: (running: str
     if (row.role === "desktop-adapter" && row.release !== versions.installed && row.release !== "unknown" && await sameSdk(row.release, versions.installed).catch(() => false)) deferred.add(row.pid);
   }
   return deferred;
+}
+
+async function identicalRelays(versions: VersionsResult, same: (running: string, installed: string) => Promise<boolean>): Promise<Set<number>> {
+  const identical = new Set<number>();
+  if (versions.installed) for (const row of versions.processes) {
+    if (row.role === "native-relay" && row.release !== versions.installed && await same(row.release, versions.installed).catch(() => false)) identical.add(row.pid);
+  }
+  return identical;
 }
 
 function reconcileServiceRelease(versions: VersionsResult, status: ServiceStatus): VersionsResult {
@@ -202,8 +213,10 @@ export async function runHealth(options: HealthOptions, deps: HealthDeps = {}): 
     .catch(() => ({ outcome: { ran: false, result: "unavailable" } as SmokeOutcome }));
   // A desktop adapter that has the installed release's SDK waits for its app's next launch instead of exiting under it.
   const deferred = await note("adapters", () => deferredAdapters(versions, deps.sameSdk ?? sameGatewaySdk), new Set<number>());
+  // A relay running the installed release's bytes has nothing to move to; only its release label is older.
+  const sameRelays = await note("relay binary", () => identicalRelays(versions, deps.sameRelay ?? sameRelayBinary), new Set<number>());
   const reconciled = reconcileServiceRelease(versions, status);
-  const components = componentFindings({ ...reconciled, processes: reconciled.processes.map(row => deferred.has(row.pid) ? { ...row, release: versions.installed! } : row) }, now, switched);
+  const components = componentFindings({ ...reconciled, processes: reconciled.processes.map(row => deferred.has(row.pid) || sameRelays.has(row.pid) ? { ...row, release: versions.installed! } : row) }, now, switched);
   const findings: Finding[] = [
     ...appFindings(app, change.changed), ...components.findings, ...upgradeFindings(plan, laggingWithService(components.lagging, versions, status), components.stale, trustedSnapshot(versions, status) ? status.controllerRelease : undefined, versions.installed, trustedSnapshot(versions, status) ? status.liveUpdates : undefined),
     ...serviceFindings(status, signals), ...relayFindings(status, relay, now), ...inferenceFindings(inference, versions.installed),

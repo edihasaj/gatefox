@@ -23,7 +23,7 @@ reported as `versions.retained`: the service root that wrote the status, only wh
 controller (`runtime.controllerRelease`) already runs the installed release (any other
 service root stays pending), and the native relay,
 only while its binary is byte-identical to the one the installed release ships (every
-release since 1.5.0 reuses the 1.5.0 relay). Both change at the next natural start. A desktop adapter whose release ships the installed release's gateway SDK is retained too: it waits for its app's next launch rather than exiting under it ([services](services.md#desktop-adapters-wait-for-the-apps-next-launch)).
+current release reuses an earlier relay, 1.5.9 as of 1.7.1). Both change at the next natural start. A desktop adapter whose release ships the installed release's gateway SDK is retained too: it waits for its app's next launch rather than exiting under it ([services](services.md#desktop-adapters-wait-for-the-apps-next-launch)).
 Everything below still has to be current, including the execution host and its canary.
 A live-moved service whose host still runs the older release and refuses chats of the
 installed one is `blocked: release_skew`.

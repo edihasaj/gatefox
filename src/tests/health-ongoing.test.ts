@@ -189,3 +189,13 @@ test("a desktop adapter waiting for its app's relaunch on the installed SDK is n
   const moving = await check([], { versions: async () => adapter(), sameSdk: async () => false });
   assert.ok(moving.reasons.some(finding => /lagging desktop-adapter@0\.4\.3/.test(finding.reason)));
 });
+
+test("a relay with the installed release's bytes is not lagging, and one with other bytes still is", async () => {
+  const relay = (): VersionsResult => ({ installed: "1.7.0", lagging: 1, processes: [{ role: "native-relay", pid: 7, startedAt: new Date(at("06:00:00")).toISOString(), release: "1.5.9" }] });
+  const identical = await check([], { versions: async () => relay(), sameRelay: async () => true });
+  assert.equal(identical.reasons.some(finding => /native-relay/.test(finding.reason)), false);
+  const different = await check([], { versions: async () => relay(), sameRelay: async () => false });
+  assert.ok(different.reasons.some(finding => finding.reason === "lagging native-relay@1.5.9"));
+  const unreadable = await check([], { versions: async () => relay(), sameRelay: async () => { throw new Error("unreadable"); } });
+  assert.ok(unreadable.reasons.some(finding => finding.reason === "lagging native-relay@1.5.9"), "bytes that cannot be compared stay lagging");
+});
