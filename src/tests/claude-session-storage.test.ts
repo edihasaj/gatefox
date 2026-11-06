@@ -14,8 +14,7 @@ async function start(f: ClaudeFixture): Promise<{ session: ClaudeSession; direct
   let directory = "";
   const options = {
     key, fingerprint: "fixture", window: "", env: claudeEnv(undefined, true), mcpCatalog: [], systemPrompt: "Test fixture.",
-    // Also lets this test reproduce the legacy cleanup behavior on the old implementation.
-    keyInUse: () => false, onClose: () => {},
+    onClose: () => {},
     args: (mcpPath: string, systemPath: string) => {
       directory = dirname(mcpPath);
       return claudeCliArgs({ mcpPath, systemPath, model: "fixture", fast: false, thinkingDisplay: false });
@@ -36,6 +35,7 @@ test("late legacy cleanup cannot delete a replacement session's cwd or control f
     // The old cleaner has already checked that only its work directory remains.
     assert.deepEqual(await readdir(legacy), ["work"]);
     replacement = await start(f);
+    assert.equal(dirname(replacement.directory), base(), "new generations live outside the legacy sweep root");
     // An older runtime's startup sweep sees only the legacy root as well.
     for (const name of await readdir(legacy)) {
       if (name !== "work") await rm(join(legacy, name), { recursive: true, force: true });
@@ -55,6 +55,8 @@ test("overlapping generations own separate working directories and remove only t
     generations.push(await start(f), await start(f));
     const [first, second] = generations;
     assert.notEqual(first.cwd, second.cwd);
+    await sweepSessionDirectories();
+    for (const generation of generations) assert.equal((await lstat(join(generation.directory, "mcp.json"))).isFile(), true, "a real live generation survives startup sweeping");
     await writeFile(join(second.cwd, "owned"), "replacement");
     await first.session.close("closed", "test", true);
     await assert.rejects(lstat(first.directory), { code: "ENOENT" });
