@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Restarting a Claude session no longer races the previous session's cleanup.
+  Each generation now owns its working directory and files, so delayed cleanup
+  cannot delete the replacement's directory and fail its startup. Thanks to Edi
+  Hasaj for reporting the failure.
+
 - Claude Code's auto mode now works through the gateway. Its safety classifier reaches a real Claude
   model through a restricted, tool-free one-turn run. Previously every review was refused, so guarded
   actions never ran. With no unambiguous Claude route the request stays refused, and a changed

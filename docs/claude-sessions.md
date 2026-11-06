@@ -235,8 +235,14 @@ kills the session as soon as the gateway reads that line, and the request fails 
 `CLAUDE_CODE_*` or `CLAUDE_AGENT_SDK_*` variables; the gateway sets its own, including
 `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`, so caller tool descriptions are not cut.
 Nothing is written to `~/.claude`: sessions use `--no-session-persistence` and a
-private working directory under `$TMPDIR/gateway-claude`, which the next start sweeps
-after a crash. Live sessions set `DISABLE_AUTO_COMPACT=1`; Codex owns compaction.
+private working directory inside its own generation under `$TMPDIR/gateway-claude-v2`.
+Closing a session removes only that generation, including its working directory.
+The next process start sweeps generations whose gateway owner has died. New
+generations sit outside the legacy per-thread tree, so cleanup by a session
+adopted from an older release cannot delete a replacement's files. Live sessions
+set `DISABLE_AUTO_COMPACT=1`; Codex owns compaction.
+Legacy per-thread working directories remain when sweeping old storage, because
+an older process may still be starting a session there.
 
 ## Request rejections
 
