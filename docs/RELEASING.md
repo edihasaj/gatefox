@@ -19,6 +19,25 @@ requirements. The CLI archive workflow below does not publish the app.
 Use the [background identity and signing workflow](macos-background-item.md) when
 shipping a Developer ID signed app and its startup launcher.
 
+## Standard GitHub release
+
+Every version is one standard release, `vVERSION`, marked **Latest**. It holds the
+notarized app ZIP, the command-line archive, `app-update.json` and one
+`SHA256SUMS` for all of them, with notes taken from the version's `CHANGELOG.md`
+section. The README and the gatefox.dev download button link to it.
+
+| Version | Also publish | App ZIP | Command-line archive |
+| --- | --- | --- | --- |
+| 1.7.6 | `app-v1.7.6` (by `release-macos-app.mjs --publish`, for 1.7.5 and older updaters) | `Harness-Gateway-1.7.6-macos-arm64.zip` | `harness-gateway-1.7.6-macos-arm64.tar.gz` |
+| 1.8.0 and later | nothing else | `GateFox-VERSION-macos-arm64.zip` | `gatefox-VERSION-macos-arm64.tar.gz` |
+
+Order: create `vVERSION` with the archive and its `SHA256SUMS` (`--latest=false`),
+run the app publisher, upload the app ZIP and `app-update.json` to `vVERSION`,
+replace `SHA256SUMS` with one covering every asset, verify each GitHub digest
+against the local file, then mark it Latest. Publish 1.8.0 only after every Mac
+runs 1.7.6, the first updater that reads `vVERSION` tags and GateFox names; see
+[macOS app updates](macos-updates.md#release-tags-and-names).
+
 ## macOS app distribution
 
 Build the matching canonical CLI archive with `--with-native --with-gateway-sdk`

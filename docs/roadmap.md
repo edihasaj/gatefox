@@ -10,7 +10,7 @@ read_when:
 GateFox already serves Claude, ChatGPT, Copilot, OpenRouter, xAI, OpenCode and
 local models to Codex, Claude Code and Claude Desktop. The next steps make the
 Claude apps feel native, add direct DeepSeek support, and open the gateway to
-any harness that accepts an API endpoint.
+any harness that accepts an API endpoint, and bring it to Linux and Windows.
 
 Each item links to its GitHub issue; all of them carry the
 [`roadmap` label](https://github.com/edihasaj/gatefox/issues?q=is%3Aopen+label%3Aroadmap). Comment there before you start, so two
@@ -19,9 +19,9 @@ deep knowledge of the gateway. Read [CONTRIBUTING.md](../CONTRIBUTING.md) first.
 
 ```
             today                                  next
- Codex ─────────────┐                  ┌──────────── Cline · Aider · Zed · Continue
+ Codex (Mac + phone)┐                  ┌──────────── Cline · Aider · Zed · Continue
  Claude Code ───────┼─► GateFox ◄──────┤             (Chat Completions ingress)
- Claude Desktop ────┘   │              └──────────── more harness recipes
+ Claude Desktop ────┘   │  macOS       └──────────── Linux · Windows
                         ▼
    Claude · ChatGPT · Copilot · OpenRouter · xAI · local    + DeepSeek direct
 ```
@@ -64,12 +64,22 @@ The gateway translates and transports; the harness keeps its tools,
 permissions and model choices. New ingress must keep that rule
 ([architecture](architecture.md)).
 
-## 4. Easier to start
+## 4. More platforms
+
+GateFox runs on macOS (Apple silicon). Its core is Node, so most of it can move.
+
+| Platform | Today | Help wanted |
+| --- | --- | --- |
+| macOS | Full support: app, background service, updater, Codex and Claude desktop apps | — |
+| Linux | The command-line gateway runs; no published package | Linux archive and install guide ([#84](https://github.com/edihasaj/gatefox/issues/84)) |
+| Windows | Not supported yet | Paths, private credential files, a Windows service, and desktop app registration ([#86](https://github.com/edihasaj/gatefox/issues/86)) |
+| Phone | Codex in the ChatGPT app lists and continues gateway chats through your Mac's [native relay](native-remote.md) | Claude's mobile Remote Control does not accept custom gateways yet |
+
+## 5. Easier to start
 
 | Work | Why |
 | --- | --- |
-| Linux packaging for the command-line gateway ([#84](https://github.com/edihasaj/gatefox/issues/84)) | The code already supports Linux; only the macOS installer is published |
-| A short demo video or GIF in the README (**good first issue**) ([#85](https://github.com/edihasaj/gatefox/issues/85)) | Shows the model picker with added models in a few seconds |
+| A short demo video or GIF in the README (**good first issue**, [#85](https://github.com/edihasaj/gatefox/issues/85)) | Shows the model picker with added models in a few seconds |
 
 ## Proposing something else
 
