@@ -7,7 +7,7 @@ read_when:
 
 # One app identity in Login Items
 
-Gatefox uses one existing gateway LaunchAgent. A signed copy of the app
+GateFox uses one existing gateway LaunchAgent. A signed copy of the app
 can associate that job with its name and fox icon. It does not register another
 startup job or require its window to stay open.
 

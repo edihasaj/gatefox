@@ -40,7 +40,7 @@ struct GatewayView: View {
             }
             Button("Not now", role: .cancel) { permissions.dismissInvitation() }
         } message: {
-            Text("Full Disk Access is optional for development tasks that need protected files. It allows broad access to data such as Mail, Messages and backups. Enable Harness Gateway manually in System Settings → Privacy & Security → Full Disk Access. You can review permissions later in Settings.")
+            Text("Full Disk Access is optional for development tasks that need protected files. It allows broad access to data such as Mail, Messages and backups. Enable GateFox manually in System Settings → Privacy & Security → Full Disk Access. You can review permissions later in Settings.")
         }
     }
 
@@ -60,7 +60,7 @@ struct GatewayView: View {
             .padding(.top, 24)
             .padding(.bottom, 25)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Harness Gateway")
+            .accessibilityLabel("GateFox")
 
             List(selection: $navigation.selection) {
                 Label("Overview", systemImage: "rectangle.grid.1x2")

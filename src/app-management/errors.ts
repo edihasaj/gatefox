@@ -16,7 +16,7 @@ const messages: Record<string, string> = {
   invalid_models: "The selected models are invalid.",
   draft_invalid: "The connection draft is no longer valid.",
   discovery_failed: "Model discovery did not complete.",
-  external_credential: "This credential is managed outside Harness Gateway.",
+  external_credential: "This credential is managed outside GateFox.",
   cancelled: "The management operation was cancelled.",
   operation_failed: "The management operation did not complete.",
 };

@@ -1,5 +1,5 @@
 ---
-summary: 'Grok/xAI, OpenCode Console and Go, OpenRouter, and custom API connections behind Gatefox.'
+summary: 'Grok/xAI, OpenCode Console and Go, OpenRouter, and custom API connections behind GateFox.'
 read_when:
   - Connecting Grok, OpenCode or another API model service
   - Changing named API presets, upstream protocols or conversation headers
@@ -11,7 +11,7 @@ API model services are upstream gateway providers. Existing clients keep their
 normal tool execution, permissions and instructions:
 
 ```text
-Codex / Claude / other client → Gatefox → API model service
+Codex / Claude / other client → GateFox → API model service
 ```
 
 Add connection offers named presets for Grok API, OpenCode Console, OpenCode Go

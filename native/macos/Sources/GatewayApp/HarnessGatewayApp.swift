@@ -13,7 +13,7 @@ struct HarnessGatewayApp: App {
 
     init() {
         guard let launch = try? GatewayLaunchConfiguration.read() else {
-            FileHandle.standardError.write(Data("Harness Gateway: invalid launch options.\n".utf8))
+            FileHandle.standardError.write(Data("GateFox: invalid launch options.\n".utf8))
             exit(64)
         }
         let gateway = GatewayModel(
@@ -32,7 +32,7 @@ struct HarnessGatewayApp: App {
     }
 
     var body: some Scene {
-        Window("Harness Gateway", id: "main") {
+        Window("GateFox", id: "main") {
             GatewayView(model: model, connections: connections)
                 .environmentObject(navigation)
                 .environmentObject(updates)

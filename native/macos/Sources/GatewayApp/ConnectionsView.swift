@@ -241,7 +241,7 @@ struct ConnectionsView: View {
                                 .disabled(connections.connections.first?.id == provider.id)
                         }
                         if !isSubscription(provider), !provider.canReconnect {
-                            Text("API credentials are managed outside Harness Gateway.")
+                            Text("API credentials are managed outside GateFox.")
                         }
                         Divider()
                         Button("Remove connection", role: .destructive) { removalCandidate = provider }

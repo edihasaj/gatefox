@@ -1,9 +1,9 @@
-<img src="docs/assets/logo.png" width="88" height="88" alt="Gatefox fox">
+<img src="docs/assets/logo.png" width="88" height="88" alt="GateFox fox">
 
-# Gatefox
+# GateFox
 
 Use your Claude, ChatGPT, Copilot and local models from the coding app you
-already use. Gatefox runs on your Mac, signs in to each account the
+already use. GateFox runs on your Mac, signs in to each account the
 official way, and adds those models to the model picker of Codex, Claude Code and
 Claude Desktop.
 
@@ -11,7 +11,7 @@ Claude Desktop.
 Codex · Claude Code · Claude Desktop
               │  Responses or Messages API
               ▼
-     Gatefox  (on this Mac, 127.0.0.1)
+     GateFox  (on this Mac, 127.0.0.1)
               │  one sign-in per account
               ▼
  Claude · ChatGPT · Copilot · API keys · local models
@@ -106,7 +106,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as desc
 
 ## Compatibility names
 
-Gatefox was called Harness Gateway, and before that Subscription Gateway. Names that
+GateFox was called Harness Gateway, and before that Subscription Gateway. Names that
 existing installations and saved chats depend on keep an older spelling: the Codex provider ID
 `subscription_gateway` (stored in gateway chats, and registered in every gateway executor;
 a Mac that opts in to `"chatIdentity": "openai"` stores its new chats as `openai`, see

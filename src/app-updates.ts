@@ -183,7 +183,7 @@ async function refreshState(ctx: Context): Promise<void> {
   ctx.state = next;
 }
 function output(ctx: Context, values: Partial<UpdateResult>): UpdateResult {
-  return { automatic: ctx.state.automatic, currentVersion: ctx.version, available: false, phase: "idle", message: "Harness Gateway is up to date.",
+  return { automatic: ctx.state.automatic, currentVersion: ctx.version, available: false, phase: "idle", message: "GateFox is up to date.",
     ...(ctx.state.lastChecked ? { lastChecked: ctx.state.lastChecked } : {}), ...values };
 }
 function releaseFor(releases: Release[]): Release | undefined {
@@ -221,11 +221,11 @@ export async function handleAppUpdate(request: unknown, dependencies: AppUpdateD
       return success(output(ctx, { phase: "preferences_saved", message: "Update preferences saved." }));
     }
     if (parsed.operation === "status") return success(output(ctx, ctx.state.pending
-      ? { latestVersion: ctx.state.pending.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close Harness Gateway to finish installing it." }
+      ? { latestVersion: ctx.state.pending.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close GateFox to finish installing it." }
       : ctx.state.latestVersion && ctx.version !== "Current app" && newer(ctx.state.latestVersion, ctx.version)
         ? { latestVersion: ctx.state.latestVersion, available: true, phase: "available", message: "A newer update is available." } : {}));
     if (parsed.operation === "install" && ctx.state.pending) return success(output(ctx, {
-      latestVersion: ctx.state.pending.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close Harness Gateway to finish installing it.",
+      latestVersion: ctx.state.pending.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close GateFox to finish installing it.",
     }));
     const releases = await (dependencies.releases || githubReleases)();
     const candidate = releaseFor(releases); const latest = candidate && releaseVersion(candidate.tag_name);
@@ -272,7 +272,7 @@ async function install(ctx: Context, release: Release, latest: string, deps: App
     ctx.state.pending = { version: manifest.version, source: manifest.source, backendSha256: manifest.backendSha256,
       appStage, backendArchive, requestedAt: new Date().toISOString() }; ctx.state.latestVersion = manifest.version;
     await writePrivate(ctx.statePath, ctx.state); recorded = true;
-    return success(output(ctx, { latestVersion: manifest.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close Harness Gateway to finish installing it.", lastChecked: ctx.state.lastChecked }));
+    return success(output(ctx, { latestVersion: manifest.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close GateFox to finish installing it.", lastChecked: ctx.state.lastChecked }));
   } catch (error) {
     if (appStage && !recorded) await rm(appStage, { recursive: true, force: true }).catch(() => undefined);
     throw error;
@@ -295,7 +295,7 @@ async function discardUpdateStage(ctx: Context, pending: NonNullable<UpdateState
 export async function installPending(ctx: Context, deps: AppUpdateDependencies = {}): Promise<AppUpdateResponse> {
   const pending = ctx.state.pending; if (!pending || !contained(dirname(ctx.app), pending.appStage) || !pending.appStage.endsWith(".app") ||
     !contained(ctx.installation.root, pending.backendArchive)) throw new Error("pending");
-  if (await (deps.appRunning || defaultAppRunning)(ctx.app)) return success(output(ctx, { latestVersion: pending.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close Harness Gateway to finish installing it." }));
+  if (await (deps.appRunning || defaultAppRunning)(ctx.app)) return success(output(ctx, { latestVersion: pending.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close GateFox to finish installing it." }));
   if (deps.signal?.aborted) throw Object.assign(new Error("cancelled"), { code: "cancelled" });
   const command = deps.command || runCommand;
   const invoke = transactionCommand(command);
@@ -309,7 +309,7 @@ export async function installPending(ctx: Context, deps: AppUpdateDependencies =
       installation: ctx.installation, app: ctx.app, version: pending.version, team: ctx.team,
     }));
     await discardUpdateStage(ctx, pending, deps);
-    return success(output(ctx, { latestVersion: pending.version, phase: "installed", message: "Update installed. Reopen Harness Gateway to use it." }));
+    return success(output(ctx, { latestVersion: pending.version, phase: "installed", message: "Update installed. Reopen GateFox to use it." }));
   }
   if (recovered === "rolled_back") {
     delete ctx.state.pending; await writePrivate(ctx.statePath, ctx.state);
@@ -347,7 +347,7 @@ export async function installPending(ctx: Context, deps: AppUpdateDependencies =
     await finalizeCommittedInstallationTransaction(tx);
   } finally { await rm(activation, { recursive: true, force: true }).catch(() => undefined); }
   await discardUpdateStage(ctx, pending, deps);
-  return success(output(ctx, { latestVersion: pending.version, phase: "installed", message: "Update installed. Reopen Harness Gateway to use it." }));
+  return success(output(ctx, { latestVersion: pending.version, phase: "installed", message: "Update installed. Reopen GateFox to use it." }));
 }
 
 /** Service-only pending retry. It is separate from the public protocol so UI calls never swap a live app. */

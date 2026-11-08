@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The project is now GateFox (https://gatefox.dev, `edihasaj/gatefox`). The app's
+  window, Dock and menu name, permission prompts and update messages say GateFox.
+  The app file stays `Harness Gateway.app` for now, and the bundle ID, service
+  labels, folders, Codex provider ID and Claude Desktop profile name are unchanged,
+  so installed Macs and their updates keep working.
+
 - The README and the guide now start with a single-Mac setup: install, connect your
   accounts, start the service. Adding more Macs is a separate, optional chapter. The
   long README moved to `docs/cli.md`, and `docs/reference.html` is a new searchable

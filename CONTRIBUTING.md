@@ -7,7 +7,7 @@ Thanks for helping. Issues and pull requests are welcome.
 - Read the [guide](https://gatefox.dev) and the doc page for the area you change;
   every page lists when to read it on [All docs](https://gatefox.dev/reference.html).
 - For a larger change, open an issue first so we can agree on the approach.
-- Gatefox translates and transports requests. Your client owns tools,
+- GateFox translates and transports requests. Your client owns tools,
   permissions, roles and model choices, and changes must keep it that way.
 
 ## Development

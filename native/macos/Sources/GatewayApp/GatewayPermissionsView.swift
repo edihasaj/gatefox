@@ -11,14 +11,14 @@ struct GatewayPermissionsView: View {
                     .font(GatewayTheme.display(24))
                     .foregroundStyle(GatewayTheme.charcoal)
 
-                Text("Choose access for the development work you run through Harness Gateway on this Mac.")
+                Text("Choose access for the development work you run through GateFox on this Mac.")
                     .font(GatewayTheme.body(14))
 
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Full Disk Access")
                         .font(GatewayTheme.body(16, weight: .semibold))
                     Text("Optional for development tasks that need protected files, including Mail, Messages, Safari data and backups. It grants broad access beyond your project folders.")
-                    Text("1. Open System Settings → Privacy & Security → Full Disk Access.\n2. Enable Harness Gateway. If it is missing, use + to select this app from Applications.")
+                    Text("1. Open System Settings → Privacy & Security → Full Disk Access.\n2. Enable GateFox. If it is missing, use + to select this app from Applications.")
                     Text("If macOS asks to quit and reopen, finish active work first. A background tool may need to restart later; this window does not restart the gateway.")
                     HStack(spacing: 10) {
                         paneButton(.fullDiskAccess)

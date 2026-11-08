@@ -153,8 +153,8 @@ writeFileSync(join(app, 'Contents/Info.plist'), `<?xml version="1.0" encoding="U
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>com.edihasaj.harness-gateway.app</string>
-<key>CFBundleName</key><string>Harness Gateway</string>
-<key>CFBundleDisplayName</key><string>Harness Gateway</string>
+<key>CFBundleName</key><string>GateFox</string>
+<key>CFBundleDisplayName</key><string>GateFox</string>
 <key>CFBundleExecutable</key><string>GatewayApp</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
@@ -163,8 +163,8 @@ writeFileSync(join(app, 'Contents/Info.plist'), `<?xml version="1.0" encoding="U
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>
-<key>NSAppleEventsUsageDescription</key><string>Harness Gateway lets tools you approve automate other apps on this Mac.</string>
-<key>NSLocalNetworkUsageDescription</key><string>Harness Gateway connects to the gateway and model servers you configure on your local network.</string>
+<key>NSAppleEventsUsageDescription</key><string>GateFox lets tools you approve automate other apps on this Mac.</string>
+<key>NSLocalNetworkUsageDescription</key><string>GateFox connects to the gateway and model servers you configure on your local network.</string>
 </dict></plist>
 `);
 writeFileSync(join(resources, 'app-build.json'), JSON.stringify({

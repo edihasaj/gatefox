@@ -22,7 +22,7 @@ try {
   const git = (...args) => execFileSync('git', ['-C', out, ...args], { stdio: ['ignore', 'pipe', 'inherit'] }).toString().trim();
   git('init', '-q', '-b', 'gh-pages'); git('add', '-A');
   const source = execFileSync('git', ['rev-parse', '--short', 'HEAD']).toString().trim();
-  git('-c', 'user.name=Gatefox docs', '-c', 'user.email=docs@gatefox.dev', 'commit', '-q', '-m', `docs: publish site from ${source}`);
+  git('-c', 'user.name=GateFox docs', '-c', 'user.email=docs@gatefox.dev', 'commit', '-q', '-m', `docs: publish site from ${source}`);
   if (push) git('push', '--force', remote, 'gh-pages:gh-pages');
   process.stdout.write(JSON.stringify({ pages: result.pages, domain: new URL(site).host, remote, branch: 'gh-pages', source, pushed: push }) + '\n');
 } finally { rmSync(work, { recursive: true, force: true }); }

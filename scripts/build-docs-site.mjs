@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Builds the Gatefox docs site (https://gatefox.dev) into one folder:
+// Builds the GateFox docs site (https://gatefox.dev) into one folder:
 //   index.html, styles.css, app.js, assets/   the hand-written guide, copied as is
 //   reference.html                            every topic, grouped, from each page's front matter
 //   <name>.html                               each docs/<name>.md rendered to HTML
@@ -61,15 +61,15 @@ const head = (title, description) => `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="${escape(description)}">
-  <title>${escape(title)} · Gatefox</title>
+  <title>${escape(title)} · GateFox</title>
   <link rel="icon" type="image/png" href="assets/favicon.png">
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png">
   <link rel="stylesheet" href="styles.css">
   <script src="app.js" defer></script>
 </head>
 <body>`;
-const brand = `<a class="brand" href="index.html"><img src="assets/logo.png" width="56" height="56" alt="Gatefox fox"><span>Gatefox</span></a>`;
-const footer = (label, note) => `    <footer><img src="assets/favicon.png" width="24" height="24" alt=""><span>Gatefox · ${escape(label)}<br><small>${escape(note)}</small></span><a href="#top">Back to top ↑</a></footer>`;
+const brand = `<a class="brand" href="index.html"><img src="assets/logo.png" width="56" height="56" alt="GateFox fox"><span>GateFox</span></a>`;
+const footer = (label, note) => `    <footer><img src="assets/favicon.png" width="24" height="24" alt=""><span>GateFox · ${escape(label)}<br><small>${escape(note)}</small></span><a href="#top">Back to top ↑</a></footer>`;
 
 /** The grouped, searchable list of every topic. */
 export function renderReference(pages) {
@@ -91,7 +91,7 @@ ${list.map(page => `        <a class="card" href="${page.name}.html">
       </div>
     </section>`).join('\n\n');
   const nav = shown.map(([label], index) => `      <a href="#${anchor(label)}">${String(index + 1).padStart(2, '0')} <span>${escape(label)}</span></a>`).join('\n');
-  return `${head('All docs', 'Every Gatefox topic, with when to read it.')}
+  return `${head('All docs', 'Every GateFox topic, with when to read it.')}
   <a class="skip" href="#guide">Skip to docs</a>
   <aside class="sidebar" aria-label="Docs navigation">
     ${brand}
@@ -158,7 +158,7 @@ ${nav}
     </header>
     <article class="prose">
 ${body}    </article>
-${footer(page.title, 'Part of the Gatefox docs.')}
+${footer(page.title, 'Part of the GateFox docs.')}
   </main>
 </body>
 </html>

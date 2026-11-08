@@ -8,7 +8,7 @@ read_when:
 
 # Client tool reachability
 
-The client registers tools and executes them. Gatefox translates inference
+The client registers tools and executes them. GateFox translates inference
 requests and transports calls and results; it does not supply an automation service
 or change client permissions.
 
