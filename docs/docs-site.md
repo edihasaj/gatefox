@@ -44,7 +44,14 @@ images. The template is `scripts/og/template.html`.
 The deploy adds the shared IndexNow key file (`/<key>.txt`) from `COMPASS_INDEXNOW_KEY`
 or `~/.config/compass/search-provider-credentials.json`; the key is never committed to
 the source. Bing ownership uses the account-wide `msvalidate.01` tag; Google ownership
-uses a DNS TXT record in the `gatefox.dev` zone. Lighthouse scores 100 for performance,
+uses a DNS TXT record in the `gatefox.dev` zone. A publish with `--push` then sends the pages whose
+HTML changed (compared with the published `gh-pages` branch) to IndexNow; a failed
+notification is reported in the output but does not undo the publish.
+
+Registered on 8 November 2026: Google Search Console domain property
+`sc-domain:gatefox.dev` (owner: the Compass service account; sitemap processed with no
+errors), Bing Webmaster Tools (verified; sitemap and all 58 URLs submitted; DuckDuckGo
+follows Bing), IndexNow (58 URLs accepted) and Brave (home page submitted). Lighthouse scores 100 for performance,
 accessibility, best practices and SEO on the guide, All docs and doc pages.
 
 ## Hosting

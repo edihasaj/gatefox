@@ -21,6 +21,21 @@ function indexNowKey() {
   if (key !== undefined && !/^[A-Za-z0-9-]{8,128}$/.test(key)) throw new Error('The IndexNow key has an invalid format');
   return key;
 }
+/** Public URLs whose HTML differs from the currently published gh-pages branch (all pages on a first publish). */
+export function changedPages(git, remote) {
+  let names;
+  try { git('fetch', '-q', '--depth', '1', remote, 'gh-pages'); names = git('diff', '--name-only', 'FETCH_HEAD', 'HEAD').split('\n'); }
+  catch { names = git('ls-files').split('\n'); }
+  return names.filter(name => /^[A-Za-z0-9_-]+\.html$/.test(name) && name !== '404.html')
+    .map(name => name === 'index.html' ? `${site}/` : `${site}/${name}`);
+}
+async function notifyIndexNow(key, urls) {
+  const host = new URL(site).host;
+  const response = await fetch('https://api.indexnow.org/indexnow', { method: 'POST', headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ host, key, keyLocation: `${site}/${key}.txt`, urlList: urls.slice(0, 10000) }) });
+  return response.status;
+}
+let changed = [], notified = 'skipped';
 const work = mkdtempSync(join(process.env.TMPDIR?.startsWith('/tmp') ? process.env.TMPDIR : '/tmp', 'gatefox-pages-'));
 try {
   const out = join(work, 'site'); const result = build(out);
@@ -35,6 +50,10 @@ try {
   git('init', '-q', '-b', 'gh-pages'); git('add', '-A');
   const source = execFileSync('git', ['rev-parse', '--short', 'HEAD']).toString().trim();
   git('-c', 'user.name=GateFox docs', '-c', 'user.email=docs@gatefox.dev', 'commit', '-q', '-m', `docs: publish site from ${source}`);
+  changed = changedPages(git, remote);
   if (push) git('push', '--force', remote, 'gh-pages:gh-pages');
-  process.stdout.write(JSON.stringify({ pages: result.pages, indexNowKeyFile: Boolean(indexNowKey()), domain: new URL(site).host, remote, branch: 'gh-pages', source, pushed: push }) + '\n');
+  // After a successful publish, tell IndexNow (Bing and other engines) which pages changed.
+  // A failed notification is reported, but the publish itself stands.
+  if (push && key && changed.length) notified = await notifyIndexNow(key, changed).catch(error => `failed: ${error.message}`);
+  process.stdout.write(JSON.stringify({ pages: result.pages, indexNowKeyFile: Boolean(indexNowKey()), changedPages: changed.length, indexNow: notified, domain: new URL(site).host, remote, branch: 'gh-pages', source, pushed: push }) + '\n');
 } finally { rmSync(work, { recursive: true, force: true }); }
