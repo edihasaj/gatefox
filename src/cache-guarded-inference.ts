@@ -46,8 +46,10 @@ export async function* cacheGuardedInference(provider: Provider, request: Respon
     context.observeCacheUsage?.(value);
   };
   let refused = false;
+  let clientChange = false;
+  const observeClientRebuild = () => { clientChange = true; context.observeClientRebuild?.(); };
   try {
-    for await (const event of provider.infer(request, signal, { ...context, observeCacheUsage, callerCancelled })) {
+    for await (const event of provider.infer(request, signal, { ...context, observeCacheUsage, callerCancelled, observeClientRebuild })) {
       if (event.type === "usage" || event.type === "done") observeCacheUsage(reported(event.usage, event.accounting));
       if (event.type === "done" && event.interrupted !== true) finished = true;
       yield event;
@@ -56,6 +58,6 @@ export async function* cacheGuardedInference(provider: Provider, request: Respon
     refused = providerRefusal(error);
     throw error;
   } finally {
-    try { budget.record(observed, { cancelled: callerCancelled(), refused }); } finally { finishActivity(); }
+    try { budget.record(observed, { cancelled: callerCancelled(), refused, clientChange }); } finally { finishActivity(); }
   }
 }

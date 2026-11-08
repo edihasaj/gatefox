@@ -29,6 +29,8 @@ export interface InferenceContext {
   observeCacheUsage?: (usage: ProviderCacheUsage) => void;
   /** True once the caller itself cancelled this unfinished request; a timeout or shutdown is not a cancellation. */
   callerCancelled?: () => boolean;
+  /** The provider rebuilt its cache because the caller changed tools, instructions, thinking or Fast. Count-only. */
+  observeClientRebuild?: () => void;
   sessionId?: string; threadId?: string; turnId?: string; windowId?: string; requestKind?: InferenceRequestKind;
   clientProtocol?: "responses" | "messages"; adaptiveThinking?: boolean;
   /** Opaque sticky-routing token that Codex echoes for the rest of a turn. */
