@@ -63,11 +63,12 @@
       </ol>
 
       <h3>The easy way: the app</h3>
-      <p>Download <code>Harness-Gateway-VERSION-macos-arm64.zip</code> from <a href="https://github.com/edihasaj/gatefox/releases">Releases</a>, move the fox to Applications and open it. The setup wizard walks through all three steps: choose a provider, sign in, pick models, then <strong>Set up once</strong> starts the background service and adds the models to Codex. The app includes its own runtime. See <a href="macos-app.html">the macOS app</a>.</p>
+      <p><a class="primary download" data-download href="https://github.com/edihasaj/gatefox/releases/latest">Download for Mac <span data-download-version>(Apple silicon)</span></a></p>
+      <p>Unzip it, move the fox to Applications and open it. The setup wizard walks through all three steps: choose a provider, sign in, pick models, then <strong>Set up once</strong> starts the background service and adds the models to Codex. The app is notarized and includes its own runtime. Every version is on <a href="https://github.com/edihasaj/gatefox/releases">GitHub Releases</a>. See <a href="macos-app.html">the macOS app</a>.</p>
 
       <h3>The command-line way</h3>
       <p>Run these in a new, empty download folder. The installer needs no administrator access and installs under your user folder.</p>
-      <pre><code>VERSION=1.7.5
+      <pre><code>VERSION=1.7.6
 gh release download "v$VERSION" -R edihasaj/gatefox \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS

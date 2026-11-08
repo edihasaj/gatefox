@@ -55,7 +55,7 @@ forward is required only when that device uses the remote-gateway setup describe
 in [remote setup](remote.md).
 
 ```sh
-VERSION=1.7.5
+VERSION=1.7.6
 gh release download "v$VERSION" -R edihasaj/gatefox \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
