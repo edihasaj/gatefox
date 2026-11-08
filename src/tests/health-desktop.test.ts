@@ -5,9 +5,9 @@ import { runHealth, type HealthDeps } from "../health.js";
 import type { Exec } from "../health-types.js";
 
 const app = "/Applications/ChatGPT.app";
-const install = "/Users/edi/.local/share/harness-gateway";
+const install = "/Users/dev/.local/share/harness-gateway";
 const engine = `${app}/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`;
-const receipt = JSON.stringify({ wrapper: "/Users/edi/.local/state/harness-gateway/codex-wrapper" });
+const receipt = JSON.stringify({ wrapper: "/Users/dev/.local/state/harness-gateway/codex-wrapper" });
 
 const main = (pid: number) => `${pid} 1 ${app}/Contents/MacOS/ChatGPT`;
 /** The helpers every ChatGPT has, which say nothing about the engine. */

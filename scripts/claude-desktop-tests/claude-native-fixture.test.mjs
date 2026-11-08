@@ -58,7 +58,7 @@ test('isolation prelude redirects native and CLI state before vendor imports', (
   assert.equal(paths.appData, `${root}/app-data`);
   assert.equal(env.CLAUDE_CONFIG_DIR, `${root}/cli`);
   assert.equal(dirs.length, 6);
-  for (const bad of ['/tmp', '/Users/edi', '/tmp/claude-native-picker.X/trial/../cli', 'relative']) {
+  for (const bad of ['/tmp', '/Users/dev', '/tmp/claude-native-picker.X/trial/../cli', 'relative']) {
     assert.throws(() => isolationPrelude(bad));
   }
 });

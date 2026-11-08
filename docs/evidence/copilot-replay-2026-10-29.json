@@ -8,7 +8,7 @@
     "build": "passed",
     "typecheck": "passed",
     "coreTests": { "host": "macbook-server", "passed": 3609, "skipped": 2, "failed": 0 },
-    "desktopTests": { "host": "Edis-Mac-Studio", "passed": 160, "skipped": 1, "failed": 0 },
+    "desktopTests": { "host": "mac-studio-host", "passed": 160, "skipped": 1, "failed": 0 },
     "finalReplayAndCancellationTests": { "passed": 16, "failed": 0 },
     "packagedSdkDirectToolEditAndCommit": "passed",
     "independentReview": "no actionable findings",
@@ -23,8 +23,8 @@
     }
   },
   "rollout": [
-    { "host": "Edis-Mac-Studio", "inferenceRelease": "1.1.9", "httpStatus": 200, "state": "pending", "reason": "process_version_pending", "pendingProcesses": 4 },
-    { "host": "Edis-MacBook-Pro-2", "inferenceRelease": "1.1.9", "httpStatus": 200, "state": "pending", "reason": "process_version_pending", "pendingProcesses": 3 },
+    { "host": "mac-studio-host", "inferenceRelease": "1.1.9", "httpStatus": 200, "state": "pending", "reason": "process_version_pending", "pendingProcesses": 4 },
+    { "host": "macbook-pro-host", "inferenceRelease": "1.1.9", "httpStatus": 200, "state": "pending", "reason": "process_version_pending", "pendingProcesses": 3 },
     { "host": "macbook-server", "inferenceRelease": "1.1.9", "httpStatus": 200, "state": "pending", "reason": "process_version_pending", "pendingProcesses": 5 }
   ],
   "limits": [

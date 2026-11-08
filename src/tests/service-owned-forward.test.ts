@@ -8,7 +8,7 @@ import { clearOwnedForward, rememberOwnedForward, type OwnedForwardDeps } from "
 
 const component: ServiceComponent = { id: "claude-inference-studio", kind: "tunnel", command: "/usr/bin/ssh",
   args: ["-N", "-T", "-o", "ExitOnForwardFailure=yes", "-R", "127.0.0.1:3468:127.0.0.1:3468", "studio"], log: "/fixture/forward.log" };
-const owner = { pid: 12345, start: "Mon Nov 2 10:00:00 2026", peer: "100.73.86.17:63954" };
+const owner = { pid: 12345, start: "Mon Nov 2 10:00:00 2026", peer: "100.64.10.17:63954" };
 
 async function fixture() {
   const state = await mkdtemp(join(tmpdir(), "owned-forward-"));
@@ -18,7 +18,7 @@ async function fixture() {
     alive: () => alive,
     wait: async () => {},
     run: async (file, args) => {
-      if (file === "/usr/sbin/lsof") return "n100.73.86.17:63954->100.124.102.126:22\n";
+      if (file === "/usr/sbin/lsof") return "n100.64.10.17:63954->100.64.10.126:22\n";
       const command = args.at(-1)!; const encoded = command.match(/'([A-Za-z0-9_-]+)'$/)?.[1]; assert.ok(encoded);
       const request = JSON.parse(Buffer.from(encoded, "base64url").toString());
       assert.equal(request.port, 3468); assert.equal(request.peer, owner.peer);

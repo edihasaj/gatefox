@@ -37,7 +37,7 @@ test("discovery sends a tailnet provider's key only to a Tailscale address", asy
     await assert.rejects(discoverModels(provider({ baseUrl: "http://localhost.:4000/v1" }), { tailnet: seams(["127.0.0.1"]) }), { code: "provider_unreachable" });
     assert.deepEqual(target.requests, [], "the key was not delivered anywhere");
     // A tailnet answer is served with the key, on the same checked transport.
-    const found = await discoverModels(provider(), { tailnet: seams(["100.108.115.57"]) });
+    const found = await discoverModels(provider(), { tailnet: seams(["100.64.10.57"]) });
     assert.deepEqual(found.map(entry => [entry.model, entry.metadata.contextWindow]), [["qwen", 65536]]);
     assert.deepEqual(target.requests, [{ path: "/v1/models", authorization: "Bearer discovery-secret" }]);
   } finally { target.close(); }
@@ -55,7 +55,7 @@ test("model refresh skips a tailnet provider whose host resolves outside the tai
     assert.equal(events.filter(event => event.event === "model_metadata_skipped" && event.reason === "discovery_failed").length, 2);
     assert.equal(events.filter(event => event.event === "provider_address_refused").length, 2);
     // On the tailnet the refresh reads the catalog and records the context window, with the key.
-    assert.deepEqual(await refreshModelMetadata(path, undefined, seams(["100.108.115.57"])), ["qwen"]);
+    assert.deepEqual(await refreshModelMetadata(path, undefined, seams(["100.64.10.57"])), ["qwen"]);
     assert.equal(JSON.parse(await readFile(path, "utf8")).providers[0].modelMetadata["qwen/flash"].contextWindow, 65536);
     assert.deepEqual((target.requests as Array<{ authorization?: string }>).map(request => request.authorization), ["Bearer discovery-secret"]);
   } finally { target.close(); }
