@@ -76,7 +76,7 @@ test("remote process and thread methods reach the owning engine as the desktop s
     const prediction = { experimentalPredictionMode: true, ephemeral: true, excludeTurns: true, threadSource: "composer_predictions" };
     assert.equal(result(await rpc("thread/fork", { threadId: native, ...prediction })).engineHome, files.nativeHome);
     const forked = result(await rpc("thread/fork", { threadId: gateway, ...prediction }));
-    assert.equal(forked.modelProvider, "subscription_gateway");
+    assert.equal(forked.modelProvider, "gatefox");
     assert.notEqual(forked.engineHome, files.nativeHome, "the gateway chat's own executor forked it");
 
     // Deleting a prewarmed chat that never wrote a rollout returns the SDK's answer, which the desktop recognizes.

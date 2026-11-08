@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { gatewayCommand } from "./command.js";
-import { adapterProvider, codexStreamIdleTimeoutMs } from "./codex-config.js";
+import { adapterProvider, codexStreamIdleTimeoutMs, legacyAdapterProvider } from "./codex-config.js";
 import { apiModeEngine, apiModeNativeHome, openNativeConfig, type NativeConfigClient } from "./desktop-api-mode-native.js";
 import { telemetry } from "./telemetry.js";
 
@@ -19,7 +19,7 @@ export type NativeProviderRow = Record<string, unknown> & { auth: Record<string,
 /** The row, in the TOML spelling the engine reads. The adapter's `-c` settings are the same row, flattened. */
 export function nativeProviderRow(port: number, configPath: string): NativeProviderRow {
   const helper = gatewayCommand();
-  return { name: "Harness Gateway", base_url: `http://127.0.0.1:${port}/v1`, wire_api: "responses", requires_openai_auth: false,
+  return { name: "GateFox", base_url: `http://127.0.0.1:${port}/v1`, wire_api: "responses", requires_openai_auth: false,
     supports_websockets: false, request_max_retries: 2, stream_idle_timeout_ms: codexStreamIdleTimeoutMs,
     auth: { command: helper.command, args: [...helper.args, "token", "--config", resolve(configPath)], timeout_ms: 5000, refresh_interval_ms: 300000 } };
 }
@@ -46,7 +46,9 @@ const defaultDeps: NativeProviderDeps = {
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
 /** A row is the gateway's when it carries the gateway's name or credential helper; anything else is left alone. */
-const ownedRow = (row: unknown): boolean => object(row).name === "Harness Gateway" || object(object(row).auth).command === gatewayCommand().command;
+const ownedRow = (row: unknown): boolean => ["GateFox", "Harness Gateway"].includes(String(object(row).name)) || object(object(row).auth).command === gatewayCommand().command;
+/** Both of the gateway's ids get the same row: `gatefox` for chats since 1.8.0, `subscription_gateway` for older ones. */
+const rowIds = [adapterProvider, legacyAdapterProvider];
 
 async function withNative<T>(app: string, deps: NativeProviderDeps, run: (client: NativeConfigClient) => Promise<T>, failed: T): Promise<T> {
   let client: NativeConfigClient | undefined;
@@ -64,10 +66,12 @@ export async function publishNativeProvider(port: number | undefined, configPath
   const outcome: NativeProviderOutcome = !port ? "skipped" : await withNative<NativeProviderOutcome>(app, deps, async client => {
     const row = nativeProviderRow(port, configPath);
     const { version, config } = await client.read();
-    const existing = object(config.model_providers)[adapterProvider];
-    if (isDeepStrictEqual(existing, row)) return "current";
-    if (existing !== undefined && !ownedRow(existing)) return "foreign";
-    await client.write([{ keyPath: `model_providers.${adapterProvider}`, value: row, mergeStrategy: "replace" }], version);
+    const rows = object(config.model_providers);
+    // A foreign row under either id stops the whole publish, so the two ids never point at different gateways.
+    if (rowIds.some(id => rows[id] !== undefined && !ownedRow(rows[id]))) return "foreign";
+    const stale = rowIds.filter(id => !isDeepStrictEqual(rows[id], row));
+    if (!stale.length) return "current";
+    await client.write(stale.map(id => ({ keyPath: `model_providers.${id}`, value: row, mergeStrategy: "replace" as const })), version);
     return "written";
   }, "failed");
   telemetry("native_provider_row", { action: "publish", outcome });
@@ -78,10 +82,11 @@ export async function publishNativeProvider(port: number | undefined, configPath
 export async function withdrawNativeProvider(app: string, deps: NativeProviderDeps = defaultDeps): Promise<NativeProviderRemoval> {
   const outcome = await withNative<NativeProviderRemoval>(app, deps, async client => {
     const { version, config } = await client.read();
-    const existing = object(config.model_providers)[adapterProvider];
-    if (existing === undefined) return "absent";
-    if (!ownedRow(existing)) return "foreign";
-    await client.write([{ keyPath: `model_providers.${adapterProvider}`, value: null, mergeStrategy: "replace" }], version);
+    const rows = object(config.model_providers);
+    const present = rowIds.filter(id => rows[id] !== undefined);
+    if (!present.length) return "absent";
+    if (present.some(id => !ownedRow(rows[id]))) return "foreign";
+    await client.write(present.map(id => ({ keyPath: `model_providers.${id}`, value: null, mergeStrategy: "replace" as const })), version);
     return "removed";
   }, "failed");
   telemetry("native_provider_row", { action: "withdraw", outcome });

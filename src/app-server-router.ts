@@ -18,7 +18,7 @@ import { homedir } from "node:os";
 import { telemetry } from "./telemetry.js";
 import { nativeThreadAbsent } from "./native-thread-absence.js";
 import type { ClassifyThread } from "./gateway-chat-classifier.js";
-import { ChatIdentity, hasParent, legacyGatewayProvider as gatewayProvider, noSlugs, threadFacts, type ChatKind, type EngineHint, type IdentityCatalogs } from "./chat-identity.js";
+import { ChatIdentity, gatewayOwnProviders, gatewayProvider, hasParent, isGatewayProvider, noSlugs, threadFacts, type ChatKind, type EngineHint, type IdentityCatalogs } from "./chat-identity.js";
 import { configEffort, enumEffort, object, requestedEffort, requestedModel, savedTier, tierId, tierSelection } from "./app-server-request-fields.js";
 import { gatewayModelList } from "./app-server-model-list.js";
 import { AppServerRoutingError } from "./app-server-routing-error.js";
@@ -204,7 +204,7 @@ export class AppServerRouter {
   describeThread(threadId: string): { provider?: string; model?: string; identity?: string } {
     const route = this.routes.get(threadId);
     if (!route) return {};
-    const identity = route.kind === "gateway" && typeof route.provider === "string" ? { identity: route.provider === gatewayProvider ? "legacy" : "openai" } : {};
+    const identity = route.kind === "gateway" && typeof route.provider === "string" ? { identity: isGatewayProvider(route.provider) ? "legacy" : "openai" } : {};
     return { provider: route.kind, ...(typeof route.model === "string" ? { model: route.model } : {}), ...identity };
   }
   /** A notification's chat kind: the engine that sent it, else the chat's route, else its classification. */
@@ -282,8 +282,9 @@ export class AppServerRouter {
       const configured = object(result.config).model_provider;
       return typeof configured === "string" && configured ? configured : nativeIdentityProvider;
     }, () => { this.nativeDefault = undefined; return nativeIdentityProvider; }));
-    if (native === gatewayProvider || (!omitted && (requested as string[])[0] !== native)) return params;
-    return { ...params, modelProviders: [native, gatewayProvider] };
+    if (isGatewayProvider(native) || (!omitted && (requested as string[])[0] !== native)) return params;
+    // Both gateway ids: chats saved before 1.8.0 are `subscription_gateway`, newer ones `gatefox`.
+    return { ...params, modelProviders: [native, ...gatewayOwnProviders] };
   }
   private preferenceRequest(params: ObjectValue, model: string): ObjectValue {
     if (tierSelection(params) || this.preferences.model !== model || !Object.hasOwn(this.preferences, "service_tier")) return params;
@@ -523,7 +524,7 @@ export class AppServerRouter {
     if (!inherited && ["model/list", "thread/start", "thread/resume", "thread/fork"].includes(method)) await this.readPreferences();
     if (this.source && !inherited && ["model/list", "thread/start", "thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method)) {
       const requested = requestedModel(params) ?? (method === "thread/start" ? this.preferences.model : undefined);
-      const strict = (typeof requested === "string" && !this.source.isNative(requested)) || params.modelProvider === gatewayProvider || (typeof params.threadId === "string" && this.routes.get(params.threadId)?.kind === "gateway");
+      const strict = (typeof requested === "string" && !this.source.isNative(requested)) || isGatewayProvider(params.modelProvider) || (typeof params.threadId === "string" && this.routes.get(params.threadId)?.kind === "gateway");
       this.extraModels = (await this.source.refresh(strict)).models;
       for (const model of this.extraModels) this.aliases.add(String(model.slug));
       if (typeof requested === "string" && !this.source.isNative(requested) && !this.aliases.has(requested)) throw new AppServerRoutingError("This model is absent from both the native and gateway catalogs; select an offered model");
@@ -549,7 +550,7 @@ export class AppServerRouter {
       if (alias) forwarded = this.modelRequest(dropUnsupportedTier(this.extraModels, this.preferenceRequest(params, model), model, method, drops), model, true);
       else if (typeof model === "string") forwarded = { ...this.preferenceRequest(params, model), model, config: { ...(typeof this.preferences.model_reasoning_effort === "string" && this.preferences.model === model ? { model_reasoning_effort: this.preferences.model_reasoning_effort } : {}), ...object(params.config) } };
       // A gateway alias, or a caller that names the gateway's own provider id, starts a gateway chat; "openai" never does.
-      routed = alias || params.modelProvider === gatewayProvider ? "gateway" : "native";
+      routed = alias || isGatewayProvider(params.modelProvider) ? "gateway" : "native";
     } else if (!inherited && ["thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method) && typeof params.threadId === "string") {
       // No SDK knows this chat: forward the request unchanged so the SDK gives its own answer.
       const threadRoute = await this.route(params.threadId, method);
@@ -571,7 +572,7 @@ export class AppServerRouter {
     if (createsThread.has(method)) {
       await this.remember(method, result, forwarded, expectedTier, requestStartedAtMs, inherited, routed);
       // A gateway chat is recorded with one of the ids a gateway executor serves; any other answer came from an engine that ignored the request.
-      if (forwarded.modelProvider === gatewayProvider && !gatewayProviderIds.has(String(result.modelProvider))) throw new AppServerRoutingError("The native engine did not apply the requested gateway provider; start a new chat");
+      if (isGatewayProvider(forwarded.modelProvider) && !gatewayProviderIds.has(String(result.modelProvider))) throw new AppServerRoutingError("The native engine did not apply the requested gateway provider; start a new chat");
     }
     // An applied settings change or a turn that carries one is durable from this request on.
     if (typeof params.threadId === "string" && !wasEphemeral && this.routes.get(params.threadId)?.kind === "gateway" && (method === "turn/start" || (method === "thread/settings/update" && result.status === "applied"))) {

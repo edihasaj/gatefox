@@ -6,8 +6,9 @@ export { gatewaySdkLockSha256 } from './gateway-sdk-lock.mjs';
 export const gatewaySdkRevision = pin.revision;
 export const gatewaySdkArchiveSha256 = pin.archiveSha256;
 export const gatewaySdkCodexVersion = pin.version;
-/** v3 adds preserved queues after failed gateway turns, including cold resume. */
-export const gatewaySdkCapability = 'gateway-executor-v3';
+/** v3 adds preserved queues after failed gateway turns, including cold resume. v4 records gateway chats as `gatefox`
+ * (still reading `subscription_gateway`) and reads the GATEFOX_EXECUTOR marker. */
+export const gatewaySdkCapability = 'gateway-executor-v4';
 export const gatewaySdkPatch = 'scripts/patches/gateway-executor.patch';
 /** The dynamic-tools patch keeps declared-deferred client tools callable when the selected model cannot search. */
 export const gatewaySdkPatches = [gatewaySdkPatch, 'scripts/patches/gateway-queue.patch', 'scripts/patches/gateway-dynamic-tools.patch', 'scripts/patches/gateway-role-context.patch', 'scripts/patches/gateway-cache-recovery.patch', 'scripts/patches/gateway-background-completion.patch'];

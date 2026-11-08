@@ -1,5 +1,5 @@
 diff --git a/codex-rs/app-server/src/config_manager.rs b/codex-rs/app-server/src/config_manager.rs
-index 461920b..f789c33 100644
+index 461920b..f319ebc 100644
 --- a/codex-rs/app-server/src/config_manager.rs
 +++ b/codex-rs/app-server/src/config_manager.rs
 @@ -439,7 +439,15 @@ impl ConfigManager {
@@ -7,7 +7,7 @@ index 461920b..f789c33 100644
              .load_latest_config(Some(current.cwd.to_path_buf()))
              .await?;
 -        if current.model_provider_id != configured.model_provider_id {
-+        // Harness Gateway: a saved legacy gateway chat and the executor's `openai` alias are one gateway.
++        // GateFox: a saved gateway chat (`gatefox` or the older `subscription_gateway`) and the executor's `openai` alias are one gateway.
 +        if current.model_provider_id != configured.model_provider_id
 +            && !codex_model_provider_info::same_gateway_executor_provider(
 +                &current.model_provider_id,
@@ -23,7 +23,7 @@ index 461920b..f789c33 100644
                      }
                  }
                  let current_provider = current_provider?;
-+                // Harness Gateway: inside a marked executor the legacy gateway id and the loopback `openai`
++                // GateFox: inside a marked executor a gateway id and the loopback `openai`
 +                // alias name the same gateway, so a chat resumes under the id it was saved with.
 +                let provider_info = |id: &str| {
 +                    config.model_providers.get(id).cloned().or_else(|| {
@@ -75,7 +75,7 @@ index e4a092e..1df8327 100644
      if !should_compact_for_comp_hash_change && previous_model == turn_context.model_info().slug {
          return Ok(());
 diff --git a/codex-rs/core/tests/suite/compact.rs b/codex-rs/core/tests/suite/compact.rs
-index c480ace..1d4d4c8 100644
+index c480ace..9144d09 100644
 --- a/codex-rs/core/tests/suite/compact.rs
 +++ b/codex-rs/core/tests/suite/compact.rs
 @@ -2684,6 +2684,145 @@ async fn pre_sampling_compact_runs_on_switch_to_smaller_context_model() {
@@ -113,7 +113,7 @@ index c480ace..1d4d4c8 100644
 +    }
 +}
 +
-+#[test_case::test_case("subscription_gateway", None, None, false, false; "gateway current model")]
++#[test_case::test_case("gatefox", None, None, false, false; "gateway current model")]
 +#[test_case::test_case("subscription_gateway", Some("same"), Some("same"), false, false; "gateway compatible hash")]
 +#[test_case::test_case("subscription_gateway", Some("old"), Some("new"), true, false; "gateway changed hash")]
 +#[test_case::test_case("openai", None, None, true, false; "native behavior unchanged")]
@@ -225,24 +225,36 @@ index c480ace..1d4d4c8 100644
  async fn pre_sampling_compact_runs_when_comp_hash_changes() {
      skip_if_no_network!();
 diff --git a/codex-rs/model-provider-info/src/lib.rs b/codex-rs/model-provider-info/src/lib.rs
-index 9bf505d..74cc27b 100644
+index 9bf505d..ffbaace 100644
 --- a/codex-rs/model-provider-info/src/lib.rs
 +++ b/codex-rs/model-provider-info/src/lib.rs
-@@ -776,6 +776,108 @@ pub fn built_in_model_providers(
+@@ -776,6 +776,124 @@ pub fn built_in_model_providers(
      .collect()
  }
  
-+/// Harness Gateway: a gateway-managed executor runs with this variable set to `1`.
-+pub const GATEWAY_EXECUTOR_ENV_VAR: &str = "HARNESS_GATEWAY_EXECUTOR";
-+/// Harness Gateway: the provider id gateway chats were recorded with before the native identity.
++/// GateFox: a gateway-managed executor runs with this variable set to `1`.
++pub const GATEWAY_EXECUTOR_ENV_VAR: &str = "GATEFOX_EXECUTOR";
++/// GateFox: the marker's name before the GateFox rename. Still read, so an executor started by an
++/// older gateway release keeps its identity.
++pub const LEGACY_GATEWAY_EXECUTOR_ENV_VAR: &str = "HARNESS_GATEWAY_EXECUTOR";
++/// GateFox: the provider id new gateway chats are recorded with.
++pub const GATEWAY_PROVIDER_ID: &str = "gatefox";
++/// GateFox: the provider id gateway chats were recorded with before the GateFox rename.
 +pub const LEGACY_GATEWAY_PROVIDER_ID: &str = "subscription_gateway";
 +
-+/// Harness Gateway: whether this process is a gateway-managed executor.
-+pub fn gateway_executor_marker() -> bool {
-+    std::env::var_os(GATEWAY_EXECUTOR_ENV_VAR).is_some_and(|value| value == "1")
++/// GateFox: whether a provider id names the gateway itself (`gatefox`, or the older `subscription_gateway`).
++pub fn is_gateway_provider_id(provider_id: &str) -> bool {
++    provider_id == GATEWAY_PROVIDER_ID || provider_id == LEGACY_GATEWAY_PROVIDER_ID
 +}
 +
-+/// Harness Gateway: whether a base URL is plain HTTP on this machine's loopback interface, with no
++/// GateFox: whether this process is a gateway-managed executor.
++pub fn gateway_executor_marker() -> bool {
++    [GATEWAY_EXECUTOR_ENV_VAR, LEGACY_GATEWAY_EXECUTOR_ENV_VAR]
++        .iter()
++        .any(|key| std::env::var_os(key).is_some_and(|value| value == "1"))
++}
++
++/// GateFox: whether a base URL is plain HTTP on this machine's loopback interface, with no
 +/// credentials in it. A name that merely resolves to loopback, or an IPv4-mapped IPv6 address, is not.
 +pub fn is_loopback_http_base_url(base_url: Option<&str>) -> bool {
 +    let Some(uri) = base_url.and_then(|value| value.parse::<http::Uri>().ok()) else {
@@ -268,25 +280,25 @@ index 9bf505d..74cc27b 100644
 +            .is_ok_and(|address| address.is_loopback())
 +}
 +
-+/// Harness Gateway: whether a provider is the gateway's own, given whether the executor marker is set.
-+/// The legacy id always is; `openai` is only inside a marked executor and only on loopback HTTP.
++/// GateFox: whether a provider is the gateway's own, given whether the executor marker is set.
++/// The gateway ids always are; `openai` is only inside a marked executor and only on loopback HTTP.
 +pub fn is_gateway_executor_provider_with_marker(
 +    provider_id: &str,
 +    provider: &ModelProviderInfo,
 +    marker: bool,
 +) -> bool {
-+    provider_id == LEGACY_GATEWAY_PROVIDER_ID
++    is_gateway_provider_id(provider_id)
 +        || (marker
 +            && provider_id == OPENAI_PROVIDER_ID
 +            && is_loopback_http_base_url(provider.base_url.as_deref()))
 +}
 +
-+/// Harness Gateway: whether a provider is the gateway's own in this process.
++/// GateFox: whether a provider is the gateway's own in this process.
 +pub fn is_gateway_executor_provider(provider_id: &str, provider: &ModelProviderInfo) -> bool {
 +    is_gateway_executor_provider_with_marker(provider_id, provider, gateway_executor_marker())
 +}
 +
-+/// Harness Gateway: whether two different provider ids name this executor's one gateway. Inside a marked
++/// GateFox: whether two different provider ids name this executor's one gateway. Inside a marked
 +/// executor the legacy id and the loopback `openai` alias are the same provider: a chat keeps the id it was
 +/// saved with, and the SDK's resume and input provider checks must not refuse it for the other spelling.
 +/// Outside a marked executor `openai` is never the gateway, so nothing changes there.
@@ -297,13 +309,14 @@ index 9bf505d..74cc27b 100644
 +    second: &ModelProviderInfo,
 +    marker: bool,
 +) -> bool {
-+    marker
-+        && first_id != second_id
++    first_id != second_id
++        // The two gateway ids are one gateway everywhere; `openai` joins them only inside a marked executor.
++        && (marker || (is_gateway_provider_id(first_id) && is_gateway_provider_id(second_id)))
 +        && is_gateway_executor_provider_with_marker(first_id, first, marker)
 +        && is_gateway_executor_provider_with_marker(second_id, second, marker)
 +}
 +
-+/// Harness Gateway: `same_gateway_executor_provider_with_marker` for this process.
++/// GateFox: `same_gateway_executor_provider_with_marker` for this process.
 +pub fn same_gateway_executor_provider(
 +    first_id: &str,
 +    first: &ModelProviderInfo,
@@ -313,7 +326,7 @@ index 9bf505d..74cc27b 100644
 +    same_gateway_executor_provider_with_marker(first_id, first, second_id, second, gateway_executor_marker())
 +}
 +
-+/// Harness Gateway: inside a marked executor, `openai` names the gateway's own provider when it is
++/// GateFox: inside a marked executor, `openai` names the gateway's own provider when it is
 +/// configured on loopback HTTP, so new gateway chats are recorded under the native identity while
 +/// inference, authentication, retries and timeouts stay those of the gateway provider. Outside a
 +/// marked executor, or without such a provider, the built-in `openai` provider is unchanged.
@@ -324,7 +337,10 @@ index 9bf505d..74cc27b 100644
 +    if !marker {
 +        return;
 +    }
-+    let Some(gateway) = model_providers.get(LEGACY_GATEWAY_PROVIDER_ID) else {
++    let Some(gateway) = model_providers
++        .get(GATEWAY_PROVIDER_ID)
++        .or_else(|| model_providers.get(LEGACY_GATEWAY_PROVIDER_ID))
++    else {
 +        return;
 +    };
 +    if !is_loopback_http_base_url(gateway.base_url.as_deref()) {
@@ -337,7 +353,7 @@ index 9bf505d..74cc27b 100644
  /// Merge configured providers into the built-in provider catalog.
  ///
  /// Configured providers extend the built-in set. Built-in providers are not
-@@ -837,6 +939,7 @@ pub fn merge_configured_model_providers(
+@@ -837,6 +955,7 @@ pub fn merge_configured_model_providers(
              model_providers.entry(key).or_insert(provider);
          }
      }
@@ -346,17 +362,17 @@ index 9bf505d..74cc27b 100644
      Ok(model_providers)
  }
 diff --git a/codex-rs/model-provider-info/src/model_provider_info_tests.rs b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
-index 0d3742f..d5534c1 100644
+index 0d3742f..335f898 100644
 --- a/codex-rs/model-provider-info/src/model_provider_info_tests.rs
 +++ b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
-@@ -1081,3 +1081,114 @@ fn builtin_openai_catalog_accepts_existing_chatgpt_hosts() {
+@@ -1081,3 +1081,135 @@ fn builtin_openai_catalog_accepts_existing_chatgpt_hosts() {
          );
      }
  }
 +
 +fn gateway_provider(base_url: &str) -> ModelProviderInfo {
 +    ModelProviderInfo {
-+        name: "Harness Gateway".into(),
++        name: "GateFox".into(),
 +        base_url: Some(base_url.into()),
 +        supports_websockets: false,
 +        request_max_retries: Some(2),
@@ -417,6 +433,14 @@ index 0d3742f..d5534c1 100644
 +    let mut absent = built_in_model_providers(/*openai_base_url*/ None);
 +    alias_gateway_executor_provider(&mut absent, /*marker*/ true);
 +    assert!(absent[OPENAI_PROVIDER_ID].is_openai());
++
++    // With both rows registered, `openai` aliases the `gatefox` row.
++    let renamed = gateway_provider("http://127.0.0.1:4319/v1");
++    let mut both = built_in_model_providers(/*openai_base_url*/ None);
++    both.insert(LEGACY_GATEWAY_PROVIDER_ID.to_string(), gateway_provider("http://127.0.0.1:4318/v1"));
++    both.insert(GATEWAY_PROVIDER_ID.to_string(), renamed.clone());
++    alias_gateway_executor_provider(&mut both, /*marker*/ true);
++    assert_eq!(both[OPENAI_PROVIDER_ID], renamed);
 +}
 +
 +#[test]
@@ -446,6 +470,14 @@ index 0d3742f..d5534c1 100644
 +    assert!(!is_gateway_executor_provider_with_marker(
 +        "ollama", &local, /*marker*/ true
 +    ));
++    // Both gateway ids are the gateway with or without the marker; nothing else spelled alike is.
++    assert!(is_gateway_executor_provider_with_marker(
++        GATEWAY_PROVIDER_ID,
++        &remote,
++        /*marker*/ false
++    ));
++    assert!(is_gateway_provider_id("gatefox") && is_gateway_provider_id("subscription_gateway"));
++    assert!(!is_gateway_provider_id("GateFox") && !is_gateway_provider_id("gatefox ") && !is_gateway_provider_id("openai"));
 +}
 +
 +#[test]
@@ -463,4 +495,9 @@ index 0d3742f..d5534c1 100644
 +    // Identical ids are not a pair, and other providers never join the gateway.
 +    assert!(!same("openai", &gateway, "openai", &gateway, true));
 +    assert!(!same(LEGACY_GATEWAY_PROVIDER_ID, &gateway, "ollama", &gateway, true));
++    // A chat saved as `subscription_gateway` and one saved as `gatefox` are the same gateway, marked or not.
++    assert!(same(LEGACY_GATEWAY_PROVIDER_ID, &gateway, GATEWAY_PROVIDER_ID, &gateway, false));
++    assert!(same(GATEWAY_PROVIDER_ID, &gateway, LEGACY_GATEWAY_PROVIDER_ID, &remote, false));
++    assert!(same(GATEWAY_PROVIDER_ID, &gateway, "openai", &gateway, true));
++    assert!(!same(GATEWAY_PROVIDER_ID, &gateway, "openai", &gateway, false));
 +}

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { executorOverrides, executorServesProvider, gatewayExecutorMarker, gatewayProviderIds, nativeEnvironment, newChatProvider, savedChatProvider } from "../executor-identity.js";
+import { executorOverrides, executorServesProvider, gatewayExecutorMarker, gatewayExecutorMarkers, gatewayProviderIds, nativeEnvironment, newChatProvider, savedChatProvider } from "../executor-identity.js";
 import { gatewayEnvironment } from "../gateway-engine-home.js";
 import { nativeExecutionEnvironment } from "../native-execution-host-engine.js";
 import { validateConfig, type GatewayConfig } from "../config.js";
@@ -13,68 +13,76 @@ import { GatewayChatRegistry } from "../gateway-chat-registry.js";
 
 const runtime: GatewaySdkRuntime = { executable: "/sdk/gateway-codex", binarySha256: "a".repeat(64), selectedModelCompaction: true, executorIdentity: true, codeModeHost: false };
 
-test("new gateway chats keep the legacy id unless a Mac opts into the native identity and its gateway SDK serves it", () => {
+test("new gateway chats are recorded as gatefox unless a Mac opts into the native identity and its gateway SDK serves it", () => {
   // The default: the phone reaches gateway chats through the relay, so nothing needs the native identity.
-  assert.equal(newChatProvider({}, runtime), "subscription_gateway");
+  assert.equal(newChatProvider({}, runtime), "gatefox");
   assert.equal(newChatProvider({ chatIdentity: "openai" }, runtime), "openai");
-  assert.equal(newChatProvider({ chatIdentity: "legacy" }, runtime), "subscription_gateway");
+  assert.equal(newChatProvider({ chatIdentity: "legacy" }, runtime), "gatefox");
   // A checkout without the artifact runs a stock Codex as the executor, whose `openai` is OpenAI's own provider.
-  assert.equal(newChatProvider({}, undefined), "subscription_gateway");
-  assert.equal(newChatProvider({ chatIdentity: "openai" }, undefined), "subscription_gateway");
-  assert.equal(newChatProvider({ chatIdentity: "openai" }, { ...runtime, executorIdentity: undefined } as unknown as GatewaySdkRuntime), "subscription_gateway");
+  assert.equal(newChatProvider({}, undefined), "gatefox");
+  assert.equal(newChatProvider({ chatIdentity: "openai" }, undefined), "gatefox");
+  assert.equal(newChatProvider({ chatIdentity: "openai" }, { ...runtime, executorIdentity: undefined } as unknown as GatewaySdkRuntime), "gatefox");
 });
 
-test("a connection can retain its legacy identity when a verified executor appears, while openai remains fail-closed without one", () => {
-  assert.equal(executorServesProvider("subscription_gateway", undefined), true);
-  assert.equal(executorServesProvider("subscription_gateway", runtime), true);
+test("a connection can retain its gateway identity when a verified executor appears, while openai remains fail-closed without one", () => {
+  for (const own of ["gatefox", "subscription_gateway"]) {
+    assert.equal(executorServesProvider(own, undefined), true, own);
+    assert.equal(executorServesProvider(own, runtime), true, own);
+  }
   assert.equal(executorServesProvider("openai", runtime), true);
   assert.equal(executorServesProvider("openai", undefined), false);
   assert.equal(executorServesProvider("azure", runtime), false);
 });
 
-test("a resumed gateway chat names the provider it was saved with; an id no executor serves falls back to the legacy one", () => {
-  assert.deepEqual([...gatewayProviderIds].sort(), ["openai", "subscription_gateway"]);
+test("a resumed gateway chat names the provider it was saved with; an id no executor serves falls back to gatefox", () => {
+  assert.deepEqual([...gatewayProviderIds].sort(), ["gatefox", "openai", "subscription_gateway"]);
   assert.equal(savedChatProvider("openai"), "openai");
-  assert.equal(savedChatProvider("subscription_gateway"), "subscription_gateway");
-  for (const other of [undefined, null, "", "azure", 7]) assert.equal(savedChatProvider(other), "subscription_gateway");
+  assert.equal(savedChatProvider("gatefox"), "gatefox");
+  assert.equal(savedChatProvider("subscription_gateway"), "subscription_gateway", "a chat saved before 1.8.0 keeps its id");
+  for (const other of [undefined, null, "", "azure", 7]) assert.equal(savedChatProvider(other), "gatefox");
 });
 
-test("an executor launch registers the gateway provider, points the built-in openai at the loopback gateway and turns analytics off", () => {
-  const provider = { name: "Harness Gateway", base_url: "http://127.0.0.1:3457/v1", wire_api: "responses", requires_openai_auth: false,
+test("an executor launch registers both gateway ids, sets both markers to 0 for children, points the built-in openai at the loopback gateway and turns analytics off", () => {
+  const provider = { name: "GateFox", base_url: "http://127.0.0.1:3457/v1", wire_api: "responses", requires_openai_auth: false,
     supports_websockets: false, request_max_retries: 2, stream_idle_timeout_ms: 90000, "auth.command": "/bin/gateway", "auth.args": ["token"] };
+  const rows = (id: string) => Object.fromEntries(Object.entries(provider).map(([key, value]) => [`model_providers.${id}.${key}`, value]));
+  const markers = { "shell_environment_policy.set.GATEFOX_EXECUTOR": "0", "shell_environment_policy.set.HARNESS_GATEWAY_EXECUTOR": "0" };
   assert.deepEqual(executorOverrides("openai", provider), {
-    model_provider: "openai", "analytics.enabled": false, "shell_environment_policy.set.HARNESS_GATEWAY_EXECUTOR": "0", openai_base_url: "http://127.0.0.1:3457/v1",
-    "model_providers.subscription_gateway.name": "Harness Gateway", "model_providers.subscription_gateway.base_url": "http://127.0.0.1:3457/v1",
-    "model_providers.subscription_gateway.wire_api": "responses", "model_providers.subscription_gateway.requires_openai_auth": false,
-    "model_providers.subscription_gateway.supports_websockets": false, "model_providers.subscription_gateway.request_max_retries": 2,
-    "model_providers.subscription_gateway.stream_idle_timeout_ms": 90000, "model_providers.subscription_gateway.auth.command": "/bin/gateway",
-    "model_providers.subscription_gateway.auth.args": ["token"],
+    model_provider: "openai", "analytics.enabled": false, ...markers, openai_base_url: "http://127.0.0.1:3457/v1", ...rows("gatefox"), ...rows("subscription_gateway"),
   });
-  // The legacy identity keeps the same registration and the same guards; only the default for new chats differs.
-  const legacy = executorOverrides("subscription_gateway", provider);
-  assert.equal(legacy.model_provider, "subscription_gateway"); assert.equal(legacy["analytics.enabled"], false);
-  assert.equal(legacy.openai_base_url, "http://127.0.0.1:3457/v1");
+  // The gateway's own identity keeps the same registration and the same guards; only the default for new chats differs.
+  const own = executorOverrides("gatefox", provider);
+  assert.equal(own.model_provider, "gatefox"); assert.equal(own["analytics.enabled"], false);
+  assert.equal(own.openai_base_url, "http://127.0.0.1:3457/v1");
   // Without a provider base URL (tests, fixtures) nothing points the built-in provider anywhere.
-  assert.deepEqual(executorOverrides("openai", {}), { model_provider: "openai", "analytics.enabled": false, "shell_environment_policy.set.HARNESS_GATEWAY_EXECUTOR": "0" });
+  assert.deepEqual(executorOverrides("openai", {}), { model_provider: "openai", "analytics.enabled": false, ...markers });
 });
 
-test("gateway executors carry the marker and native engines never do", () => {
-  const prior = process.env[gatewayExecutorMarker];
+test("gateway executors carry both markers and native engines never do", () => {
+  // Both spellings: GATEFOX_EXECUTOR (1.8.0) and HARNESS_GATEWAY_EXECUTOR, which an SDK of either generation reads.
+  const prior = Object.fromEntries(gatewayExecutorMarkers.map(marker => [marker, process.env[marker]]));
   try {
-    delete process.env[gatewayExecutorMarker];
+    for (const marker of gatewayExecutorMarkers) delete process.env[marker];
     const env = gatewayEnvironment("/state/desktop-engine");
-    assert.equal(env[gatewayExecutorMarker], "1"); assert.equal(env.CODEX_HOME, "/state/desktop-engine");
+    for (const marker of gatewayExecutorMarkers) assert.equal(env[marker], "1", marker);
+    assert.equal(env.CODEX_HOME, "/state/desktop-engine");
     assert.equal(process.env[gatewayExecutorMarker], undefined, "the adapter's own environment is not changed");
     assert.equal(nativeEnvironment(), process.env, "an unmarked environment is passed as it is");
-    // An adapter started from inside a gateway chat inherits the marker; its native engine must not.
-    process.env[gatewayExecutorMarker] = "1";
-    const native = nativeEnvironment();
-    assert.equal(Object.hasOwn(native, gatewayExecutorMarker), false); assert.equal(process.env[gatewayExecutorMarker], "1");
-    assert.equal(native.PATH, process.env.PATH);
-    // The shared native host builds its engine's environment the same way.
-    const shared = nativeExecutionEnvironment("/native-home", true);
-    assert.equal(Object.hasOwn(shared, gatewayExecutorMarker), false); assert.equal(shared.CODEX_HOME, "/native-home");
-  } finally { if (prior === undefined) delete process.env[gatewayExecutorMarker]; else process.env[gatewayExecutorMarker] = prior; }
+    // An adapter started from inside a gateway chat inherits a marker (either spelling); its native engine must not.
+    for (const marker of gatewayExecutorMarkers) {
+      for (const other of gatewayExecutorMarkers) delete process.env[other];
+      process.env[marker] = "1";
+      const native = nativeEnvironment();
+      for (const other of gatewayExecutorMarkers) assert.equal(Object.hasOwn(native, other), false, `${marker}: ${other}`);
+      assert.equal(process.env[marker], "1"); assert.equal(native.PATH, process.env.PATH);
+      // The shared native host builds its engine's environment the same way.
+      const shared = nativeExecutionEnvironment("/native-home", true);
+      for (const other of gatewayExecutorMarkers) assert.equal(Object.hasOwn(shared, other), false);
+      assert.equal(shared.CODEX_HOME, "/native-home");
+    }
+  } finally {
+    for (const [marker, value] of Object.entries(prior)) { if (value === undefined) delete process.env[marker]; else process.env[marker] = value; }
+  }
 });
 
 test("chatIdentity is optional, openai or legacy, and kept by validation", () => {
@@ -103,16 +111,16 @@ async function listRouter(nativeProvider?: string) {
   return { listed, calls, router, clean: () => rm(root, { recursive: true, force: true }) };
 }
 
-test("a chat list that asks only for the native default provider also lists the gateway's legacy chats; every other list is sent as it was", async () => {
+test("a chat list that asks only for the native default provider also lists the gateway's chats under both ids; every other list is sent as it was", async () => {
   const f = await listRouter();
   try {
-    const both = ["openai", "subscription_gateway"];
+    const both = ["openai", "gatefox", "subscription_gateway"];
     // No filter means the engine's default provider, which is the native identity.
     assert.deepEqual(await f.listed({ limit: 50 }), { limit: 50, modelProviders: both });
     assert.deepEqual(await f.listed({ limit: 50, modelProviders: null, cursor: "c1" }), { limit: 50, modelProviders: both, cursor: "c1" });
     assert.deepEqual(await f.listed({ modelProviders: ["openai"], archived: false }), { modelProviders: both, archived: false });
     // An empty list already means every provider; a chosen set, another provider or a relation filter is the caller's choice.
-    for (const params of [{ modelProviders: [] }, { modelProviders: ["openai", "ollama"] }, { modelProviders: ["subscription_gateway"] }, { modelProviders: ["ollama"] },
+    for (const params of [{ modelProviders: [] }, { modelProviders: ["openai", "ollama"] }, { modelProviders: ["subscription_gateway"] }, { modelProviders: ["gatefox"] }, { modelProviders: ["ollama"] },
       { parentThreadId: "parent" }, { ancestorThreadId: "root", modelProviders: null }, { modelProviders: "openai" }, { modelProviders: [7] }]) {
       assert.deepEqual(await f.listed(params), params, JSON.stringify(params));
     }
@@ -135,7 +143,7 @@ test("the native default provider is read once per connection, and again after a
 test("the native default provider comes from the engine's configuration", async () => {
   const azure = await listRouter("azure");
   try {
-    assert.deepEqual(await azure.listed({}), { modelProviders: ["azure", "subscription_gateway"] });
+    assert.deepEqual(await azure.listed({}), { modelProviders: ["azure", "gatefox", "subscription_gateway"] });
     assert.deepEqual(await azure.listed({ modelProviders: ["openai"] }), { modelProviders: ["openai"] }, "openai is not this engine's default");
   } finally { await azure.clean(); }
 });
@@ -155,8 +163,10 @@ test("the router accepts a new gateway chat recorded with either gateway id and 
     const started = await router.request("thread/start", { model: "codex/sol" });
     assert.equal(started.modelProvider, "openai");
     assert.deepEqual(router.describeThread("chat-1"), { provider: "gateway", model: "codex/sol", identity: "openai" });
-    answer = "subscription_gateway"; await router.request("thread/start", { model: "codex/sol" });
+    answer = "gatefox"; await router.request("thread/start", { model: "codex/sol" });
     assert.deepEqual(router.describeThread("chat-2"), { provider: "gateway", model: "codex/sol", identity: "legacy" });
+    answer = "subscription_gateway"; await router.request("thread/start", { model: "codex/sol" });
+    assert.deepEqual(router.describeThread("chat-3"), { provider: "gateway", model: "codex/sol", identity: "legacy" });
     answer = "azure";
     await assert.rejects(router.request("thread/start", { model: "codex/sol" }), /did not apply the requested gateway provider/);
   } finally { await rm(root, { recursive: true, force: true }); }

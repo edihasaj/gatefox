@@ -58,7 +58,7 @@ test("gateway chat starts with an explicit provider and supported reasoning defa
   const { router, calls } = await fixture();
   await router.request("thread/start", { model: "claude/model", modelProvider: "openai", config: { trusted: true } });
   const forwarded = calls.at(-1)!.params;
-  assert.equal(forwarded.modelProvider, "subscription_gateway");
+  assert.equal(forwarded.modelProvider, "gatefox");
   assert.equal((forwarded.config as ObjectValue).model_reasoning_effort, "low");
   assert.equal((forwarded.config as ObjectValue).trusted, true);
   await router.request("turn/start", { threadId: "test", model: "codex/model", input: [] });
@@ -113,7 +113,7 @@ test("steering and goal operations retain their active-turn and authorization fi
 test("desktop config overrides select the gateway before its first turn", async () => {
   const { router, calls } = await fixture();
   await router.request("thread/start", { model: null, modelProvider: "openai", config: { model: "claude/model" } });
-  assert.equal(calls.at(-1)!.params.modelProvider, "subscription_gateway");
+  assert.equal(calls.at(-1)!.params.modelProvider, "gatefox");
   await router.request("turn/start", { threadId: "test", collaborationMode: { settings: { model: "codex/model" } } });
   await assert.rejects(router.request("turn/start", { threadId: "test", collaborationMode: { settings: { model: "native" } } }), /Start a new chat/);
 });
@@ -131,7 +131,7 @@ test("gateway default writes stay in private adapter preferences and survive res
   const view = (await reopened.request("config/read", {})).config as ObjectValue;
   assert.equal(view.model, "claude/model"); assert.equal(view.model_provider, "openai");
   await reopened.request("thread/start", {});
-  assert.equal(calls.at(-1)!.params.modelProvider, "subscription_gateway");
+  assert.equal(calls.at(-1)!.params.modelProvider, "gatefox");
   assert.equal((calls.at(-1)!.params.config as ObjectValue).model_reasoning_effort, "high");
   await assert.rejects(router.request("config/value/write", { keyPath: "model", value: "codex/model", mergeStrategy: "replace", filePath: "/native/config.toml" }), /custom config-file target/);
   await assert.rejects(router.request("config/value/write", { keyPath: "model", value: "codex/model", mergeStrategy: "replace", expectedVersion: "native-version" }), /native config version guard/);

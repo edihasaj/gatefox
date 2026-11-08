@@ -159,22 +159,22 @@ test("a resumed chat keeps the provider it was saved with; only the router's req
   } finally { await f.clean(); }
 });
 
-test("the default, chatIdentity legacy, or a gateway SDK without patch v2, keeps recording new gateway chats as subscription_gateway", { timeout: 20000 }, async () => {
+test("the default, chatIdentity legacy, or a gateway SDK without patch v2, records new gateway chats as gatefox", { timeout: 20000 }, async () => {
   for (const [identity, servesIdentity] of [[undefined, true], ["legacy", true], ["openai", false]] as const) {
     const f = await fixture(identity, servesIdentity);
     try {
       const backends = await f.open({ base_url: "http://127.0.0.1:3457/v1" });
       const started = await backends.request("thread/start", { fixtureId: "legacy-start", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" });
-      assert.equal(started.modelProvider, "subscription_gateway", `${identity} ${servesIdentity}`);
+      assert.equal(started.modelProvider, "gatefox", `${identity} ${servesIdentity}`);
       const executor = (await f.launches()).find(launch => launch.gateway)!;
-      assert.ok(executor.args.includes('model_provider="subscription_gateway"'));
+      assert.ok(executor.args.includes('model_provider="gatefox"'));
       assert.ok(executor.args.includes("analytics.enabled=false"), "analytics are off for every executor");
       assert.equal(await f.registry().has("legacy-start"), true);
     } finally { await f.clean(); }
   }
 });
 
-test("a connection keeps its legacy new-chat identity when its pruned release recovers a verified SDK", { timeout: 20000 }, async () => {
+test("a connection keeps its gateway new-chat identity when its pruned release recovers a verified SDK", { timeout: 20000 }, async () => {
   const f = await fixture("openai", false);
   try {
     const backends = await f.open();
@@ -182,8 +182,8 @@ test("a connection keeps its legacy new-chat identity when its pruned release re
     f.setRuntime({ executable: join(f.directory, "codex"), binarySha256: "d".repeat(64), selectedModelCompaction: true, executorIdentity: true, codeModeHost: false });
     await utimes(f.sdk, new Date(), new Date(Date.now() + 1000)); // The recovery is a change on disk, which is what makes the adapter verify again.
     const after = await backends.request("thread/start", { fixtureId: "after-recovery", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" });
-    assert.equal(after.modelProvider, "subscription_gateway");
-    assert.equal((await f.saved())["after-recovery"].requested, "subscription_gateway");
+    assert.equal(after.modelProvider, "gatefox");
+    assert.equal((await f.saved())["after-recovery"].requested, "gatefox");
     assert.equal((await f.launches()).filter(launch => launch.gateway).length, 2, "the recovered SDK runs as a new generation");
   } finally { await f.clean(); }
 });

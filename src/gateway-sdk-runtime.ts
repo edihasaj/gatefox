@@ -26,7 +26,7 @@ const releaseVersion = (value: string): boolean => /^\d+\.\d+\.\d+$/.test(value)
  */
 export interface GatewaySdkRuntime { executable: string; binarySha256: string; executableSha256?: string; identityExecutable?: string; selectedModelCompaction: true; executorIdentity: true; codeModeHost: boolean }
 /** The gateway patch capability, independent of the upstream Codex version. */
-export const gatewaySdkCapability = "gateway-executor-v3";
+export const gatewaySdkCapability = "gateway-executor-v4";
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();

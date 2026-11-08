@@ -37,7 +37,7 @@ index 968d331..bbcaca4 100644
                  turn_id,
                  root_turn_id,
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index cc418ca..d4cfa18 100644
+index cc418ca..cd58e45 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
 @@ -1504,6 +1504,22 @@ impl Session {
@@ -45,7 +45,7 @@ index cc418ca..d4cfa18 100644
      }
  
 +    fn preserves_failed_queue(provider_id: &str) -> bool {
-+        provider_id == codex_model_provider_info::LEGACY_GATEWAY_PROVIDER_ID
++        codex_model_provider_info::is_gateway_provider_id(provider_id)
 +            || codex_model_provider_info::gateway_executor_marker()
 +    }
 +
@@ -209,10 +209,10 @@ index 06aeb63..d7662b5 100644
              thread
                  .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
 diff --git a/codex-rs/ext/queue/tests/queue_service.rs b/codex-rs/ext/queue/tests/queue_service.rs
-index e46ae8b..3fd2311 100644
+index e46ae8b..049f03e 100644
 --- a/codex-rs/ext/queue/tests/queue_service.rs
 +++ b/codex-rs/ext/queue/tests/queue_service.rs
-@@ -514,6 +514,203 @@ async fn interrupted_turns_pause_queued_messages_but_failed_turns_drain_them() -
+@@ -514,6 +514,205 @@ async fn interrupted_turns_pause_queued_messages_but_failed_turns_drain_them() -
      Ok(())
  }
  
@@ -221,12 +221,12 @@ index e46ae8b..3fd2311 100644
 +
 +impl GatewayQueueMarker {
 +    fn set(enabled: bool) -> Self {
-+        let previous = std::env::var_os("HARNESS_GATEWAY_EXECUTOR");
++        let previous = std::env::var_os("GATEFOX_EXECUTOR");
 +        unsafe {
 +            if enabled {
-+                std::env::set_var("HARNESS_GATEWAY_EXECUTOR", "1");
++                std::env::set_var("GATEFOX_EXECUTOR", "1");
 +            } else {
-+                std::env::remove_var("HARNESS_GATEWAY_EXECUTOR");
++                std::env::remove_var("GATEFOX_EXECUTOR");
 +            }
 +        }
 +        Self(previous)
@@ -237,8 +237,8 @@ index e46ae8b..3fd2311 100644
 +    fn drop(&mut self) {
 +        unsafe {
 +            match self.0.take() {
-+                Some(value) => std::env::set_var("HARNESS_GATEWAY_EXECUTOR", value),
-+                None => std::env::remove_var("HARNESS_GATEWAY_EXECUTOR"),
++                Some(value) => std::env::set_var("GATEFOX_EXECUTOR", value),
++                None => std::env::remove_var("GATEFOX_EXECUTOR"),
 +            }
 +        }
 +    }
@@ -247,6 +247,8 @@ index e46ae8b..3fd2311 100644
 +#[tokio::test]
 +async fn gateway_failed_queue_survives_writes_and_cold_resume() -> anyhow::Result<()> {
 +    for (provider_id, marked, start_queue) in [
++        ("gatefox", false, false),
++        ("gatefox", false, true),
 +        ("subscription_gateway", false, false),
 +        ("subscription_gateway", false, true),
 +        ("openai", true, false),

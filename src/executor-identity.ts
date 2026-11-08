@@ -1,7 +1,7 @@
 import type { Message } from "./app-server-connection.js";
 import type { GatewayConfig } from "./config.js";
 import type { GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
-import { legacyGatewayProvider } from "./chat-identity.js";
+import { gatewayOwnProviders, gatewayProvider, isGatewayProvider } from "./chat-identity.js";
 
 /** The provider id of the native engine, the phone and every stock Codex client. It is the native identity of a gateway chat. */
 export const nativeIdentityProvider = "openai";
@@ -9,31 +9,34 @@ export const nativeIdentityProvider = "openai";
  * Every gateway executor runs with this variable set to 1. The gateway SDK's patch keys its gateway behavior on it: `openai`
  * names the gateway's own loopback provider, and compaction stays on the selected model. A stock Codex never reads it.
  */
-export const gatewayExecutorMarker = "HARNESS_GATEWAY_EXECUTOR";
-/** The provider ids a gateway executor serves: the legacy one and, through the SDK's alias, the native identity. */
-export const gatewayProviderIds: ReadonlySet<string> = new Set([legacyGatewayProvider, nativeIdentityProvider]);
+export const gatewayExecutorMarker = "GATEFOX_EXECUTOR";
+/** The marker's name before 1.8.0. Set and cleared together with the new one, so an SDK of either generation sees the same state. */
+export const legacyGatewayExecutorMarker = "HARNESS_GATEWAY_EXECUTOR";
+export const gatewayExecutorMarkers: readonly string[] = [gatewayExecutorMarker, legacyGatewayExecutorMarker];
+/** The provider ids a gateway executor serves: its own two (`gatefox`, `subscription_gateway`) and, through the SDK's alias, the native identity. */
+export const gatewayProviderIds: ReadonlySet<string> = new Set([...gatewayOwnProviders, nativeIdentityProvider]);
 
 /**
- * The provider id this adapter's new gateway chats are recorded with. The default is the legacy `subscription_gateway`: the
+ * The provider id this adapter's new gateway chats are recorded with. The default is `gatefox` (`subscription_gateway` before 1.8.0): the
  * phone reaches gateway chats through the native relay, which lists and continues them on the gateway. `openai` is an opt-in
  * per Mac (`chatIdentity: "openai"`), for a Mac whose relay is verified, and needs a gateway SDK that serves that id: a stock
  * Codex (a checkout without the artifact) would send `openai` to OpenAI's own provider. See docs/harness-identity.md.
  */
 export function newChatProvider(config: Pick<GatewayConfig, "chatIdentity">, runtime: GatewaySdkRuntime | undefined): string {
-  return config.chatIdentity === "openai" && runtime?.executorIdentity === true ? nativeIdentityProvider : legacyGatewayProvider;
+  return config.chatIdentity === "openai" && runtime?.executorIdentity === true ? nativeIdentityProvider : gatewayProvider;
 }
 
 /** A connection keeps its first new-chat identity, provided the executor it is about to use still serves it. */
 export function executorServesProvider(provider: string, runtime: GatewaySdkRuntime | undefined): boolean {
-  return provider === legacyGatewayProvider || provider === nativeIdentityProvider && runtime?.executorIdentity === true;
+  return isGatewayProvider(provider) || provider === nativeIdentityProvider && runtime?.executorIdentity === true;
 }
 
 /**
  * The provider id a gateway chat resumes with: the one it was saved with, so no rollout or SQLite row is ever rewritten. An id
- * the executor cannot serve falls back to the legacy one, as before the native identity.
+ * the executor cannot serve falls back to the gateway's own `gatefox`.
  */
 export function savedChatProvider(saved: unknown): string {
-  return typeof saved === "string" && gatewayProviderIds.has(saved) ? saved : legacyGatewayProvider;
+  return typeof saved === "string" && gatewayProviderIds.has(saved) ? saved : gatewayProvider;
 }
 
 /**
@@ -48,14 +51,14 @@ export function executorOverrides(provider: string, providerOverrides: Message):
   return {
     model_provider: provider,
     "analytics.enabled": false,
-    [`shell_environment_policy.set.${gatewayExecutorMarker}`]: "0",
+    ...Object.fromEntries(gatewayExecutorMarkers.map(marker => [`shell_environment_policy.set.${marker}`, "0"])),
     ...(typeof providerOverrides.base_url === "string" ? { openai_base_url: providerOverrides.base_url } : {}),
-    ...Object.fromEntries(Object.entries(providerOverrides).map(([key, value]) => [`model_providers.${legacyGatewayProvider}.${key}`, value])),
+    ...Object.fromEntries(gatewayOwnProviders.flatMap(id => Object.entries(providerOverrides).map(([key, value]) => [`model_providers.${id}.${key}`, value]))),
   };
 }
 
 /** A native engine's environment: the caller's, without the executor marker, so no native engine ever serves `openai` as the gateway. */
 export function nativeEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  if (!Object.hasOwn(env, gatewayExecutorMarker)) return env;
-  const copy = { ...env }; delete copy[gatewayExecutorMarker]; return copy;
+  if (!gatewayExecutorMarkers.some(marker => Object.hasOwn(env, marker))) return env;
+  const copy = { ...env }; for (const marker of gatewayExecutorMarkers) delete copy[marker]; return copy;
 }

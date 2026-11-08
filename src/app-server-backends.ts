@@ -31,7 +31,7 @@ import { withStagedQueueInput } from "./queued-attachments.js";
 import { BoundedIdSet } from "./bounded-id-set.js";
 import { telemetry } from "./telemetry.js";
 import { NativeTurnTracker, nativeId } from "./native-turns.js";
-import { ChatIdentity, hasParent, legacyGatewayProvider, noSlugs, threadFacts, type ChatKind, type EngineHint, type IdentityCatalogs } from "./chat-identity.js";
+import { ChatIdentity, hasParent, isGatewayProvider, legacyGatewayProvider, noSlugs, threadFacts, type ChatKind, type EngineHint, type IdentityCatalogs } from "./chat-identity.js";
 import { parentOf } from "./gateway-chat-classifier.js";
 import { executorOverrides, executorServesProvider, nativeEnvironment, newChatProvider } from "./executor-identity.js";
 import { ChatLoads, Reattacher, ReattachError, isHostFailure, markHostFailure } from "./executor-reattach.js";
@@ -1119,9 +1119,11 @@ export class AppServerBackends {
       // engine was launched with. An engine this connection did not launch (a shared host's, found by its chat) may run an SDK
       // that cannot serve `openai`, so its new chats keep the legacy id. A resumed chat keeps the provider the router read
       // from its record, so no saved chat is ever rewritten.
-      if (creating && params.modelProvider === legacyGatewayProvider) {
+      // An engine this connection did not launch may belong to an older release that only registers `subscription_gateway`,
+      // so a new chat there keeps that id; engines this connection launched record new chats as `gatefox`.
+      if (creating && isGatewayProvider(params.modelProvider)) {
         const provider = engine.provider ?? legacyGatewayProvider;
-        if (provider !== legacyGatewayProvider) params = { ...params, modelProvider: provider };
+        if (provider !== params.modelProvider) params = { ...params, modelProvider: provider };
       }
       // Only gateway engines get here; native requests returned above and are forwarded untouched.
       params = trimmedGatewayFeatures("request", stats => trimGatewayFeatureRequest(method, params, stats));

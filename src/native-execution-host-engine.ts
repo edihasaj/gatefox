@@ -45,7 +45,7 @@ export function nativeDescriptorFingerprint(descriptor: NativeExecutionDescripto
   return createHash("sha256").update(JSON.stringify({ args, cwd: descriptor.cwd })).digest("hex");
 }
 
-const providerSetting = "model_providers.subscription_gateway.";
+const providerSettings = ["model_providers.gatefox.", "model_providers.subscription_gateway."];
 const valueFlags = ["-c", "--config", "--enable", "--disable"];
 
 /** Splits launch args into the gateway provider registration and the client's own settings. */
@@ -57,7 +57,7 @@ export function nativeLaunchSettings(args: string[]): { provider: string[]; clie
     const arg = forwarded[index]!;
     if (!valueFlags.includes(arg) || index + 1 >= forwarded.length) { client.push(arg); continue; }
     const value = forwarded[++index]!;
-    (["-c", "--config"].includes(arg) && value.startsWith(providerSetting) ? provider : client).push(`${arg} ${value}`);
+    (["-c", "--config"].includes(arg) && providerSettings.some(prefix => value.startsWith(prefix)) ? provider : client).push(`${arg} ${value}`);
   }
   return { provider, client };
 }

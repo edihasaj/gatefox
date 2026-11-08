@@ -61,7 +61,7 @@ function fixedResult(value: unknown): ExecutionProbeChildResult | undefined {
   const rows = object(row?.nativeRows);
   if (!row || row.passed !== true || row.paidInferenceRequests !== 0 || row.configReadVerified !== true || row.nativeConfigUnchanged !== true || row.nativeAuthAbsent !== true
     || row.completedChildTurns !== 2 || !Array.isArray(row.chats) || row.chats.length !== 2
-    || !row.chats.every(chat => object(chat)?.commandContinuationObserved === true && object(chat)?.provider === "subscription_gateway")
+    || !row.chats.every(chat => object(chat)?.commandContinuationObserved === true && ["gatefox", "subscription_gateway"].includes(String(object(chat)?.provider)))
     || !rows || Object.keys(rows).length !== 2 || !Object.values(rows).every(mode => mode === "direct")) return;
   return { sdkVerified: true, configVerified: true, directToolVerified: true, completedTurn: true, commandVerified: true };
 }
