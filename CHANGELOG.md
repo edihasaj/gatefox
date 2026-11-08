@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.7.5 — 2026-11-08
+## 1.7.6 — 2026-11-08
 
 - The app updater now also accepts standard `vVERSION` release tags and the GateFox
   release names (`GateFox-VERSION-macos-arm64.zip` holding `GateFox.app`, and
@@ -23,6 +23,8 @@
   long README moved to `docs/cli.md`, and `docs/reference.html` is a new searchable
   index of every doc, generated from each page's summary by `npm run docs:site` and
   checked by `npm run check`.
+
+## 1.7.5 — 2026-11-08
 
 - A large chat is no longer paused when its client changes the tool list. Codex can add
   MCP tools a few seconds after a chat resumes, which forces Claude to rebuild its cache.
