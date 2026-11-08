@@ -21,6 +21,15 @@ Your app still runs the tools, asks for approvals and owns the chat. The gateway
 only translates requests and streams the answers back. It never runs tools,
 never switches accounts after a failure and never logs tokens or request bodies.
 
+**Where it works**
+
+| | |
+|---|---|
+| **Mac** (Apple silicon) | The app, background service and updates; Codex, Claude Code and Claude Desktop |
+| **Phone** | Codex in the ChatGPT app lists and continues your gateway chats; your Mac does the work through its [native relay](docs/native-remote.md) |
+| **More Macs** | One Mac holds the accounts; the others connect to it ([below](#add-another-mac-optional)) |
+| **Linux, Windows** | Not packaged yet, and [help is welcome](docs/roadmap.md#4-more-platforms) |
+
 📖 **[Read the guide at gatefox.dev](https://gatefox.dev)**: setup, daily use,
 adding more Macs and fixing problems. To read it offline, run `npm run docs:serve`.
 
@@ -100,7 +109,7 @@ gateway. See [CI](docs/ci.md) and [releasing](docs/RELEASING.md).
 ## Contributing and security
 
 Want to help? The [roadmap](docs/roadmap.md) lists next steps (better Claude app support,
-DeepSeek, more harnesses) with an issue for each, including
+DeepSeek, more harnesses, Linux and Windows) with an issue for each, including
 [good first issues](https://github.com/edihasaj/gatefox/issues?q=is%3Aopen+label%3A%22good+first+issue%22).
 See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as described in
 [SECURITY.md](SECURITY.md).
