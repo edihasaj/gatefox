@@ -5,7 +5,7 @@ read_when:
   - Changing app configuration discovery, setup, status, or packaging
 ---
 
-# Harness Gateway for macOS
+# GateFox for macOS
 
 The native app sets up and manages gateway connections. It
 uses the same accounts, model routes, background service, and desktop registration

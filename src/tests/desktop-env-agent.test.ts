@@ -360,7 +360,7 @@ test("status reads FORCE_CLI presence from the GUI domain too, keeping no value"
 });
 
 test("the real shape of launchctl print gui/501 on a Mac whose wrapper path holds spaces is read as it is", async () => {
-  const wrapper = "/Users/edi/Library/Application Support/Subscription Gateway/state/desktop-wrapper-e9f368da4bc321f7";
+  const wrapper = "/Users/dev/Library/Application Support/Subscription Gateway/state/desktop-wrapper-e9f368da4bc321f7";
   const never = async (): Promise<string> => assert.fail("print answered, so getenv is not asked");
   const print = (environment: string[]) => ["gui/501 = {", "\ttype = login", "\tenvironment = {", ...environment, "\t}", "\tdefault environment = {", "\t\tPATH => /usr/bin:/bin:/usr/sbin:/sbin", "\t}", "}"].join("\n");
   const studio = [`\t\t${PATH_KEY} => ${wrapper}`, "\t\tSSH_AUTH_SOCK => /var/run/com.apple.launchd.qSydomYmzg/Listeners"];

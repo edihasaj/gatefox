@@ -43,9 +43,14 @@ node scripts/e2e-availability-agents.mjs \
   --model codex/gpt-6-luna \
   --context /absolute/manager/scripts/macos/model-availability-context.py \
   --policy /absolute/retained/fixed-alias-routing-instructions.md \
+  --roles /absolute/codex/agents \
   --root /tmp/availability-agent-evidence \
   --scenario healthy
 ```
+
+`--roles` names the directory that holds the canonical `implementer.toml`,
+`tester.toml`, `fallback_implementer.toml` and `other_implementer.toml` role
+files. The check reads each role's model from there.
 
 Run each scenario separately:
 

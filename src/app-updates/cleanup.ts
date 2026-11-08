@@ -3,6 +3,7 @@ import { lstat, readdir, realpath, rm } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { contained, fileDigest, readJson, safeAncestors } from "./private-fs.js";
 import { updateStateFile } from "./types.js";
+import { releaseNameSets } from "./names.js";
 
 /**
  * Removes the downloaded and extracted stage of ONE successful update, `<install root>/app-update-<uuid>`.
@@ -54,12 +55,15 @@ function object(value: unknown): Record<string, unknown> | undefined {
   return !!value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 const plainVersion = (value: unknown): value is string => typeof value === "string" && /^[0-9]+\.[0-9]+\.[0-9]+$/.test(value);
-const names = (version: string) => ({ archive: `harness-gateway-${version}-macos-arm64.tar.gz`, zip: `Harness-Gateway-${version}-macos-arm64.zip`,
-  backend: `harness-gateway-${version}-macos-arm64`, app: "Harness Gateway.app" });
+/** Both release name sets the updater accepts (see names.ts); a stage holds one of them. */
+const names = (version: string) => releaseNameSets(version).map(set => ({ archive: set.backendAsset, zip: set.appAsset, backend: set.backendRoot, app: set.app }));
 
 /** Whether `parts` (path below the stage) is a place the updater itself puts something, and of the right kind. */
 function expected(parts: string[], directory: boolean, version: string): boolean {
-  const name = names(version);
+  return names(version).some(name => expectedIn(parts, directory, name));
+}
+
+function expectedIn(parts: string[], directory: boolean, name: ReturnType<typeof names>[number]): boolean {
   if (parts.length === 1) {
     const [first] = parts as [string];
     if (first === "app-update.json" || first === name.archive || first === name.zip) return !directory;
@@ -102,8 +106,9 @@ export async function planUpdateStageCleanup(installRoot: string, pending: Stage
     if (owner === undefined || typeof installRoot !== "string" || !isAbsolute(installRoot) || resolve(installRoot) !== installRoot) return fail("invalid_request");
     if (!plainVersion(pending.version) || !/^[a-f0-9]{40}$/.test(pending.source) || !/^[a-f0-9]{64}$/.test(pending.backendSha256) ||
       typeof pending.backendArchive !== "string" || !isAbsolute(pending.backendArchive) || resolve(pending.backendArchive) !== pending.backendArchive) return fail("invalid_request");
-    const name = names(pending.version), archive = pending.backendArchive, stage = dirname(archive);
-    if (basename(archive) !== name.archive || dirname(stage) !== installRoot || !stageName.test(basename(stage))) return fail("not_a_stage");
+    const archive = pending.backendArchive, stage = dirname(archive);
+    const name = names(pending.version).find(set => basename(archive) === set.archive);
+    if (!name || dirname(stage) !== installRoot || !stageName.test(basename(stage))) return fail("not_a_stage");
     const keep = [installRoot, join(installRoot, "current"), join(installRoot, "releases"), join(installRoot, "previous-release"), ...(options.protect ?? [])];
     for (const path of keep) {
       if (typeof path !== "string" || !isAbsolute(path)) return fail("invalid_request");

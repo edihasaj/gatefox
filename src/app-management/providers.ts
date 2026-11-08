@@ -111,7 +111,7 @@ export async function managedProvider(provider: ProviderConfig, lookup: Manageme
   const existing = existingCliFor[provider.type];
   const unchecked = Boolean(cli && available && !newDraft);
   const authState = external ? "external-credential" : !available && cli ? "missing-cli" : saved ? "saved" : existing || unchecked ? "unchecked" : "needs-sign-in";
-  const authDetail = external ? "Credential is managed outside Harness Gateway." : !available && cli ? `${cli} is not installed.`
+  const authDetail = external ? "Credential is managed outside GateFox." : !available && cli ? `${cli} is not installed.`
     : saved ? "Saved credentials have not been checked."
     : existing ? "Grok sign-in has not been checked. Manage it with the Grok CLI in this gateway's private home."
     : unchecked ? "Provider sign-in has not been checked. Check connection to verify." : "Sign in is required.";

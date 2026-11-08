@@ -9,7 +9,7 @@ read_when:
 # API mode
 
 API mode is an opt-in desktop setup. The ChatGPT app starts **its own signed Codex
-engine** and keeps every one of its own tools, and Harness Gateway serves that engine
+engine** and keeps every one of its own tools, and GateFox serves that engine
 as a plain Responses model provider. There is no adapter between them.
 
 ```text

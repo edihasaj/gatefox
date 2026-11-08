@@ -21,7 +21,7 @@ let state = ""; let since = 0;
 async function recordTelemetry(): Promise<void> { state = await mkdtemp(join(tmpdir(), "gateway-tailnet-")); configureTelemetry(state, "test"); since = Date.now() - 1000; }
 
 test("only Tailscale addresses pass the address check", () => {
-  for (const address of ["100.64.0.0", "100.108.115.57", "100.104.232.124", "100.127.255.255", "fd7a:115c:a1e0::1", "fd7a:115c:a1e0:ab12::7"]) assert.equal(isTailnetAddress(address), true, address);
+  for (const address of ["100.64.0.0", "100.64.10.57", "100.64.10.24", "100.127.255.255", "fd7a:115c:a1e0::1", "fd7a:115c:a1e0:ab12::7"]) assert.equal(isTailnetAddress(address), true, address);
   for (const address of ["100.63.255.255", "100.128.0.0", "101.64.0.1", "10.0.0.1", "192.168.1.10", "203.0.113.5", "127.0.0.1", "::1", "fd7a:115c:a1e1::1", "fd7b:115c:a1e0::1", "::ffff:100.64.0.1",
     "100.64.0.1.5", "100.064.0.1", "dgx.example", "", "100.64.0.1/10"]) assert.equal(isTailnetAddress(address), false, address);
 });
@@ -48,32 +48,32 @@ test("a mixed answer dials only the Tailscale addresses, and an IPv6 tailnet add
   await recordTelemetry(); const target = await upstream(); const dialed: string[] = [];
   const seams: TailnetSeams = { dial: address => { dialed.push(address); return { host: "127.0.0.1", port: target.port }; } };
   try {
-    const mixed = tailnetFetch("qwen", { ...seams, resolve: async () => ["203.0.113.5", "100.108.115.57", "192.168.1.10"] });
+    const mixed = tailnetFetch("qwen", { ...seams, resolve: async () => ["203.0.113.5", "100.64.10.57", "192.168.1.10"] });
     const response = await mixed("http://dgx.example:4000/v1/chat/completions", init);
     assert.equal(response.status, 200); assert.equal(await response.text(), "ok");
-    assert.deepEqual(dialed, ["100.108.115.57"]); assert.deepEqual(target.seen, ["Bearer tailnet-secret"]);
+    assert.deepEqual(dialed, ["100.64.10.57"]); assert.deepEqual(target.seen, ["Bearer tailnet-secret"]);
     assert.equal((await telemetryEvents()).length, 1, "the refused answers are recorded once");
     dialed.length = 0;
     const v6 = tailnetFetch("qwen", { ...seams, resolve: async () => ["fd7a:115c:a1e0::1"] });
     assert.equal((await v6("http://dgx.example:4000/x", init)).status, 200); assert.deepEqual(dialed, ["fd7a:115c:a1e0::1"]);
     const literal = tailnetFetch("qwen", seams);
-    assert.equal((await literal("http://100.104.232.124:4000/x", init)).status, 200); assert.deepEqual(dialed.at(-1), "100.104.232.124");
+    assert.equal((await literal("http://100.64.10.24:4000/x", init)).status, 200); assert.deepEqual(dialed.at(-1), "100.64.10.24");
   } finally { target.close(); }
 });
 
 test("connect attempts walk the resolved addresses in order and a request that reached a router is not replayed", async () => {
   await recordTelemetry(); const dead = await closedPort(); const live = await upstream(); const second = await upstream();
-  const ports: Record<string, number> = { "100.108.115.57": dead, "100.104.232.124": live.port };
+  const ports: Record<string, number> = { "100.64.10.57": dead, "100.64.10.24": live.port };
   try {
-    const send = tailnetFetch("qwen", { resolve: async () => ["100.108.115.57", "100.104.232.124"], dial: address => ({ host: "127.0.0.1", port: ports[address] }) });
+    const send = tailnetFetch("qwen", { resolve: async () => ["100.64.10.57", "100.64.10.24"], dial: address => ({ host: "127.0.0.1", port: ports[address] }) });
     const response = await send("http://dgx.example:4000/v1/chat/completions", init);
     assert.equal(response.status, 200); await response.text(); assert.equal(live.seen.length, 1, "served once");
     // Neither address connects: the fixed error, nothing sent.
-    const none = tailnetFetch("qwen", { resolve: async () => ["100.108.115.57", "100.104.232.124"], dial: () => ({ host: "127.0.0.1", port: dead }) });
+    const none = tailnetFetch("qwen", { resolve: async () => ["100.64.10.57", "100.64.10.24"], dial: () => ({ host: "127.0.0.1", port: dead }) });
     await assert.rejects(none("http://dgx.example:4000/x", init), { code: "upstream_unavailable", status: 503 });
     // The first router answers with a server error: that answer is the result, the second router is never asked.
-    const failing = await upstream(500); const ports2: Record<string, number> = { "100.108.115.57": failing.port, "100.104.232.124": second.port };
-    const replay = tailnetFetch("qwen", { resolve: async () => ["100.108.115.57", "100.104.232.124"], dial: address => ({ host: "127.0.0.1", port: ports2[address] }) });
+    const failing = await upstream(500); const ports2: Record<string, number> = { "100.64.10.57": failing.port, "100.64.10.24": second.port };
+    const replay = tailnetFetch("qwen", { resolve: async () => ["100.64.10.57", "100.64.10.24"], dial: address => ({ host: "127.0.0.1", port: ports2[address] }) });
     const answer = await replay("http://dgx.example:4000/x", init); assert.equal(answer.status, 500); await answer.text();
     assert.equal(failing.seen.length, 1); assert.equal(second.seen.length, 0, "no replay on the second address"); failing.close();
   } finally { live.close(); second.close(); }
@@ -82,14 +82,14 @@ test("connect attempts walk the resolved addresses in order and a request that r
 test("a silent address times out near the connect timeout and the next one answers, with no real network", async () => {
   await recordTelemetry(); const live = await upstream(); const silent: Socket[] = [];
   try {
-    const slow = tailnetFetch("qwen", { connectTimeoutMs: 80, resolve: async () => ["100.108.115.57", "100.104.232.124"],
+    const slow = tailnetFetch("qwen", { connectTimeoutMs: 80, resolve: async () => ["100.64.10.57", "100.64.10.24"],
       // The first address gets a socket that never connects; the second reaches the loopback listener.
-      connect: host => { if (host === "100.108.115.57") { const socket = new Socket(); silent.push(socket); return socket; } return netConnect({ host: "127.0.0.1", port: live.port }); } });
+      connect: host => { if (host === "100.64.10.57") { const socket = new Socket(); silent.push(socket); return socket; } return netConnect({ host: "127.0.0.1", port: live.port }); } });
     const started = Date.now(); const response = await slow("http://dgx.example:4000/x", init); const elapsed = Date.now() - started;
     assert.equal(response.status, 200); await response.text(); assert.equal(live.seen.length, 1);
     assert.ok(elapsed >= 70 && elapsed < 1500, `waited ${elapsed} ms for an 80 ms timeout`); assert.equal(silent[0].destroyed, true, "the silent socket was closed");
     // Every address silent: the retryable class after about one timeout per address.
-    const none = tailnetFetch("qwen", { connectTimeoutMs: 60, resolve: async () => ["100.108.115.57", "100.104.232.124"], connect: () => new Socket() });
+    const none = tailnetFetch("qwen", { connectTimeoutMs: 60, resolve: async () => ["100.64.10.57", "100.64.10.24"], connect: () => new Socket() });
     const begun = Date.now(); await assert.rejects(none("http://dgx.example:4000/x", init), { code: "upstream_unavailable", status: 503 }); assert.ok(Date.now() - begun >= 110);
   } finally { live.close(); }
 });
@@ -97,7 +97,7 @@ test("a silent address times out near the connect timeout and the next one answe
 test("a redirect is refused with a typed error and never followed", async () => {
   await recordTelemetry(); const target = await upstream(302, { Location: "http://203.0.113.5/" });
   try {
-    const moved = tailnetFetch("qwen", { resolve: async () => ["100.108.115.57"], dial: () => ({ host: "127.0.0.1", port: target.port }) });
+    const moved = tailnetFetch("qwen", { resolve: async () => ["100.64.10.57"], dial: () => ({ host: "127.0.0.1", port: target.port }) });
     await assert.rejects(moved("http://dgx.example:4000/x", init), (error: unknown) => error instanceof ProviderError && error.code === "upstream_error" && error.status === 502 && /redirects are not followed/.test(error.message) && !error.message.includes("203.0.113"));
   } finally { target.close(); }
 });
@@ -116,7 +116,7 @@ test("the chat provider sends its stream through the checked transport", async (
   const config = { id: "qwen", type: "chat-completions-api" as const, baseUrl: "http://dgx.example:4000/v1", tailnet: true, apiKeyEnv: "TAILNET_TEST_KEY", models: { "qwen/flash": "qwen" } };
   const run = async (provider: ChatCompletionsAPI) => { const events = []; for await (const event of provider.infer({ model: "qwen", input: "hi" } as never, new AbortController().signal)) events.push(event); return events; };
   try {
-    const events = await run(new ChatCompletionsAPI(config, { resolve: async () => ["100.108.115.57"], dial: () => ({ host: "127.0.0.1", port }) }));
+    const events = await run(new ChatCompletionsAPI(config, { resolve: async () => ["100.64.10.57"], dial: () => ({ host: "127.0.0.1", port }) }));
     assert.ok(events.some(event => event.type === "text" && event.text === "hello")); assert.deepEqual(seen, ["Bearer tailnet-secret"]);
     // Public answer: the provider fails before the router sees a byte.
     await assert.rejects(run(new ChatCompletionsAPI(config, { resolve: async () => ["203.0.113.5"], dial: () => ({ host: "127.0.0.1", port }) })), { code: "provider_unreachable" });

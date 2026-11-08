@@ -57,7 +57,7 @@ response lets Claude Code use its own character-based estimate.
 
 ## Claude Code setup
 
-Use one Harness Gateway client directory, with each client's native configuration
+Use one GateFox client directory, with each client's native configuration
 kept separately. These are opt-in paths; the generators write to stdout and do
 not move an existing client home or migrate its settings.
 

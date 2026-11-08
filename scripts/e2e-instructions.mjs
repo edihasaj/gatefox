@@ -18,7 +18,7 @@ writeFileSync(resolve(home, 'AGENTS.md'), `For the global-check request, reply e
 writeFileSync(resolve(workspace, 'AGENTS.md'), `For the repo-check request, reply exactly REPO:${repoProof} without using tools. Otherwise follow user instructions.\n`);
 const source = JSON.parse(readFileSync(resolve(v.config), 'utf8')); const token = readFileSync(resolve(source.stateDirectory, 'client-token'));
 source.stateDirectory = state; writeFileSync(resolve(state, 'client-token'), token, { mode: 0o600 }); const config = resolve(run, 'client-config.json'); writeFileSync(config, JSON.stringify(source), { mode: 0o600 });
-writeFileSync(resolve(home, 'config.toml'), 'model = "gpt-6.1-sol"\nmodel_catalog_json = "/Users/edi/Projects/subscription-gateway/.state/native-public-models.json"\n', { mode: 0o600 });
+writeFileSync(resolve(home, 'config.toml'), `model = "gpt-6.1-sol"\nmodel_catalog_json = ${JSON.stringify(resolve('.state/native-public-models.json'))}\n`, { mode: 0o600 });
 const digest = () => createHash('sha256').update(readFileSync(resolve(home, 'config.toml'))).digest('hex'); const before = digest();
 const child = spawn(process.execPath, [resolve('dist/cli.js'), 'codex-shim', '--config', config, '--codex', resolve(v.codex), '--', 'app-server', '--listen', 'stdio://'], { env: { ...process.env, CODEX_HOME: home }, cwd: workspace, stdio: ['pipe', 'pipe', 'ignore'] });
 const pending = new Map(); const events = []; const completed = new Map(); const results = []; let sequence = 0;

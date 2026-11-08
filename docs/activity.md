@@ -8,7 +8,7 @@ read_when:
 
 # Execution activity
 
-Open **Activity** in Harness Gateway, or run:
+Open **Activity** in GateFox, or run:
 
 ```sh
 gateway activity --json --config /absolute/path/gateway.json
@@ -76,7 +76,7 @@ and retains the policy label instead.
 
 ## Boundary
 
-This is a **Harness Gateway feature**, not a patch for Codex's own unread dots.
+This is a **GateFox feature**, not a patch for Codex's own unread dots.
 Codex apps, signatures, profiles, settings, permissions and read receipts remain
 untouched. Activity never replays a completion notification, inference request,
 tool action or approval. The existing shared executor remains responsible for

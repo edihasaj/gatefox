@@ -13,9 +13,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const { values } = parseArgs({ options: {
   package: { type: 'string' }, code: { type: 'string' }, config: { type: 'string' }, root: { type: 'string' },
-  model: { type: 'string' }, 'child-status': { type: 'boolean' }, context: { type: 'string' }, policy: { type: 'string' }, scenario: { type: 'string', default: 'healthy' },
+  model: { type: 'string' }, 'child-status': { type: 'boolean' }, context: { type: 'string' }, policy: { type: 'string' }, roles: { type: 'string' }, scenario: { type: 'string', default: 'healthy' },
 } });
-for (const key of ['package', 'config', 'root', 'model', 'context', 'policy']) assert.ok(values[key], `Pass --${key}`);
+for (const key of ['package', 'config', 'root', 'model', 'context', 'policy', 'roles']) assert.ok(values[key], `Pass --${key}`);
 assert.ok(['healthy', 'held-worker', 'local-unhealthy', 'unknown-source', 'worker-failure'].includes(values.scenario), '--scenario must be healthy, held-worker, local-unhealthy, unknown-source, or worker-failure');
 
 const code = resolve(values.code ?? new URL('..', import.meta.url).pathname);
@@ -65,7 +65,7 @@ const { setNativeRuntimeRootForTests } = await load('native-runtime-status');
 setNativeRuntimeRootForTests(join(fixture, 'runtime'));
 
 const requiredRoles = ['implementer', 'tester', 'fallback_implementer', 'other_implementer'];
-const roleRoot = '/Users/edi/Projects/manager/configs/codex/agents';
+const roleRoot = resolve(values.roles);
 const roleModels = new Map();
 for (const role of requiredRoles) {
   const source = join(roleRoot, `${role}.toml`), target = join(roleDirectory, `${role}.toml`);

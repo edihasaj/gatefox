@@ -2,6 +2,28 @@
 
 ## 1.7.5 — 2026-11-08
 
+- The app updater now also accepts standard `vVERSION` release tags and the GateFox
+  release names (`GateFox-VERSION-macos-arm64.zip` holding `GateFox.app`, and
+  `gatefox-VERSION-macos-arm64.tar.gz`). A release must carry `app-update.json` to
+  count as an app update, so command-line-only releases are ignored. This prepares
+  the 1.8.0 rename; 1.7.6 itself keeps the Harness Gateway names.
+
+- A public [roadmap](docs/roadmap.md) lists the next steps for contributors: the
+  Claude apps, DeepSeek, and a Chat Completions ingress for other harnesses, each
+  with a GitHub issue.
+
+- The project is now GateFox (https://gatefox.dev, `edihasaj/gatefox`). The app's
+  window, Dock and menu name, permission prompts and update messages say GateFox.
+  The app file stays `Harness Gateway.app` for now, and the bundle ID, service
+  labels, folders, Codex provider ID and Claude Desktop profile name are unchanged,
+  so installed Macs and their updates keep working.
+
+- The README and the guide now start with a single-Mac setup: install, connect your
+  accounts, start the service. Adding more Macs is a separate, optional chapter. The
+  long README moved to `docs/cli.md`, and `docs/reference.html` is a new searchable
+  index of every doc, generated from each page's summary by `npm run docs:site` and
+  checked by `npm run check`.
+
 - A large chat is no longer paused when its client changes the tool list. Codex can add
   MCP tools a few seconds after a chat resumes, which forces Claude to rebuild its cache.
   The cache guard counted that rebuild as a second cache failure and stopped the next

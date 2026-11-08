@@ -151,17 +151,17 @@ test("a redirect is not followed, so the credential cannot travel to another hos
 test("a tailnet farm is min across its routers and is never summed", async () => {
   const fast = await listen(snapshot([{ id: "qwen/flash", max_concurrent_requests: 10 }, { id: "qwen/pro", max_concurrent_requests: 40 }]));
   const slow = await listen(snapshot([{ id: "qwen/flash", max_concurrent_requests: 4 }, { id: "qwen/pro", max_concurrent_requests: 40 }]));
-  const ports: Record<string, number> = { "100.108.115.57": fast.port, "100.104.232.124": slow.port };
+  const ports: Record<string, number> = { "100.64.10.57": fast.port, "100.64.10.24": slow.port };
   const dialed: string[] = [];
   try {
     const seams = {
       now: () => nowMs,
-      resolve: async () => ["100.108.115.57", "100.104.232.124"],
+      resolve: async () => ["100.64.10.57", "100.64.10.24"],
       dial: (address: string) => { dialed.push(address); return { host: "127.0.0.1", port: ports[address] }; },
     };
     const fact = await probeUpstreamCapacity(provider({ tailnet: true, baseUrl: "http://farm.example:4000/v1" }), seams);
     assert.deepEqual(fact, { limit: 4, observedAt: fresh * second }, "the tightest router governs");
-    assert.deepEqual(dialed.sort(), ["100.104.232.124", "100.108.115.57"]);
+    assert.deepEqual(dialed.sort(), ["100.64.10.24", "100.64.10.57"]);
     assert.equal(fast.requests.length, 1); assert.equal(slow.requests.length, 1);
     assert.ok(fast.requests.every(request => request.headers.authorization === "Bearer capacity-secret"));
   } finally { fast.close(); slow.close(); }
@@ -170,7 +170,7 @@ test("a tailnet farm is min across its routers and is never summed", async () =>
 test("a tailnet provider that answers nowhere, or only off-tailnet, gives no fact", async () => {
   const target = await listen(snapshot([{ id: "qwen/flash", max_concurrent_requests: 10 }]));
   try {
-    const dead = { now: () => nowMs, resolve: async () => ["100.108.115.57"], dial: () => ({ host: "127.0.0.1", port: target.port }) };
+    const dead = { now: () => nowMs, resolve: async () => ["100.64.10.57"], dial: () => ({ host: "127.0.0.1", port: target.port }) };
     assert.equal(await probeUpstreamCapacity(provider({ tailnet: true, baseUrl: "http://farm.example:4000/v1" }), { ...dead, dial: () => ({ host: "127.0.0.1", port: 1 }) }), undefined);
     assert.equal(await probeUpstreamCapacity(provider({ tailnet: true, baseUrl: "http://farm.example:4000/v1" }), { now: () => nowMs, resolve: async () => [] }), undefined);
     assert.equal(await probeUpstreamCapacity(provider({ tailnet: true, baseUrl: "http://farm.example:4000/v1" }), { ...dead, resolve: async () => ["203.0.113.5"] }), undefined, "a public address is refused");

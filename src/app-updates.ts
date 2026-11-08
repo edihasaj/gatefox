@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { readFile, realpath, rename, rm } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { readSnapshot, type ConfigSnapshot } from "./app-management/storage.js";
@@ -10,6 +10,7 @@ import { readServicePlan, type ServicePlan } from "./service-plan.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { extractArchive, verifyChecksummedTree } from "./app-updates/archive.js";
 import { cleanupUpdateStage } from "./app-updates/cleanup.js";
+import { namesForAssets, namesForBackendArchive, releaseTagVersion } from "./app-updates/names.js";
 import { pruneRetained } from "./app-updates/retention.js";
 import { githubDownload, githubReleases, runCommand } from "./app-updates/github.js";
 import { beginInstallationTransaction, committedInstallationTransaction, finalizeCommittedInstallationTransaction, finalizeRecoveredCommittedInstallationTransaction, recoverInstallationTransaction, resumeInstallationTransaction, runCanonicalInstall, swapAndCommitInstallationTransaction, type TransactionCommand } from "./app-updates/transaction.js";
@@ -51,9 +52,7 @@ function object(value: unknown): Record<string, unknown> | undefined {
   return !!value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 function version(value: unknown): string | undefined { return safeVersion(value) ? value.replace(/^v/, "") : undefined; }
-function releaseVersion(value: unknown): string | undefined {
-  return typeof value === "string" && /^app-v[0-9]+\.[0-9]+\.[0-9]+$/.test(value) ? value.slice(5) : undefined;
-}
+function releaseVersion(value: unknown): string | undefined { return releaseTagVersion(value); }
 function hash(value: unknown): value is string { return typeof value === "string" && /^[a-f0-9]{64}$/.test(value); }
 function source(value: unknown): value is string { return typeof value === "string" && /^[a-f0-9]{40}$/.test(value); }
 function state(value: unknown): UpdateState {
@@ -72,9 +71,9 @@ function parseManifest(value: unknown): UpdateManifest | undefined {
   const row = object(value); const item = row && version(row.version);
   if (!row || row.schemaVersion !== 1 || !item || !source(row.source) || row.branch !== "production" ||
     !safeName(String(row.appAsset)) || !safeName(String(row.backendAsset)) || !hash(row.appSha256) || !hash(row.backendSha256)) return;
-  const appAsset = `Harness-Gateway-${item}-macos-arm64.zip`, backendAsset = `harness-gateway-${item}-macos-arm64.tar.gz`;
-  if (row.appAsset !== appAsset || row.backendAsset !== backendAsset) return;
-  return { schemaVersion: 1, version: item, source: row.source, branch: "production", appAsset, appSha256: row.appSha256, backendAsset, backendSha256: row.backendSha256 };
+  const names = namesForAssets(item, row.appAsset, row.backendAsset);
+  if (!names) return;
+  return { schemaVersion: 1, version: item, source: row.source, branch: "production", appAsset: names.appAsset, appSha256: row.appSha256, backendAsset: names.backendAsset, backendSha256: row.backendSha256 };
 }
 function receipt(value: unknown): Receipt | undefined {
   const row = object(value); const appVersion = row && version(row.appVersion);
@@ -183,11 +182,13 @@ async function refreshState(ctx: Context): Promise<void> {
   ctx.state = next;
 }
 function output(ctx: Context, values: Partial<UpdateResult>): UpdateResult {
-  return { automatic: ctx.state.automatic, currentVersion: ctx.version, available: false, phase: "idle", message: "Harness Gateway is up to date.",
+  return { automatic: ctx.state.automatic, currentVersion: ctx.version, available: false, phase: "idle", message: "GateFox is up to date.",
     ...(ctx.state.lastChecked ? { lastChecked: ctx.state.lastChecked } : {}), ...values };
 }
 function releaseFor(releases: Release[]): Release | undefined {
-  return releases.filter(release => !release.draft && !release.prerelease && releaseVersion(release.tag_name))
+  // A standard vX.Y.Z tag also names command-line-only releases; only a release carrying the
+  // signed update manifest is an app update.
+  return releases.filter(release => !release.draft && !release.prerelease && releaseVersion(release.tag_name) && asset(release, "app-update.json"))
     .sort((left, right) => {
       const a = versionNumber(releaseVersion(left.tag_name)!), b = versionNumber(releaseVersion(right.tag_name)!);
       return b[0] - a[0] || b[1] - a[1] || b[2] - a[2];
@@ -221,11 +222,11 @@ export async function handleAppUpdate(request: unknown, dependencies: AppUpdateD
       return success(output(ctx, { phase: "preferences_saved", message: "Update preferences saved." }));
     }
     if (parsed.operation === "status") return success(output(ctx, ctx.state.pending
-      ? { latestVersion: ctx.state.pending.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close Harness Gateway to finish installing it." }
+      ? { latestVersion: ctx.state.pending.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close GateFox to finish installing it." }
       : ctx.state.latestVersion && ctx.version !== "Current app" && newer(ctx.state.latestVersion, ctx.version)
         ? { latestVersion: ctx.state.latestVersion, available: true, phase: "available", message: "A newer update is available." } : {}));
     if (parsed.operation === "install" && ctx.state.pending) return success(output(ctx, {
-      latestVersion: ctx.state.pending.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close Harness Gateway to finish installing it.",
+      latestVersion: ctx.state.pending.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close GateFox to finish installing it.",
     }));
     const releases = await (dependencies.releases || githubReleases)();
     const candidate = releaseFor(releases); const latest = candidate && releaseVersion(candidate.tag_name);
@@ -245,25 +246,26 @@ export async function handleAppUpdate(request: unknown, dependencies: AppUpdateD
 async function install(ctx: Context, release: Release, latest: string, deps: AppUpdateDependencies): Promise<AppUpdateResponse> {
   const command = deps.command || runCommand;
   const manifestAsset = asset(release, "app-update.json");
-  if (!manifestAsset || release.tag_name !== `app-v${latest}`) throw new Error("manifest");
+  if (!manifestAsset || release.tag_name !== `app-v${latest}` && release.tag_name !== `v${latest}`) throw new Error("manifest");
   const stage = join(ctx.installation.root, `app-update-${randomUUID()}`); await privateDirectory(stage);
   let appStage: string | undefined; let recorded = false;
   try {
     const fetch = deps.download || ((asset: ReleaseAsset, destination: string, signal?: AbortSignal) => githubDownload(asset, destination, command, signal));
     const manifestFile = join(stage, "app-update.json"); await fetch(manifestAsset, manifestFile, deps.signal);
     const manifest = parseManifest(await readJson(manifestFile)); if (!manifest || manifest.version !== latest) throw new Error("manifest");
+    const names = namesForAssets(manifest.version, manifest.appAsset, manifest.backendAsset); if (!names) throw new Error("manifest");
     const appAsset = asset(release, manifest.appAsset), backendAsset = asset(release, manifest.backendAsset);
     if (!appAsset || !backendAsset) throw new Error("asset");
     const appArchive = join(stage, manifest.appAsset), backendArchive = join(stage, manifest.backendAsset);
     await fetch(appAsset, appArchive, deps.signal); await fetch(backendAsset, backendArchive, deps.signal);
     if (await fileDigest(appArchive) !== manifest.appSha256 || await fileDigest(backendArchive) !== manifest.backendSha256) throw new Error("digest");
-    const extractedApp = await extractArchive("zip", appArchive, join(stage, "app"), "Harness Gateway.app", command);
+    const extractedApp = await extractArchive("zip", appArchive, join(stage, "app"), names.app, command);
     const appReceipt = receipt(await readAppResourceJson(join(extractedApp, "Contents/Resources/app-build.json")));
     const appPolicy = policy(await readAppResourceJson(join(extractedApp, "Contents/Resources/update-policy.json")));
     if (!appReceipt || !appPolicy || appReceipt.appVersion !== manifest.version || appReceipt.source !== manifest.source ||
       appReceipt.backendSha256 !== manifest.backendSha256 || JSON.stringify(appPolicy) !== JSON.stringify({ schemaVersion: 1, version: manifest.version, source: manifest.source, branch: "production", backendAsset: manifest.backendAsset, backendSha256: manifest.backendSha256 })) throw new Error("policy");
     if (deps.verifyApp) await deps.verifyApp(extractedApp, ctx.team); else await defaultVerifyApp(extractedApp, ctx.team, true);
-    const backendRoot = await extractArchive("tar", backendArchive, join(stage, "backend"), `harness-gateway-${manifest.version}-macos-arm64`, command);
+    const backendRoot = await extractArchive("tar", backendArchive, join(stage, "backend"), names.backendRoot, command);
     await verifyChecksummedTree(backendRoot);
     const backendReceipt = object(await readProtectedJson(join(backendRoot, "package/release.json")));
     if (!backendReceipt || version(backendReceipt.version) !== manifest.version || backendReceipt.source !== manifest.source) throw new Error("backend");
@@ -272,7 +274,7 @@ async function install(ctx: Context, release: Release, latest: string, deps: App
     ctx.state.pending = { version: manifest.version, source: manifest.source, backendSha256: manifest.backendSha256,
       appStage, backendArchive, requestedAt: new Date().toISOString() }; ctx.state.latestVersion = manifest.version;
     await writePrivate(ctx.statePath, ctx.state); recorded = true;
-    return success(output(ctx, { latestVersion: manifest.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close Harness Gateway to finish installing it.", lastChecked: ctx.state.lastChecked }));
+    return success(output(ctx, { latestVersion: manifest.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close GateFox to finish installing it.", lastChecked: ctx.state.lastChecked }));
   } catch (error) {
     if (appStage && !recorded) await rm(appStage, { recursive: true, force: true }).catch(() => undefined);
     throw error;
@@ -295,7 +297,7 @@ async function discardUpdateStage(ctx: Context, pending: NonNullable<UpdateState
 export async function installPending(ctx: Context, deps: AppUpdateDependencies = {}): Promise<AppUpdateResponse> {
   const pending = ctx.state.pending; if (!pending || !contained(dirname(ctx.app), pending.appStage) || !pending.appStage.endsWith(".app") ||
     !contained(ctx.installation.root, pending.backendArchive)) throw new Error("pending");
-  if (await (deps.appRunning || defaultAppRunning)(ctx.app)) return success(output(ctx, { latestVersion: pending.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close Harness Gateway to finish installing it." }));
+  if (await (deps.appRunning || defaultAppRunning)(ctx.app)) return success(output(ctx, { latestVersion: pending.version, available: true, phase: "waiting_for_app_exit", message: "Update staged. Close GateFox to finish installing it." }));
   if (deps.signal?.aborted) throw Object.assign(new Error("cancelled"), { code: "cancelled" });
   const command = deps.command || runCommand;
   const invoke = transactionCommand(command);
@@ -309,7 +311,7 @@ export async function installPending(ctx: Context, deps: AppUpdateDependencies =
       installation: ctx.installation, app: ctx.app, version: pending.version, team: ctx.team,
     }));
     await discardUpdateStage(ctx, pending, deps);
-    return success(output(ctx, { latestVersion: pending.version, phase: "installed", message: "Update installed. Reopen Harness Gateway to use it." }));
+    return success(output(ctx, { latestVersion: pending.version, phase: "installed", message: "Update installed. Reopen GateFox to use it." }));
   }
   if (recovered === "rolled_back") {
     delete ctx.state.pending; await writePrivate(ctx.statePath, ctx.state);
@@ -326,8 +328,9 @@ export async function installPending(ctx: Context, deps: AppUpdateDependencies =
     currentReceipt.backendSha256 !== pending.backendSha256 || currentPolicy.version !== pending.version ||
     currentPolicy.source !== pending.source || currentPolicy.backendSha256 !== pending.backendSha256) throw new Error("pending");
   if (await fileDigest(pending.backendArchive) !== pending.backendSha256) throw new Error("pending");
+  const names = namesForBackendArchive(pending.version, basename(pending.backendArchive)); if (!names) throw new Error("pending");
   const activation = join(dirname(pending.backendArchive), `activate-${randomUUID()}`);
-  const backend = await extractArchive("tar", pending.backendArchive, activation, `harness-gateway-${pending.version}-macos-arm64`, command);
+  const backend = await extractArchive("tar", pending.backendArchive, activation, names.backendRoot, command);
   try {
     await verifyChecksummedTree(backend);
     const backendReceipt = object(await readProtectedJson(join(backend, "package/release.json")));
@@ -347,7 +350,7 @@ export async function installPending(ctx: Context, deps: AppUpdateDependencies =
     await finalizeCommittedInstallationTransaction(tx);
   } finally { await rm(activation, { recursive: true, force: true }).catch(() => undefined); }
   await discardUpdateStage(ctx, pending, deps);
-  return success(output(ctx, { latestVersion: pending.version, phase: "installed", message: "Update installed. Reopen Harness Gateway to use it." }));
+  return success(output(ctx, { latestVersion: pending.version, phase: "installed", message: "Update installed. Reopen GateFox to use it." }));
 }
 
 /** Service-only pending retry. It is separate from the public protocol so UI calls never swap a live app. */

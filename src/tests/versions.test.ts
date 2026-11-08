@@ -312,7 +312,7 @@ test("an inference process is asked on each socket it listens on, however it was
   const seen: number[] = [];
   const result = await runVersions(fleet({
     // A real launch: a configuration path with spaces, and no `--port` anywhere.
-    ps: async () => psLine(701, uid, `${node} ${current()} serve --config /Users/edi/My Gateway/gateway.json`),
+    ps: async () => psLine(701, uid, `${node} ${current()} serve --config /Users/dev/My Gateway/gateway.json`),
     lsof: async () => mapped(release("0.4.1")),
     sockets: async () => listening("*:9999", "127.0.0.1:4400", "127.0.0.1:4317"),
     health: async port => { seen.push(port); return port === 4400 ? installed : undefined },

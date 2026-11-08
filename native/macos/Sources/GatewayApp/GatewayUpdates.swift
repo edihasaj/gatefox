@@ -318,7 +318,7 @@ final class GatewayUpdatesModel: ObservableObject {
     @Published private(set) var latestVersion: String?
     @Published private(set) var available = false
     @Published private(set) var phase = "idle"
-    @Published private(set) var message = "Check for a newer Harness Gateway app."
+    @Published private(set) var message = "Check for a newer GateFox app."
     @Published private(set) var lastChecked: Date?
     @Published private(set) var isBusy = false
     @Published private(set) var isCancelling = false
@@ -464,7 +464,7 @@ final class GatewayUpdatesModel: ObservableObject {
     private static func displayMessage(for result: GatewayUpdateResult) -> String {
         switch result.phase {
         case "waiting_for_app_exit": return "Update staged. Close this window to finish installing it."
-        case "installed": return "Update installed. Reopen Harness Gateway to use it."
+        case "installed": return "Update installed. Reopen GateFox to use it."
         default: return result.message
         }
     }
