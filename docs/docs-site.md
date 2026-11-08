@@ -28,12 +28,27 @@ files only. It adds no Actions workflow, so the [CI cost policy](ci-cost-policy.
 is unchanged; GitHub serves a branch-based Pages site of a public repository at
 no cost.
 
-## One-time setup
+## Hosting
 
-1. In the public repository, set Pages to deploy from the `gh-pages` branch and
-   enter `gatefox.dev` as the custom domain, then enable HTTPS.
-2. In the Cloudflare DNS for `gatefox.dev`, add `A` records for `185.199.108.153`,
-   `185.199.109.153`, `185.199.110.153` and `185.199.111.153`, and `AAAA` records
-   for `2606:50c0:8000::153` through `2606:50c0:8003::153`, all DNS only (not
-   proxied), so GitHub can issue the certificate.
-3. Verify with `curl -fsSI https://gatefox.dev/` and `curl -fsSI https://gatefox.dev/reference.html`.
+The site is served by GitHub Pages from the `gh-pages` branch of
+`edihasaj/gatefox`, with custom domain `gatefox.dev` and HTTPS enforced. The
+Cloudflare zone `gatefox.dev` (account "Edi") holds two DNS-only records, set up
+on 8 November 2026 through the dashboard's BIND import, because the Wrangler
+login cannot edit DNS:
+
+| Name | Type | Content | Proxy |
+| --- | --- | --- | --- |
+| `gatefox.dev` | CNAME (flattened at the apex) | `edihasaj.github.io` | DNS only |
+| `www.gatefox.dev` | CNAME | `edihasaj.github.io` | DNS only |
+
+Keep both records unproxied; GitHub issues the certificate only when it sees its
+own addresses. Every `.dev` name is HTTPS-only in browsers, so the site opens
+there only once that certificate exists.
+
+Verify a publish with:
+
+```sh
+curl -fsSI https://gatefox.dev/
+curl -fsS https://gatefox.dev/reference.html | grep -o '<title>[^<]*'
+gh api repos/edihasaj/gatefox/pages -q '{status: .status, https: .https_enforced, cname: .cname}'
+```
