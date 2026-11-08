@@ -1,10 +1,10 @@
 ---
-summary: 'How gateway chats identify themselves to each harness: Codex records them as subscription_gateway by default and as openai on an opted-in Mac, Claude Code stores no provider, and the checklist for adding another harness.'
+summary: 'How gateway chats identify themselves to each harness: Codex records them as gatefox by default (subscription_gateway before 1.8.0, still read) and as openai on an opted-in Mac, Claude Code stores no provider, and the checklist for adding another harness.'
 read_when:
   - Changing which provider id gateway chats are saved with, or the chatIdentity setting
   - Changing the gateway SDK patch, the executor marker, or the executor launch settings
   - Investigating why a gateway chat is missing from the phone or the native chat list
-  - Investigating "Model provider `subscription_gateway` not found" when ChatGPT opens a chat
+  - Investigating "Model provider `gatefox` not found" or "Model provider `subscription_gateway` not found" when ChatGPT opens a chat
   - Adding a harness, or a client that lists or resumes gateway chats
 ---
 
@@ -15,7 +15,26 @@ gateway serves. Each harness stores something about who served a chat. That stor
 identity decides which clients list the chat and which engine resumes it. This page
 is the contract for each harness, and the checklist for a new one.
 
-## Codex: `subscription_gateway` by default, `openai` as an opt-in
+## Codex: `gatefox` by default, `openai` as an opt-in
+
+### Two ids for the gateway (1.8.0)
+
+Since 1.8.0, new gateway chats are saved with the provider id `gatefox`. Chats saved
+before 1.8.0 carry `subscription_gateway`, and that id keeps working: every engine the
+gateway starts registers both ids, `gateway desktop register` publishes a row for each in
+the native `config.toml`, the router lists chats under both, and the patched SDK
+(`gateway-executor-v4`) treats both as the gateway. A chat is never rewritten by a resume.
+
+| Id | Written by | Read by |
+| --- | --- | --- |
+| `gatefox` | New gateway chats since 1.8.0 | 1.8.0 and later |
+| `subscription_gateway` | Every release before 1.8.0; also a new chat on an engine an older release started | Every release |
+
+The executor marker is `GATEFOX_EXECUTOR` since 1.8.0. Executors also get the older
+`HARNESS_GATEWAY_EXECUTOR`, and the SDK reads either, so an SDK of either generation sees
+the same state. `gatefox chats migrate` (see [the rename plan](gatefox-rename.md)) moves
+saved chats from `subscription_gateway` to `gatefox`; 1.8.1 then stops registering the old id.
+
 
 ### Account names and saved chats
 
@@ -42,8 +61,8 @@ account separation, and model switching with the real signed SDK and mock infere
 Its adapter scenario reproduces a refreshed picker advertising an alias absent
 from a loaded executor, then verifies switching through the stable picker aliases.
 
-Release 0.4.7 keeps recording new gateway chats with the provider id
-`subscription_gateway`, as every release before it. A Mac can opt in to the native
+Releases 0.4.7 to 1.7.x record new gateway chats with the provider id
+`subscription_gateway`; 1.8.0 records them as `gatefox`. A Mac can opt in to the native
 identity, `openai`, with `"chatIdentity": "openai"` in its gateway configuration.
 
 The phone is why the choice matters. The ChatGPT app's Codex list, and a stock Codex
@@ -92,13 +111,13 @@ adapter or by the shared execution host. It is not the built-in OpenAI provider.
 this ships and runs in 0.4.7 whatever the setting, so an opted-in Mac and one that
 opted out again serve the same chats.
 
-1. The adapter starts every executor with `HARNESS_GATEWAY_EXECUTOR=1` in its environment.
+1. The adapter starts every executor with `GATEFOX_EXECUTOR=1` and the older `HARNESS_GATEWAY_EXECUTOR=1` in its environment.
    Native engines never get it: the adapter and the shared native host remove an inherited
-   marker before starting one. Each executor sets it to `0` for the commands, hooks and
+   marker (either spelling) before starting one. Each executor sets both to `0` for the commands, hooks and
    shells it starts (`shell_environment_policy.set`), so nothing a chat runs counts as an
    executor.
-2. The executor's launch settings register the gateway's own provider as
-   `model_providers.subscription_gateway` (loopback base URL, the `gateway token` command,
+2. The executor's launch settings register the gateway's own provider under both ids,
+   `model_providers.gatefox` and `model_providers.subscription_gateway` (loopback base URL, the `gateway token` command,
    `supports_websockets = false`, `request_max_retries = 2`,
    `stream_idle_timeout_ms = 90000`), and set `model_provider` to the identity for new chats.
 3. The gateway SDK patch (`scripts/patches/gateway-executor.patch`, capability
@@ -117,28 +136,29 @@ opted out again serve the same chats.
    which refuses the request; it never reaches OpenAI.
 
 The adapter uses `openai` for new chats only when the Mac opted in and the package's
-gateway SDK declares `gateway-executor-v3`. A checkout without the artifact runs a stock
-Codex as its executor and keeps `subscription_gateway`. A new chat on an engine this
-connection did not launch (a shared host's, found by its chat) keeps `subscription_gateway`
-too, since its SDK is unknown, and an executor that records a new chat with any provider
+gateway SDK declares `gateway-executor-v4`. Otherwise new chats are `gatefox`; a stock
+Codex executor (a checkout without the artifact) serves it too, because both ids are
+registered rows. A new chat on an engine this connection did not launch (a shared host's,
+found by its chat) keeps `subscription_gateway`, since that engine may belong to an older
+release that registers only the old id, and an executor that records a new chat with any provider
 but the requested one is refused.
 
 An already-open adapter keeps the identity it selected for new chats. If its original
 managed package is pruned after an install, it may recover only to the verified SDK in
 that installation's `current` release. A verified replacement can serve an existing
 legacy connection without changing it to `openai`; an existing `openai` connection
-remains fail-closed unless that replacement proves `gateway-executor-v3`. Saved chats
+remains fail-closed unless that replacement proves `gateway-executor-v4`. Saved chats
 always retain their saved provider id.
 
 ### The provider row in native configuration
 
-Every engine the gateway starts registers `subscription_gateway` with `-c` settings.
+Every engine the gateway starts registers `gatefox` and `subscription_gateway` with `-c` settings.
 The ChatGPT app's own engine reads only the native `config.toml`. ChatGPT is a login item
 and can start its engine before the gateway service sets `CODEX_CLI_PATH`. Without a row
 in `config.toml`, every saved gateway chat then fails to open with "Model provider
-`subscription_gateway` not found", whatever model the chat used.
+`gatefox` not found" (or `subscription_gateway` for an older chat), whatever model the chat used.
 
-`gateway desktop register` therefore publishes `[model_providers.subscription_gateway]`
+`gateway desktop register` therefore publishes `[model_providers.gatefox]` and `[model_providers.subscription_gateway]`
 in the native `config.toml`, after it sets `CODEX_CLI_PATH`. It runs at installation and
 at every service start, so the row follows a changed port or configuration path. The row
 is the same table as the adapter's `-c` settings (`src/native-provider-row.ts`): the
@@ -165,10 +185,10 @@ app launch through the wrapper restores the full gateway path.
 The adapter decides a chat's engine from the chat, never from the provider id. The
 classifier (`src/gateway-chat-classifier.ts`) answers with the first rule that matches:
 
-1. `legacy_provider`: the chat is saved as `subscription_gateway`.
+1. `legacy_provider`: the chat is saved as `gatefox` or `subscription_gateway`.
 2. `registry`: the chat is in `<state>/gateway-chats/<scope>.json`.
 3. `parent`: a sub-agent whose ancestor (up to 8 levels) is registered, saved as
-   `subscription_gateway`, or on a gateway alias.
+   `gatefox` or `subscription_gateway`, or on a gateway alias.
 4. `alias`: the chat's model is a gateway alias and not a native slug.
 5. `native`: anything else.
 
@@ -182,16 +202,16 @@ The registry is written before a new chat's reply, before a sub-agent's announce
 passed on, and, since 0.4.7, when a chat that only its ancestors or its alias identified is
 routed to an executor. Throwaway chats (composer predictions) are never written. A failed
 write is reported once as `gateway_registry_write_failed`. Such a chat is still found: a
-`subscription_gateway` chat by its id, an `openai` chat on a gateway alias by its alias,
+`gatefox` or `subscription_gateway` chat by its id, an `openai` chat on a gateway alias by its alias,
 and an `openai` sub-agent on a native model only through its ancestors.
 
 ### Chat lists
 
 When a `thread/list` asks only for the native engine's default provider, by naming it
 alone or by naming none (and no parent or ancestor filter), the adapter asks the engine
-for that provider and `subscription_gateway`. So a client that lists the native identity
-through the adapter, such as the phone through the relay, also sees the gateway's
-`subscription_gateway` chats. An empty list (every provider), several providers, another
+for that provider, `gatefox` and `subscription_gateway`. So a client that lists the native
+identity through the adapter, such as the phone through the relay, also sees the gateway's
+own chats, old and new. An empty list (every provider), several providers, another
 provider, or a parent filter is sent unchanged. The native default is read from the
 engine's configuration once per connection, and again after a configuration write.
 
@@ -249,7 +269,7 @@ relay protocol with a mock phone and mock inference, not the phone's rendered UI
 | Open | History is shown | History is shown |
 | Continue an `openai` chat on a gateway alias | The app's engine uploads its history to OpenAI, which refuses the unknown model | Routed to the gateway executor |
 | Continue an `openai` sub-agent on a native model | The app's engine uploads its history and runs it on your ChatGPT account | Routed to the gateway executor |
-| Continue a `subscription_gateway` chat | Not reachable from the list | Routed to the gateway executor |
+| Continue a `gatefox` or `subscription_gateway` chat | Not reachable from the list | Routed to the gateway executor |
 
 ### Rollback
 

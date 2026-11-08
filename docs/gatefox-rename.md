@@ -70,6 +70,21 @@ After every Mac reports `ready` on 1.8.0 and every chat is migrated: stop regist
 `subscription_gateway`, remove the old-folder links, the old launchers, the old
 markers and the old `Symbol.for` keys, and remove the Compatibility names section.
 
+## Progress (branch `codex/gatefox-1.8.0`)
+
+| Step | State |
+| --- | --- |
+| Provider id `gatefox` for new chats, both ids registered, listed and guarded | Done: code, SDK patches (`gateway-executor-v4`), 4,303 core and 147 desktop tests, 33 SDK gate tests |
+| Executor marker `GATEFOX_EXECUTOR` (old marker still set and read) | Done |
+| Docs for the two ids (`harness-identity.md`, `app-server.md`, `RELEASING.md`, troubleshooting) | Done |
+| End-to-end scripts that still assert `subscription_gateway` for new chats (17 under `scripts/e2e-*.mjs`) | To do |
+| Install root and state folder move, LaunchAgent labels, ownership markers | To do |
+| `gatefox` command, `GateFox.app` and the updater move | To do |
+| `gatefox chats migrate` | To do |
+| Release build with a fresh SDK, rollout one Mac at a time | To do |
+
+The bundle ID stays `com.edihasaj.harness-gateway.app` unless Edi decides otherwise.
+
 ## Decision needed
 
 - **Bundle ID** `com.edihasaj.harness-gateway.app`: changing it to

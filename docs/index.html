@@ -177,7 +177,7 @@ gateway versions --check</code></pre>
       <div class="table-wrap"><table><thead><tr><th>Symptom</th><th>Next step</th></tr></thead><tbody>
         <tr><td>Added models are missing</td><td>Quit Codex normally once and reopen it. Then run <code>gateway desktop status</code> and <code>gateway doctor</code>.</td></tr>
         <tr><td>“Model not supported with a ChatGPT account”</td><td>Start a new chat with the gateway model selected. An existing native chat cannot switch to it.</td></tr>
-        <tr><td>Model provider <code>subscription_gateway</code> not found</td><td>Run <code>gateway desktop register</code> on the Mac that owns the chat's project, then reopen the chat.</td></tr>
+        <tr><td>Model provider <code>gatefox</code> (or <code>subscription_gateway</code>) not found</td><td>Run <code>gateway desktop register</code> on the Mac that owns the chat's project, then reopen the chat. It registers both of the gateway's ids.</td></tr>
         <tr><td>An extra Mac sees no models</td><td>Check that the main Mac is awake, then run <code>gateway doctor</code> on the extra Mac to test the tunnel.</td></tr>
         <tr><td>An answer stops early</td><td>Check <code>gateway service status</code>. Keep the chat and logs; the gateway does not retry on another account.</td></tr>
       </tbody></table></div>

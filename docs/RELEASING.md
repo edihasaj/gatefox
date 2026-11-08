@@ -196,8 +196,8 @@ JavaScript. Installing a CLI update preserves the registration. See
    retry a garbled tool call and finish. It uses a local mock and spends no credit.
    For chat identity changes, run `scripts/e2e-identity.mjs --package
    INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY`. With the package's own
-   gateway SDK and a mock upstream it proves that new chats stay
-   `subscription_gateway` by default, and that with the `openai` opt-in a new gateway
+   gateway SDK and a mock upstream it proves that new chats are recorded as
+   `gatefox` by default (a chat saved as `subscription_gateway` before 1.8.0 keeps its id), and that with the `openai` opt-in a new gateway
    chat is recorded as `openai` (thread, rollout and SQLite), is in the registry when its start returns,
    compacts locally on the selected model, routes to the gateway when a new connection
    resumes it, sends nothing with the gateway token to the ChatGPT backend, and is
@@ -445,7 +445,7 @@ source-less workspace versions. All external package versions, sources, checksum
 and dependency blocks remain byte-identical. The repaired lockfile and helper are
 hashed in the receipt; Cargo tests and builds still use `--locked`.
 The test gate runs three executor-identity unit tests in `codex-model-provider-info`
-and six compaction cases: the four for `subscription_gateway` and native chats, and
+and six compaction cases: the four for the gateway's ids (`gatefox`, `subscription_gateway`) and native chats, and
 two for `openai` inside a marked gateway executor. It also runs two queue integration
 tests covering both gateway identities, writes during a pause, cold resume,
 explicit continuation, explicit queue start, and the native failure behavior.

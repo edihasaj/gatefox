@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- New gateway chats are recorded with the provider id `gatefox`. Chats saved earlier keep
+  `subscription_gateway`, which every engine still registers and every list still shows,
+  so nothing needs reopening. `gateway desktop register` publishes a native row for both
+  ids, so ChatGPT's own engine opens either. The native-config guard refuses both ids.
+  Executors carry `GATEFOX_EXECUTOR` (and the older marker). The patched SDK is
+  `gateway-executor-v4`. See `docs/harness-identity.md` and `docs/gatefox-rename.md`.
+
 - gatefox.dev has search and sharing metadata on every page: canonical URLs, Open Graph
   and Twitter cards with a share image per page, JSON-LD, `robots.txt`, a sitemap with
   images and a web manifest. The deploy adds the IndexNow key file.

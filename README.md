@@ -122,7 +122,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as desc
 
 GateFox was called Harness Gateway, and before that Subscription Gateway. Names that
 existing installations and saved chats depend on keep an older spelling: the Codex provider ID
-`subscription_gateway` (stored in gateway chats, and registered in every gateway executor;
+`subscription_gateway` (stored in gateway chats saved before 1.8.0, which records new chats as `gatefox`; both ids are registered in every gateway executor;
 a Mac that opts in to `"chatIdentity": "openai"` stores its new chats as `openai`, see
 [harness identity](docs/harness-identity.md)), the LaunchAgent labels
 `com.edihasaj.subscription-gateway*`, the install root `~/.local/share/subscription-gateway`,
