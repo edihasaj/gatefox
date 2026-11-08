@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A public [roadmap](docs/roadmap.md) lists the next steps for contributors: the
+  Claude apps, DeepSeek, and a Chat Completions ingress for other harnesses, each
+  with a GitHub issue.
+
 - The project is now GateFox (https://gatefox.dev, `edihasaj/gatefox`). The app's
   window, Dock and menu name, permission prompts and update messages say GateFox.
   The app file stays `Harness Gateway.app` for now, and the bundle ID, service

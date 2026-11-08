@@ -4,6 +4,9 @@ Thanks for helping. Issues and pull requests are welcome.
 
 ## Before you start
 
+- Pick something from the [roadmap](https://gatefox.dev/roadmap.html) or an issue labelled
+  [good first issue](https://github.com/edihasaj/gatefox/issues?q=is%3Aopen+label%3A%22good+first+issue%22),
+  and comment on the issue before you start.
 - Read the [guide](https://gatefox.dev) and the doc page for the area you change;
   every page lists when to read it on [All docs](https://gatefox.dev/reference.html).
 - For a larger change, open an issue first so we can agree on the approach.

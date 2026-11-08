@@ -20,7 +20,7 @@ const groups = [
   ['Accounts, providers and models', ['api-providers', 'claude-sessions', 'copilot-sessions', 'grok-sessions', 'auto-latest-models', 'managed-routing', 'availability', 'upstream-capacity', 'cache-safety', 'provider-reuse', 'provider-updates', 'responses']],
   ['More than one Mac', ['remote', 'native-remote', 'travel-recovery']],
   ['Keep it running', ['services', 'health', 'diagnostics', 'engine-exits', 'reboot-recovery', 'service-install-recovery', 'macos-background-item', 'macos-updates', 'mcp-credentials', 'desktop-update-compatibility', 'desktop-legacy-force-cli', 'native-launcher-verification']],
-  ['Architecture and project', ['architecture', 'verification', 'RELEASING', 'rollout', 'component-origins', 'ci', 'ci-cost-policy', 'availability-agent-tests', 'brand', 'docs-site']],
+  ['Architecture and project', ['architecture', 'verification', 'RELEASING', 'rollout', 'component-origins', 'ci', 'ci-cost-policy', 'availability-agent-tests', 'brand', 'docs-site', 'roadmap']],
 ];
 
 const escape = text => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

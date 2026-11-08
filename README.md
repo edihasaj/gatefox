@@ -97,6 +97,9 @@ gateway. See [CI](docs/ci.md) and [releasing](docs/RELEASING.md).
 
 ## Contributing and security
 
+Want to help? The [roadmap](docs/roadmap.md) lists next steps (better Claude app support,
+DeepSeek, more harnesses) with an issue for each, including
+[good first issues](https://github.com/edihasaj/gatefox/issues?q=is%3Aopen+label%3A%22good+first+issue%22).
 See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as described in
 [SECURITY.md](SECURITY.md).
 
