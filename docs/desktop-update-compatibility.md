@@ -49,6 +49,20 @@ its busy slot until it actually settles, so shutdown neither waits for its
 deadline nor starts overlapping work. A reconciliation pass retains its bounded
 cleanup wait.
 
+Engine 0.167.0-alpha.3.2 corresponds to OpenAI commit
+`b4b58be951a4fcbbda5cf50d48dcd7d4d8a41533` (tag `rust-v0.167.0-alpha.3.2`). ChatGPT
+26.1103.41825 shipped it on 8 Nov 2026. The 1.5.9 relay kept running beside it until
+the 1.7.6 rollout restarted macbook-server's service; the restarted relay refused the
+engine ("requires the matching Codex CLI build") and paused as `failing`, so the phone
+lost that Mac. Relative to the admitted 0.166.0-alpha.6, `app-server-transport`
+(including `remote_control`), the app-server remote-control processor and
+`state/migrations` are byte-identical, the `AuthDotJson` structure is unchanged, and
+`CHATGPT_ACCOUNT_ID_HEADER` is still `chatgpt-account-id`. `login` now writes
+`auth.json` atomically and reports parse errors more clearly; the format is unchanged.
+The rebuilt relay passed its 47 tests and the upstream `remote_control` suite
+(165 passed). The engine is admitted for the relay only; it joins
+`hostVerifiedAppEngines` after the shared-native fixture passes against it.
+
 ## Verify an app update
 
 1. Verify the installed app engine's exact version, OpenAI signature and binary

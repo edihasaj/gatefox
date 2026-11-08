@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The remote relay accepts the Codex 0.167.0-alpha.3.2 app engine that ChatGPT
+  26.1103.41825 shipped on 8 November. The installed relay refused it after a service
+  restart and paused as `failing`, so the phone could not reach that Mac. Its
+  remote-control transport, state migrations and `auth.json` format are unchanged from
+  the admitted 0.166.0-alpha.6. Native sharing on the host still waits for its own check.
+
 - The app updater now also accepts standard `vVERSION` release tags and the GateFox
   release names (`GateFox-VERSION-macos-arm64.zip` holding `GateFox.app`, and
   `gatefox-VERSION-macos-arm64.tar.gz`). A release must carry `app-update.json` to
