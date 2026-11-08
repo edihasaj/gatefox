@@ -65,7 +65,8 @@ const steeringEnded = () => new ProviderError("invalid_request",
   400, { code: "steering_barrier_failed", event: "claude.session" });
 const maxLine = 8 * 1024 * 1024;
 /** Startup bound (spawn, initialize and the relay hello); tests shorten it. */
-export const sessionLimits = { startMs: 15000 };
+// A loaded Mac can take over 20 s to boot the CLI and its MCP server; 15 s refused live chats there.
+export const sessionLimits = { startMs: 60000 };
 const eventType = (message: Record<string, unknown>) => message.type === "stream_event" ? (message.event as { type?: unknown } | undefined)?.type : undefined;
 const category = (value: unknown, allowed: string[]): string => typeof value === "string" && allowed.includes(value) ? value : "other";
 /** The typed failure for a tool the CLI must never run, classified like the one-shot path. */

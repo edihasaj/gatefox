@@ -3,7 +3,8 @@ import { ProviderError } from "./providers/provider.js";
 import { telemetry } from "./telemetry.js";
 
 export interface CacheCounts { read?: number; uncached?: number; input?: number; complete?: boolean }
-export interface CacheRecordOutcome { cancelled?: boolean; refused?: boolean }
+/** `clientChange`: the provider rebuilt because the caller changed its cached prefix (tools, instructions, thinking, Fast). */
+export interface CacheRecordOutcome { cancelled?: boolean; refused?: boolean; clientChange?: boolean }
 interface Rewrite { count: number; bytes: number; cacheTokens?: number; unknown: boolean; lastActivityAt?: number; rebuildPass?: boolean; refusalPass?: boolean; forgiven?: number }
 const symbol = Symbol.for("harness-gateway/context-cache-budget/v1");
 const state = globalThis as unknown as Record<symbol, Map<string, Rewrite> | undefined>;
@@ -97,7 +98,7 @@ export function contextCacheBudget(scope: string, identity: string | undefined, 
       if (prior) prior.lastActivityAt = lastActivityAt;
       const read = counts?.read, uncached = counts?.uncached, input = counts?.input;
       const measured = counts?.complete !== false && valid(read) && valid(uncached);
-      const cancelled = outcome.cancelled === true, refused = outcome.refused === true;
+      const cancelled = outcome.cancelled === true, refused = outcome.refused === true, clientChange = outcome.clientChange === true;
       const largeUnknown = !measured && ((valid(input) && input >= largeInputTokens) || (valid(uncached) && uncached >= largeInputTokens)
         || refused && bytes >= largeInputTokens * estimatedBytesPerToken);
       if (!measured && !largeUnknown) {
@@ -115,8 +116,10 @@ export function contextCacheBudget(scope: string, identity: string | undefined, 
       // A refused request is never excused: it spent the resend, so repeated refusals reach the stop.
       // That also bounds the refusal's own pass, which does not need the rebuild allowance. A cancelled
       // rebuild leaves it for the rebuild that finishes, and spends the allowance instead.
+      // A rebuild the caller forced by changing its tools or instructions is not a cache failure either:
+      // the next request continues the new session. It spends the same allowance, so a flapping catalog still stops.
       const excused = cold && !refused && (!cancelled && prior?.refusalPass === true
-        || forgiven < maxForgivenRebuilds && (cancelled || prior?.rebuildPass === true));
+        || forgiven < maxForgivenRebuilds && (cancelled || clientChange || prior?.rebuildPass === true));
       histories.delete(key);
       histories.set(key, { count: !cold ? 0 : excused ? prior?.count ?? 0 : (prior?.count ?? 0) + 1,
         unknown: excused ? prior?.unknown ?? false : largeUnknown,
