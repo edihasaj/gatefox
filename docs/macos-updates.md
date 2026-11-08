@@ -7,8 +7,9 @@ read_when:
 
 # macOS app updates
 
-The installed app checks the private `app-vVERSION` GitHub releases daily. It
-needs existing GitHub authentication that can read `edihasaj/harness-gateway`;
+The installed app checks the `app-vVERSION` GitHub releases daily. It
+uses the GitHub CLI's existing login to read `edihasaj/harness-gateway`, the
+repository's former name, which GitHub redirects to `edihasaj/gatefox`;
 the updater never asks for, stores, or prints a token. A release provides one
 notarized app ZIP, its matching gateway backend archive, `app-update.json`, and
 `SHA256SUMS`.

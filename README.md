@@ -31,7 +31,7 @@ desktop app, and the official CLI for each subscription you connect (for example
 Claude Code for a Claude subscription).
 
 **Option A: the app.** Download `Harness-Gateway-VERSION-macos-arm64.zip` from
-[Releases](https://github.com/edihasaj/harness-gateway/releases), move the app to
+[Releases](https://github.com/edihasaj/gatefox/releases), move the app to
 Applications and open it. The setup wizard connects your accounts, picks models
 and starts the background service.
 
@@ -39,7 +39,7 @@ and starts the background service.
 
 ```sh
 VERSION=1.7.5
-gh release download "v$VERSION" -R edihasaj/harness-gateway \
+gh release download "v$VERSION" -R edihasaj/gatefox \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
 tar -xzf "harness-gateway-$VERSION-macos-arm64.tar.gz"
@@ -94,6 +94,11 @@ npm run docs:serve     # build the docs site and preview it at http://127.0.0.1:
 
 Node 22 or later. Tests run in a private temporary home and never touch your real
 gateway. See [CI](docs/ci.md) and [releasing](docs/RELEASING.md).
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as described in
+[SECURITY.md](SECURITY.md).
 
 ## License
 

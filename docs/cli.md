@@ -56,7 +56,7 @@ in [remote setup](remote.md).
 
 ```sh
 VERSION=1.7.5
-gh release download "v$VERSION" -R edihasaj/harness-gateway \
+gh release download "v$VERSION" -R edihasaj/gatefox \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
 tar -xzf "harness-gateway-$VERSION-macos-arm64.tar.gz"
