@@ -1,5 +1,5 @@
 ---
-summary: 'Optional Full Disk Access invitation and macOS permissions used by Harness Gateway.'
+summary: 'Optional Full Disk Access invitation and macOS permissions used by Gatefox.'
 read_when:
   - Changing the native app permission invitation or privacy settings
   - Investigating protected-file access, Automation, or Local Network grants
@@ -15,7 +15,7 @@ launch's preferences; explicit configuration launches retain their isolated
 preferences. Neither choice records an access grant.
 
 **Settings → Permissions** always provides the same action. Enable
-**Harness Gateway** manually in System Settings. If it is missing, use **+** to
+**Gatefox** manually in System Settings. If it is missing, use **+** to
 select the installed app; **Show this app** reveals the current bundle in Finder.
 An unbundled development executable has no app-reveal button. If a settings
 link cannot open, the panel gives the manual navigation path.
@@ -38,7 +38,7 @@ for the signed runtime and responsibility boundary.
 
 ## Permissions for development work
 
-The panel covers access used by Harness Gateway and its client-run tasks.
+The panel covers access used by Gatefox and its client-run tasks.
 Additional permissions remain conditional on the actual action. Provider
 inference does not execute tools or acquire permissions on the caller's behalf.
 

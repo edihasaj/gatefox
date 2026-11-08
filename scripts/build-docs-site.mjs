@@ -1,39 +1,78 @@
 #!/usr/bin/env node
-// Builds docs/reference.html, the searchable index of every docs/*.md page, from each
-// page's front matter. `--check` fails when the committed page is out of date.
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+// Builds the Gatefox docs site (https://gatefox.dev) into one folder:
+//   index.html, styles.css, app.js, assets/   the hand-written guide, copied as is
+//   reference.html                            every topic, grouped, from each page's front matter
+//   <name>.html                               each docs/<name>.md rendered to HTML
+//   404.html
+// Usage: node scripts/build-docs-site.mjs [--out DIR]   (default .state/docs-site)
+import { copyFileSync, cpSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Marked } from 'marked';
 
-const docs = fileURLToPath(new URL('../docs/', import.meta.url));
-const source = 'https://github.com/edihasaj/harness-gateway/blob/main/docs/';
+const root = fileURLToPath(new URL('..', import.meta.url));
+const docs = join(root, 'docs');
+export const site = 'https://gatefox.dev';
+export const repository = 'https://github.com/edihasaj/gatefox';
 const groups = [
   ['Start and daily use', ['cli', 'macos-app', 'app-management', 'macos-permissions', 'speed-controls', 'activity', 'background-commands']],
   ['Clients', ['messages', 'claude-desktop', 'app-server', 'api-mode', 'client-tool-reachability', 'node-repl', 'harness-identity', 'app-server-compaction', 'app-server-forks', 'claude-native-trial', 'codex-unread-trial']],
   ['Accounts, providers and models', ['api-providers', 'claude-sessions', 'copilot-sessions', 'grok-sessions', 'auto-latest-models', 'managed-routing', 'availability', 'upstream-capacity', 'cache-safety', 'provider-reuse', 'provider-updates', 'responses']],
   ['More than one Mac', ['remote', 'native-remote', 'travel-recovery']],
   ['Keep it running', ['services', 'health', 'diagnostics', 'engine-exits', 'reboot-recovery', 'service-install-recovery', 'macos-background-item', 'macos-updates', 'mcp-credentials', 'desktop-update-compatibility', 'desktop-legacy-force-cli', 'native-launcher-verification']],
-  ['Architecture and project', ['architecture', 'verification', 'RELEASING', 'rollout', 'component-origins', 'ci', 'ci-cost-policy', 'availability-agent-tests', 'brand']],
+  ['Architecture and project', ['architecture', 'verification', 'RELEASING', 'rollout', 'component-origins', 'ci', 'ci-cost-policy', 'availability-agent-tests', 'brand', 'docs-site']],
 ];
 
-const escape = text => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const escape = text => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const unquote = text => text.trim().replace(/^'(.*)'$/, '$1').replace(/^"(.*)"$/, '$1').replace(/''/g, "'");
 const inline = text => escape(text).replace(/`([^`]+)`/g, '<code>$1</code>');
-const anchor = label => label.toLowerCase().replace(/[^a-z]+/g, '-').replace(/^-|-$/g, '');
+const anchor = label => label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+/** GitHub-style heading slug, so links such as `services.md#moving-to-a-new-release` keep working. */
+export const slug = text => text.toLowerCase().replace(/<[^>]+>/g, '').replace(/&#?\w+;/g, '').replace(/[^\p{L}\p{N}\s_-]/gu, '').trim().replace(/\s/g, '-');
 
-/** Reads one page's title, summary and read_when hints from its front matter. */
+/** Splits a page into its front matter (title, summary, read_when hints) and its Markdown body. */
 export function readPage(name, text) {
   const match = /^---\n([\s\S]*?)\n---\n/.exec(text);
   if (!match) throw new Error(`${name}.md has no front matter`);
   const summary = /^summary:\s*(.+)$/m.exec(match[1]);
   if (!summary) throw new Error(`${name}.md has no summary`);
   const readWhen = [...match[1].matchAll(/^\s+-\s+(.+)$/gm)].map(item => unquote(item[1]));
-  const title = /^#\s+(.+)$/m.exec(text.slice(match[0].length))?.[1].trim() ?? name;
-  return { name, title, summary: unquote(summary[1]), readWhen };
+  const body = text.slice(match[0].length);
+  const title = /^#\s+(.+)$/m.exec(body)?.[1].trim() ?? name;
+  return { name, title, summary: unquote(summary[1]), readWhen, body };
 }
 
-/** Groups pages by topic; a page missing from every group lands in "More", so none is ever dropped. */
-export function render(pages) {
+/** Maps a link in a doc to its place on the site: other docs become pages, repository files go to GitHub. */
+export function siteLink(href, pages) {
+  if (/^([a-z]+:|#|\/\/)/i.test(href)) return href;
+  const [path, hash = ''] = href.split('#'); const suffix = hash ? `#${hash}` : '';
+  if (path === '' ) return href;
+  if (path === '../README.md' || path === 'index.html') return `index.html${suffix}`;
+  const doc = /^([A-Za-z0-9_-]+)\.md$/.exec(path);
+  if (doc && pages.has(doc[1])) return `${doc[1]}.html${suffix}`;
+  const inRepository = resolve('/docs', path).slice(1);
+  return `${repository}/blob/main/${inRepository}${suffix}`;
+}
+
+const head = (title, description) => `<!doctype html>
+<!-- generated by scripts/build-docs-site.mjs; edit docs/*.md instead -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="${escape(description)}">
+  <title>${escape(title)} · Gatefox</title>
+  <link rel="icon" type="image/png" href="assets/favicon.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>`;
+const brand = `<a class="brand" href="index.html"><img src="assets/logo.png" width="56" height="56" alt="Gatefox fox"><span>Gatefox</span></a>`;
+const footer = (label, note) => `    <footer><img src="assets/favicon.png" width="24" height="24" alt=""><span>Gatefox · ${escape(label)}<br><small>${escape(note)}</small></span><a href="#top">Back to top ↑</a></footer>`;
+
+/** The grouped, searchable list of every topic. */
+export function renderReference(pages) {
   const byName = new Map(pages.map(page => [page.name, page]));
   const placed = new Set();
   const sections = groups.map(([label, names]) => [label, names.filter(name => byName.has(name)).map(name => { placed.add(name); return byName.get(name); })]);
@@ -44,7 +83,7 @@ export function render(pages) {
       <div class="section-number">${String(list.length).padStart(2, '0')} TOPICS</div>
       <h2>${escape(label)}</h2>
       <div class="cards">
-${list.map(page => `        <a class="card" href="${source}${page.name}.md">
+${list.map(page => `        <a class="card" href="${page.name}.html">
           <strong>${inline(page.title)}</strong>
           <span>${inline(page.summary)}</span>${page.readWhen.length ? `
           <small>Read when: ${page.readWhen.map(inline).join(' · ')}</small>` : ''}
@@ -52,23 +91,10 @@ ${list.map(page => `        <a class="card" href="${source}${page.name}.md">
       </div>
     </section>`).join('\n\n');
   const nav = shown.map(([label], index) => `      <a href="#${anchor(label)}">${String(index + 1).padStart(2, '0')} <span>${escape(label)}</span></a>`).join('\n');
-  return `<!doctype html>
-<!-- generated by scripts/build-docs-site.mjs from docs/*.md front matter; do not edit -->
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Every Harness Gateway topic, with when to read it.">
-  <title>Harness Gateway · All docs</title>
-  <link rel="icon" type="image/png" href="assets/favicon.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png">
-  <link rel="stylesheet" href="styles.css">
-  <script src="app.js" defer></script>
-</head>
-<body>
+  return `${head('All docs', 'Every Gatefox topic, with when to read it.')}
   <a class="skip" href="#guide">Skip to docs</a>
   <aside class="sidebar" aria-label="Docs navigation">
-    <a class="brand" href="index.html"><img src="assets/logo.png" width="56" height="56" alt="Harness Gateway fox"><span>Harness<br>Gateway</span></a>
+    ${brand}
     <div class="edition">ALL DOCS <span>${pages.length} topics</span></div>
     <label class="search-label" for="search">Find a topic</label>
     <input id="search" type="search" placeholder="Claude, SSH, service…" autocomplete="off">
@@ -76,11 +102,11 @@ ${list.map(page => `        <a class="card" href="${source}${page.name}.md">
       <a class="page-link" href="index.html">← <span>Back to the guide</span></a>
 ${nav}
     </nav>
-    <a class="source" href="https://github.com/edihasaj/harness-gateway">Source on GitHub ↗</a>
+    <a class="source" href="${repository}">Source on GitHub ↗</a>
   </aside>
 
   <main id="guide">
-    <header class="hero compact" id="overview">
+    <header class="hero compact" id="top">
       <div class="eyebrow">REFERENCE</div>
       <h1>All docs.</h1>
       <p class="lead">Every topic in one place, with when to read it. New here? Start with the <a href="index.html">guide</a>.</p>
@@ -89,23 +115,86 @@ ${nav}
     <p id="search-status" role="status" aria-live="polite" hidden></p>
 
 ${cards}
-    <footer><img src="assets/favicon.png" width="24" height="24" alt=""><span>Harness Gateway · All docs<br><small>Generated from each page's summary.</small></span><a href="#overview">Back to top ↑</a></footer>
+${footer('All docs', "Generated from each page's summary.")}
   </main>
 </body>
 </html>
 `;
 }
 
-export function build() {
-  const pages = readdirSync(docs).filter(file => file.endsWith('.md')).sort((a, b) => a.localeCompare(b))
-    .map(file => readPage(file.slice(0, -3), readFileSync(join(docs, file), 'utf8')));
-  return render(pages);
+/** One rendered doc page with its own table of contents. */
+export function renderPage(page, pages) {
+  const toc = [];
+  const marked = new Marked({ gfm: true });
+  marked.use({
+    renderer: {
+      heading({ tokens, depth }) {
+        const html = this.parser.parseInline(tokens); const id = slug(html);
+        if (depth === 2) toc.push([id, html]);
+        return `<h${depth} id="${id}">${html}</h${depth}>\n`;
+      },
+    },
+    walkTokens(token) { if (token.type === 'link' || token.type === 'image') token.href = siteLink(token.href, pages); },
+  });
+  const body = marked.parse(page.body.replace(/^#\s+.+\n/m, ''));
+  const nav = toc.map(([id, html], index) => `      <a href="#${id}">${String(index + 1).padStart(2, '0')} <span>${html.replace(/<[^>]+>/g, '')}</span></a>`).join('\n');
+  return `${head(page.title, page.summary)}
+  <a class="skip" href="#guide">Skip to content</a>
+  <aside class="sidebar" aria-label="Page navigation">
+    ${brand}
+    <div class="edition">DOCS <span>${escape(page.name)}</span></div>
+    <nav>
+      <a class="page-link first" href="reference.html">← <span>All docs</span></a>
+${nav}
+    </nav>
+    <a class="source" href="${repository}/blob/main/docs/${page.name}.md">Edit on GitHub ↗</a>
+  </aside>
+
+  <main id="guide" class="doc">
+    <header class="doc-head" id="top">
+      <div class="eyebrow">DOCS</div>
+      <h1 id="${slug(escape(page.title))}">${inline(page.title)}</h1>
+      <p class="lead">${inline(page.summary)}</p>
+    </header>
+    <article class="prose">
+${body}    </article>
+${footer(page.title, 'Part of the Gatefox docs.')}
+  </main>
+</body>
+</html>
+`;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  const target = join(docs, 'reference.html'); const html = build();
-  if (process.argv.includes('--check')) {
-    let current = ''; try { current = readFileSync(target, 'utf8'); } catch {}
-    if (current !== html) { process.stderr.write('docs/reference.html is out of date; run npm run docs:site\n'); process.exit(1); }
-  } else writeFileSync(target, html);
+const notFound = () => `${head('Not found', 'This page does not exist.')}
+  <main id="guide" class="doc">
+    <header class="doc-head" id="top">
+      ${brand}
+      <h1>Not here.</h1>
+      <p class="lead">This page does not exist. Try the <a href="index.html">guide</a> or <a href="reference.html">all docs</a>.</p>
+    </header>
+  </main>
+</body>
+</html>
+`;
+
+export function readPages() {
+  return readdirSync(docs).filter(file => file.endsWith('.md')).sort((a, b) => a.localeCompare(b))
+    .map(file => readPage(file.slice(0, -3), readFileSync(join(docs, file), 'utf8')));
+}
+
+export function build(out) {
+  const pages = readPages(); const names = new Set(pages.map(page => page.name));
+  rmSync(out, { recursive: true, force: true }); mkdirSync(join(out, 'assets'), { recursive: true });
+  for (const file of ['index.html', 'styles.css', 'app.js']) copyFileSync(join(docs, file), join(out, file));
+  cpSync(join(docs, 'assets'), join(out, 'assets'), { recursive: true });
+  writeFileSync(join(out, 'reference.html'), renderReference(pages));
+  for (const page of pages) writeFileSync(join(out, `${page.name}.html`), renderPage(page, names));
+  writeFileSync(join(out, '404.html'), notFound());
+  return { out, pages: pages.length };
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  const at = process.argv.indexOf('--out');
+  const out = resolve(at > 0 ? process.argv[at + 1] : join(root, '.state', 'docs-site'));
+  process.stdout.write(JSON.stringify(build(out)) + '\n');
 }

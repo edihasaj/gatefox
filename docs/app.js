@@ -52,14 +52,17 @@ function filter() {
   const unit = cardCount ? 'topic' : 'section';
   status.textContent = count ? `${found} matching ${unit}${found === 1 ? '' : 's'}. Clear search to see everything.` : 'Nothing matches. Try Claude, SSH, or service.';
 }
-search.addEventListener('input', filter);
-search.addEventListener('keydown', event => {
-  if (event.key === 'Escape') { search.value = ''; filter(); }
-});
-
-links.forEach(link => link.addEventListener('click', () => {
-  if (search.value) { search.value = ''; filter(); }
-}));
+if (search) {
+  search.addEventListener('input', filter);
+  search.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { search.value = ''; filter(); }
+  });
+  links.forEach(link => link.addEventListener('click', () => {
+    if (search.value) { search.value = ''; filter(); }
+  }));
+}
+// Doc pages have no sections; their sidebar follows the h2 headings instead.
+const tracked = sections.length ? sections : [...document.querySelectorAll('.prose h2[id]')];
 const observer = new IntersectionObserver(entries => {
   const visible = entries.filter(entry => entry.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
   if (!visible) return;
@@ -68,4 +71,4 @@ const observer = new IntersectionObserver(entries => {
     else link.removeAttribute('aria-current');
   });
 }, { rootMargin: '-10% 0px -55% 0px' });
-sections.forEach(section => observer.observe(section));
+tracked.forEach(section => observer.observe(section));

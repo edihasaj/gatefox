@@ -1,9 +1,9 @@
-<img src="docs/assets/logo.png" width="88" height="88" alt="Harness Gateway fox">
+<img src="docs/assets/logo.png" width="88" height="88" alt="Gatefox fox">
 
-# Harness Gateway
+# Gatefox
 
 Use your Claude, ChatGPT, Copilot and local models from the coding app you
-already use. Harness Gateway runs on your Mac, signs in to each account the
+already use. Gatefox runs on your Mac, signs in to each account the
 official way, and adds those models to the model picker of Codex, Claude Code and
 Claude Desktop.
 
@@ -11,7 +11,7 @@ Claude Desktop.
 Codex · Claude Code · Claude Desktop
               │  Responses or Messages API
               ▼
-     Harness Gateway  (on this Mac, 127.0.0.1)
+     Gatefox  (on this Mac, 127.0.0.1)
               │  one sign-in per account
               ▼
  Claude · ChatGPT · Copilot · API keys · local models
@@ -21,9 +21,8 @@ Your app still runs the tools, asks for approvals and owns the chat. The gateway
 only translates requests and streams the answers back. It never runs tools,
 never switches accounts after a failure and never logs tokens or request bodies.
 
-📖 **[Read the guide](docs/index.html)**: setup, daily use, adding more Macs and
-fixing problems. Open `docs/index.html` in a browser, or serve the folder with
-`python3 -m http.server -d docs`.
+📖 **[Read the guide at gatefox.dev](https://gatefox.dev)**: setup, daily use,
+adding more Macs and fixing problems. To read it offline, run `npm run docs:serve`.
 
 ## Quick start: one Mac
 
@@ -81,7 +80,7 @@ See [remote clients](docs/remote.md) for details and the native connected-machin
 
 | Start here | Then |
 |---|---|
-| [Guide](docs/index.html): set up, use, add Macs, fix problems | [All docs](docs/reference.html): searchable index of every topic |
+| [Guide](https://gatefox.dev): set up, use, add Macs, fix problems | [All docs](https://gatefox.dev/reference.html): searchable index of every topic |
 | [Commands and providers](docs/cli.md) | [Architecture](docs/architecture.md) |
 | [Claude Code](docs/messages.md) · [Claude Desktop](docs/claude-desktop.md) | [API providers](docs/api-providers.md) · [Remote Macs](docs/remote.md) |
 
@@ -90,7 +89,7 @@ See [remote clients](docs/remote.md) for details and the native connected-machin
 ```sh
 npm ci
 npm run build && npm run check && npm test
-npm run docs:site      # regenerate docs/reference.html after editing docs
+npm run docs:serve     # build the docs site and preview it at http://127.0.0.1:8765
 ```
 
 Node 22 or later. Tests run in a private temporary home and never touch your real
@@ -102,8 +101,8 @@ gateway. See [CI](docs/ci.md) and [releasing](docs/RELEASING.md).
 
 ## Compatibility names
 
-The project was renamed from Subscription Gateway. Names that existing installations
-and saved chats depend on keep the old spelling: the Codex provider ID
+Gatefox was called Harness Gateway, and before that Subscription Gateway. Names that
+existing installations and saved chats depend on keep an older spelling: the Codex provider ID
 `subscription_gateway` (stored in gateway chats, and registered in every gateway executor;
 a Mac that opts in to `"chatIdentity": "openai"` stores its new chats as `openai`, see
 [harness identity](docs/harness-identity.md)), the LaunchAgent labels

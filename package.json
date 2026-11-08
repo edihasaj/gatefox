@@ -51,7 +51,7 @@
     "providers:check": "node scripts/provider-maintenance.mjs",
     "providers:test": "node --test scripts/tests/provider-*.test.mjs",
     "providers:schedule": "node scripts/schedule-provider-maintenance.mjs",
-    "check": "node scripts/sync-provider-tool-contract.mjs --check && node scripts/sync-gateway-sdk-pins.mjs --check && node scripts/build-docs-site.mjs --check && tsc --noEmit",
+    "check": "node scripts/sync-provider-tool-contract.mjs --check && node scripts/sync-gateway-sdk-pins.mjs --check && tsc --noEmit",
     "test": "node scripts/run-tests.mjs && npm run test:claude-desktop && node --test scripts/tests/docs-site.test.mjs",
     "app:build": "node scripts/build-macos-app.mjs",
     "app:sign": "node scripts/sign-macos-app.mjs",
@@ -64,7 +64,9 @@
     "version:next": "node scripts/release-version.mjs",
     "start": "node dist/cli.js serve",
     "test:claude-desktop": "node --test scripts/claude-desktop-tests/*.test.mjs",
-    "docs:site": "node scripts/build-docs-site.mjs"
+    "docs:site": "node scripts/build-docs-site.mjs",
+    "docs:serve": "node scripts/build-docs-site.mjs && python3 -m http.server 8765 -d .state/docs-site --bind 127.0.0.1",
+    "docs:deploy": "node scripts/deploy-docs-site.mjs"
   },
   "engines": {
     "node": ">=22"
@@ -76,6 +78,7 @@
   "devDependencies": {
     "@types/node": "^22.10.7",
     "@types/ws": "8.18.2",
+    "marked": "18.1.3",
     "typescript": "^5.7.3"
   },
   "dependencies": {

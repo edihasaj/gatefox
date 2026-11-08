@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Use Claude, ChatGPT, Copilot and local models from the coding app you already use. Set up one Mac in minutes; add more Macs later.">
-  <title>Harness Gateway · Guide</title>
+  <title>Gatefox · Guide</title>
   <link rel="icon" type="image/png" href="assets/favicon.png">
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png">
   <link rel="stylesheet" href="styles.css">
@@ -13,7 +13,7 @@
 <body>
   <a class="skip" href="#guide">Skip to guide</a>
   <aside class="sidebar" aria-label="Guide navigation">
-    <a class="brand" href="#overview"><img src="assets/logo.png" width="56" height="56" alt="Harness Gateway fox"><span>Harness<br>Gateway</span></a>
+    <a class="brand" href="#overview"><img src="assets/logo.png" width="56" height="56" alt="Gatefox fox"><span>Gatefox</span></a>
     <div class="edition">GUIDE <span>v1.7.5</span></div>
     <label class="search-label" for="search">Find in this guide</label>
     <input id="search" type="search" placeholder="Models, tunnel, service…" autocomplete="off">
@@ -29,7 +29,7 @@
       <a class="page-link" href="reference.html">→ <span>All docs</span></a>
     </nav>
     <p class="sidebar-note">Your coding app.<br>Your accounts.<br>One model list.</p>
-    <a class="source" href="https://github.com/edihasaj/harness-gateway">Source on GitHub ↗</a>
+    <a class="source" href="https://github.com/edihasaj/gatefox">Source on GitHub ↗</a>
   </aside>
 
   <main id="guide">
@@ -62,7 +62,7 @@
       </ol>
 
       <h3>The easy way: the app</h3>
-      <p>Download <code>Harness-Gateway-VERSION-macos-arm64.zip</code> from <a href="https://github.com/edihasaj/harness-gateway/releases">Releases</a>, move the fox to Applications and open it. The setup wizard walks through all three steps: choose a provider, sign in, pick models, then <strong>Set up once</strong> starts the background service and adds the models to Codex. The app includes its own runtime. See <a href="https://github.com/edihasaj/harness-gateway/blob/main/docs/macos-app.md">the macOS app</a>.</p>
+      <p>Download <code>Harness-Gateway-VERSION-macos-arm64.zip</code> from <a href="https://github.com/edihasaj/harness-gateway/releases">Releases</a>, move the fox to Applications and open it. The setup wizard walks through all three steps: choose a provider, sign in, pick models, then <strong>Set up once</strong> starts the background service and adds the models to Codex. The app includes its own runtime. See <a href="macos-app.html">the macOS app</a>.</p>
 
       <h3>The command-line way</h3>
       <p>Run these in a new, empty download folder. The installer needs no administrator access and installs under your user folder.</p>
@@ -83,7 +83,7 @@ gateway service install          # 3. keep it running in the background
 gateway desktop register         #    add the models to Codex
 gateway doctor                   #    check everything</code></pre>
       <p>Quit Codex normally once and reopen it. That's it: the new models appear after your native ones.</p>
-      <details><summary>Adding Copilot, an API key or a local model server</summary><p>Copilot uses its CLI's subscription login. API services (OpenRouter, xAI, OpenCode and compatible endpoints) and local servers such as vLLM use a key or a URL. The app's <strong>Add connection</strong> wizard covers each; on the command line see <a href="https://github.com/edihasaj/harness-gateway/blob/main/docs/api-providers.md">API providers</a>.</p><pre><code>gateway login copilot
+      <details><summary>Adding Copilot, an API key or a local model server</summary><p>Copilot uses its CLI's subscription login. API services (OpenRouter, xAI, OpenCode and compatible endpoints) and local servers such as vLLM use a key or a URL. The app's <strong>Add connection</strong> wizard covers each; on the command line see <a href="api-providers.html">API providers</a>.</p><pre><code>gateway login copilot
 gateway discover copilot --load
 gateway doctor</code></pre></details>
       <details><summary>Already using a development checkout?</summary><p>Import its gateway-owned registrations into the installed data directory. Native Codex authentication and settings are not copied.</p><pre><code>gateway setup --from-config /absolute/path/gateway.local.json</code></pre></details>
@@ -113,7 +113,7 @@ gateway doctor</code></pre></details>
       <pre><code>gateway discover claude --load
 gateway discover copilot --select gpt-6.1-sol,claude-opus-5.5 --load
 gateway catalog</code></pre>
-      <p>The provider's <code>label</code> is the name before the middle dot. Changes apply on the next request; reopen the model picker to see them. To follow new model releases automatically, see <a href="https://github.com/edihasaj/harness-gateway/blob/main/docs/auto-latest-models.md">automatic latest models</a>.</p>
+      <p>The provider's <code>label</code> is the name before the middle dot. Changes apply on the next request; reopen the model picker to see them. To follow new model releases automatically, see <a href="auto-latest-models.html">automatic latest models</a>.</p>
     </section>
 
     <section id="machines" data-section>
@@ -137,17 +137,17 @@ gateway doctor</code></pre>
       <p>The client token unlocks every account on the main Mac. Keep it owner-only and give it only to your own devices. The main Mac must stay awake and reachable.</p>
       <details><summary>Use an existing Codex “Control other devices” connection instead</summary><p>The experimental native relay reuses that connection, so there is no separate SSH entry. Finish open chats and quit ChatGPT normally on that Mac first.</p><pre><code>gateway native install
 gateway desktop register
-gateway native status</code></pre><p>Read <a href="https://github.com/edihasaj/harness-gateway/blob/main/docs/native-remote.md">the native relay requirements</a>.</p></details>
-      <p>More detail: <a href="https://github.com/edihasaj/harness-gateway/blob/main/docs/remote.md">remote clients</a>.</p>
+gateway native status</code></pre><p>Read <a href="native-remote.html">the native relay requirements</a>.</p></details>
+      <p>More detail: <a href="remote.html">remote clients</a>.</p>
     </section>
 
     <section id="clients" data-section>
       <div class="section-number">06 / OTHER APPS</div>
       <h2>Use it beyond the Codex app.</h2>
       <div class="cards">
-        <a class="card" href="https://github.com/edihasaj/harness-gateway/blob/main/docs/messages.md"><strong>Claude Code</strong><span>Point Claude Code at the gateway and use GPT, Claude and local models through its native Messages API.</span></a>
-        <a class="card" href="https://github.com/edihasaj/harness-gateway/blob/main/docs/claude-desktop.md"><strong>Claude Desktop</strong><span>Show your other accounts and local models in Claude's model picker, without changing Codex.</span></a>
-        <a class="card" href="https://github.com/edihasaj/harness-gateway/blob/main/docs/cli.md"><strong>Codex CLI</strong><span>Generate a separate CLI home with <code>gateway codex-config</code> so your main settings stay untouched.</span></a>
+        <a class="card" href="messages.html"><strong>Claude Code</strong><span>Point Claude Code at the gateway and use GPT, Claude and local models through its native Messages API.</span></a>
+        <a class="card" href="claude-desktop.html"><strong>Claude Desktop</strong><span>Show your other accounts and local models in Claude's model picker, without changing Codex.</span></a>
+        <a class="card" href="cli.html"><strong>Codex CLI</strong><span>Generate a separate CLI home with <code>gateway codex-config</code> so your main settings stay untouched.</span></a>
       </div>
       <pre><code>mkdir -p ~/.config/harness-gateway/clients/codex
 gateway codex-config --model codex/gpt-6.1-sol \
@@ -164,7 +164,7 @@ gateway health
 gateway versions --check</code></pre>
       <p>Uninstalling moves the installed files to Trash and keeps your accounts and native Codex settings.</p>
       <pre><code>gateway uninstall</code></pre>
-      <p>More: <a href="https://github.com/edihasaj/harness-gateway/blob/main/docs/services.md">the service</a>, <a href="https://github.com/edihasaj/harness-gateway/blob/main/docs/health.md">health checks</a>, <a href="https://github.com/edihasaj/harness-gateway/blob/main/docs/diagnostics.md">diagnostics</a>.</p>
+      <p>More: <a href="services.html">the service</a>, <a href="health.html">health checks</a>, <a href="diagnostics.html">diagnostics</a>.</p>
     </section>
 
     <section id="troubleshooting" data-section>
@@ -181,7 +181,7 @@ gateway versions --check</code></pre>
       <p>When asking for help, share versions, timestamps and error messages. Never share client tokens, account tokens or request bodies.</p>
       <p class="notice"><strong>Everything else</strong> is in <a href="reference.html">All docs</a>, a searchable list of every topic with when to read it.</p>
     </section>
-    <footer><img src="assets/favicon.png" width="24" height="24" alt=""><span>Harness Gateway · Guide<br><small>Your accounts. One model list.</small></span><a href="#overview">Back to top ↑</a></footer>
+    <footer><img src="assets/favicon.png" width="24" height="24" alt=""><span>Gatefox · Guide<br><small>Your accounts. One model list.</small></span><a href="#overview">Back to top ↑</a></footer>
   </main>
 </body>
 </html>

@@ -85,7 +85,7 @@ fresh private fixture directory; no live service is changed.
 ## Desktop verification limits
 
 The October 18 inspection found one gateway startup job on Studio and MacBook.
-MacBook's Login Items panel still displayed two enabled Harness Gateway rows.
+MacBook's Login Items panel still displayed two enabled Gatefox rows.
 Reading the records behind those rows required administrator authorization, so
 their exact cause remains unverified. No background-item reset or service
 restart was used to clear the display.

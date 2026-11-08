@@ -160,3 +160,20 @@ nav a.page-link{margin-top:0;padding-top:4px;border-top:0}
 @media(prefers-reduced-motion:reduce){.steps li{animation:none;opacity:1}
 .card{transition:none}
 }
+
+/* Rendered doc pages (scripts/build-docs-site.mjs). */
+.doc-head{padding-bottom:26px;border-bottom:1px solid var(--line)}
+.doc-head h1{font-size:clamp(44px,4.6vw,64px);margin:16px 0 14px;max-width:820px}
+.doc-head .brand{margin-bottom:24px}
+.prose{max-width:780px;padding:12px 0 40px}
+.prose h2{font-size:32px;margin:48px 0 14px;padding-top:8px}
+.prose h3{font-size:17px;margin:32px 0 6px}
+.prose h4{font-size:15px;margin:24px 0 4px}
+.prose ul,.prose ol{padding-left:23px;max-width:740px}
+.prose li{margin:8px 0}
+.prose table{display:block;overflow-x:auto;margin:24px 0;min-width:0}
+.prose td:first-child{width:auto}
+.prose blockquote{font-family:inherit;font-size:16px;line-height:1.7}
+.prose img{max-width:100%;height:auto;border:1px solid var(--line);border-radius:6px}
+.prose hr{border:0;border-top:1px solid var(--line);margin:40px 0}
+nav a.page-link.first{margin-top:0;padding-top:0;border-top:0;margin-bottom:10px}

@@ -54,7 +54,7 @@ endpoint and credential; selecting it does not turn it into a Claude model.
 ## Prepare the desktop profile
 
 The configuration library must already contain one selected profile named
-`Harness Gateway`. Its credential helper and unrelated settings are preserved
+`Gatefox`. Its credential helper and unrelated settings are preserved
 unless the configure command explicitly supplies the selected gateway helper.
 
 ```sh
