@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.7.4 — 2026-11-06
+## 1.7.5 — 2026-11-08
 
 - A large chat is no longer paused when its client changes the tool list. Codex can add
   MCP tools a few seconds after a chat resumes, which forces Claude to rebuild its cache.
@@ -12,6 +12,8 @@
 - Live Claude sessions now get 60 seconds to start instead of 15. On a heavily loaded
   Mac, the Claude CLI took up to 25 seconds to answer its first request, so chats
   failed with `initialize_timeout`.
+
+## 1.7.4 — 2026-11-06
 
 - Successful client compaction can recover a Claude chat held after its live
   session crashed. Previously compaction left the crash hold in place, so even
