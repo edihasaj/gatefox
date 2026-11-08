@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- gatefox.dev has search and sharing metadata on every page: canonical URLs, Open Graph
+  and Twitter cards with a share image per page, JSON-LD, `robots.txt`, a sitemap with
+  images and a web manifest. The deploy adds the IndexNow key file.
+
 - Macs that share the native ChatGPT engine can share the Codex 0.167.0-alpha.3.2 app
   engine again. It passed every stdio and Unix shared-native check, with and without
   an explicit host engine path. Until now such a Mac stayed `native_owner_pending`

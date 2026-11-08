@@ -38,3 +38,20 @@ test('rendered pages carry GitHub-style heading anchors and a table of contents'
   assert.match(html, /href="#per-chat-rollout-newer"/);
   assert.match(html, /href="remote\.html"/);
 });
+
+test('every page gets a canonical URL, its own share image and full social tags; the 404 page is noindex', async () => {
+  const { seoTags, sitemap, guideHtml, pageUrl } = await import('../build-docs-site.mjs');
+  const tags = seoTags({ name: 'services', title: 'One <managed> service', description: 'Service & more' });
+  for (const needle of ['<link rel="canonical" href="https://gatefox.dev/services.html">', 'max-image-preview:large',
+    'og:image" content="https://gatefox.dev/assets/og/services.jpg"', 'og:image:width" content="1200"', 'twitter:card" content="summary_large_image"',
+    'msvalidate.01', '<title>One &lt;managed&gt; service · GateFox</title>', 'content="Service &amp; more"']) assert.ok(tags.includes(needle), needle);
+  const missing = seoTags({ name: '404', title: 'Not found', description: 'x', noindex: true });
+  assert.match(missing, /name="robots" content="noindex"/); assert.doesNotMatch(missing, /rel="canonical"/);
+  assert.equal(pageUrl('index'), 'https://gatefox.dev/');
+  const xml = sitemap([{ name: 'services', title: 'S & T' }], '2026-11-08');
+  assert.equal(xml.match(/<loc>/g).length, 3, 'the guide, all docs and the page');
+  assert.equal(xml.match(/<image:loc>/g).length, 3, 'each with its share image');
+  assert.match(xml, /S &amp; T/);
+  const guide = guideHtml('<head>\n  <meta name="description" content="old">\n  <title>Old</title>\n  <link rel="icon" href="x">\n</head>');
+  assert.doesNotMatch(guide, /<title>Old<\/title>|content="old"/); assert.match(guide, /application\/ld\+json/);
+});

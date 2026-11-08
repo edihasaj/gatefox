@@ -28,6 +28,25 @@ files only. It adds no Actions workflow, so the [CI cost policy](ci-cost-policy.
 is unchanged; GitHub serves a branch-based Pages site of a public repository at
 no cost.
 
+## Search and sharing
+
+Every page gets a title, description, canonical URL, `robots` with
+`max-image-preview:large`, Open Graph and Twitter tags with its own 1200x630 image,
+and JSON-LD (`SoftwareApplication` on the guide, `TechArticle` and `BreadcrumbList`
+on doc pages). The build also writes `robots.txt`, `sitemap.xml` (every page with its
+image) and `site.webmanifest`; the 404 page is `noindex`. The guide's head is replaced
+at build time, so edit its description in `guideSeo`, not in `docs/index.html`.
+
+Share images live in `docs/assets/og/<page>.jpg`. After adding a page or changing a
+title or summary, run `node scripts/render-og-images.mjs` (needs `abx`) and commit the
+images. The template is `scripts/og/template.html`.
+
+The deploy adds the shared IndexNow key file (`/<key>.txt`) from `COMPASS_INDEXNOW_KEY`
+or `~/.config/compass/search-provider-credentials.json`; the key is never committed to
+the source. Bing ownership uses the account-wide `msvalidate.01` tag; Google ownership
+uses a DNS TXT record in the `gatefox.dev` zone. Lighthouse scores 100 for performance,
+accessibility, best practices and SEO on the guide, All docs and doc pages.
+
 ## Hosting
 
 The site is served by GitHub Pages from the `gh-pages` branch of
