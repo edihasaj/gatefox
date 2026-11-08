@@ -54,8 +54,9 @@ test("Messages retains routing context and upstream transport headers without le
     const events = await collect(response);
     assert.equal(events[0].type, "message_start"); assert.equal(events.at(-1)!.type, "message_stop");
     assert.equal(events.some(event => event.type === "transport" || event.type.startsWith("response.")), false);
-    const { observeCacheUsage, callerCancelled, ...routing } = context!;
+    const { observeCacheUsage, callerCancelled, observeClientRebuild, ...routing } = context!;
     assert.equal(typeof observeCacheUsage, "function", "internal count-only observer stays separate from routing metadata");
+    assert.equal(typeof observeClientRebuild, "function", "the client-rebuild signal is count-only, not routing metadata");
     assert.deepEqual(routing, { sessionId: "fixture-session", threadId: "fixture-thread", turnState: "gts1:caller-route", clientProtocol: "messages", adaptiveThinking: true });
   } finally { await gateway.close(); }
 });

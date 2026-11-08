@@ -59,6 +59,15 @@ a client that disconnects and retries in a loop still reaches the stop. The stop
 therefore only follow a follow-up if more than four rebuilds in a row were cancelled
 or excused with no cache reuse between them.
 
+A rebuild that the caller caused by changing its tools, instructions, thinking or Fast
+setting is excused in the same way. The provider reports it (for Claude, a
+`fingerprint_changed` reseed), and the next request continues the rebuilt session. On
+8 November 2026 a resumed chat of about 600,000 tokens seeded cold, Codex then added 39 MCP
+tools 17 seconds later, and Gateway stopped the warm request that followed. These rebuilds
+use the same four-rebuild allowance, so a tool list that changes on every request still
+reaches the stop. A compaction window change or idle expiry is not a client change and
+still counts.
+
 The idle-aware policy's one-time adoption grants inactive inherited histories a
 fresh bounded warm-up, including old entries without trustworthy timestamps.
 In-flight conversations retain their history. A process-wide adoption marker
@@ -66,7 +75,7 @@ prevents later module reloads from repeatedly clearing a safety stop. A late
 legacy write after that handoff stays conservative until real idle is observed.
 Provider, model and caller identity remain
 the scope. No new user turn, reconnect or provider reseed alone resets the guard;
-only the cancellation rule above excuses a rebuild.
+only the cancellation and client-change rules above excuse a rebuild.
 
 A provider refusal also ends the live session, so the next message rebuilds the
 chat. The refused request always counts as a miss when it was cold, and a refused

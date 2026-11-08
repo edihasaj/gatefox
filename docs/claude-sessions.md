@@ -115,7 +115,9 @@ finishes normally, then the session closes instead of remaining parked in replay
   Claude Code side requests, first questions without a conversation ID, and configured warmup.
   Anonymous historical conversations require an ID instead of repeated replay.
 - **Continuity refusal:** capacity, concurrent requests, failed startup or an
-  unavailable live adapter stop before one-shot replay. CLI failure remains final
+  unavailable live adapter stop before one-shot replay. The CLI and its tool server
+  have 60 seconds to start (`initialize_timeout`); a loaded Mac took up to 25 seconds,
+  so the earlier 15-second limit refused live chats. CLI failure remains final
   after partial output too. A failed forced-tool choice never retries with a
   changed catalog. See [provider reuse](provider-reuse.md).
 
