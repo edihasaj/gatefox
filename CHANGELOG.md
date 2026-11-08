@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The README and the guide now start with a single-Mac setup: install, connect your
+  accounts, start the service. Adding more Macs is a separate, optional chapter. The
+  long README moved to `docs/cli.md`, and `docs/reference.html` is a new searchable
+  index of every doc, generated from each page's summary by `npm run docs:site` and
+  checked by `npm run check`.
+
 - A large chat is no longer paused when its client changes the tool list. Codex can add
   MCP tools a few seconds after a chat resumes, which forces Claude to rebuild its cache.
   The cache guard counted that rebuild as a second cache failure and stopped the next

@@ -51,8 +51,8 @@
     "providers:check": "node scripts/provider-maintenance.mjs",
     "providers:test": "node --test scripts/tests/provider-*.test.mjs",
     "providers:schedule": "node scripts/schedule-provider-maintenance.mjs",
-    "check": "node scripts/sync-provider-tool-contract.mjs --check && node scripts/sync-gateway-sdk-pins.mjs --check && tsc --noEmit",
-    "test": "node scripts/run-tests.mjs && npm run test:claude-desktop",
+    "check": "node scripts/sync-provider-tool-contract.mjs --check && node scripts/sync-gateway-sdk-pins.mjs --check && node scripts/build-docs-site.mjs --check && tsc --noEmit",
+    "test": "node scripts/run-tests.mjs && npm run test:claude-desktop && node --test scripts/tests/docs-site.test.mjs",
     "app:build": "node scripts/build-macos-app.mjs",
     "app:sign": "node scripts/sign-macos-app.mjs",
     "app:test": "node scripts/test-macos-app.mjs",
@@ -63,7 +63,8 @@
     "release:clean": "node scripts/release-clean.mjs",
     "version:next": "node scripts/release-version.mjs",
     "start": "node dist/cli.js serve",
-    "test:claude-desktop": "node --test scripts/claude-desktop-tests/*.test.mjs"
+    "test:claude-desktop": "node --test scripts/claude-desktop-tests/*.test.mjs",
+    "docs:site": "node scripts/build-docs-site.mjs"
   },
   "engines": {
     "node": ">=22"

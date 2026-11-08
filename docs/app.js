@@ -31,15 +31,26 @@ document.querySelectorAll('pre').forEach(pre => {
 function filter() {
   const query = search.value.trim().toLowerCase();
   let count = 0;
+  let cardCount = 0;
   sections.forEach(section => {
-    const matches = !query || section.textContent.toLowerCase().includes(query);
+    // A section of topic cards (the All docs page) filters card by card.
+    const cards = [...section.querySelectorAll('.card')];
+    let matches;
+    if (cards.length && !section.querySelector('pre')) {
+      let shown = 0;
+      cards.forEach(card => { card.hidden = !!query && !card.textContent.toLowerCase().includes(query); if (!card.hidden) shown++; });
+      matches = shown > 0 || !query;
+      if (query) cardCount += shown;
+    } else matches = !query || section.textContent.toLowerCase().includes(query);
     section.hidden = !matches;
     if (matches) count++;
     const link = links.find(link => link.hash === '#' + section.id);
     if (link) link.hidden = !matches;
   });
   status.hidden = !query;
-  status.textContent = count ? `${count} matching section${count === 1 ? '' : 's'}. Clear search to see the full guide.` : 'No matching sections. Try models, agents, or service.';
+  const found = cardCount || count;
+  const unit = cardCount ? 'topic' : 'section';
+  status.textContent = count ? `${found} matching ${unit}${found === 1 ? '' : 's'}. Clear search to see everything.` : 'Nothing matches. Try Claude, SSH, or service.';
 }
 search.addEventListener('input', filter);
 search.addEventListener('keydown', event => {
