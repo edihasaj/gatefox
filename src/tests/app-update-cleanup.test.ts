@@ -18,19 +18,20 @@ const exists = (path: string) => lstat(path).then(() => true, () => false);
 const noop: TransactionCommand = async () => {};
 
 /** A managed installation root holding one finished stage laid out the way the updater leaves it. */
-async function stageWorld(version = "0.2.0") {
+async function stageWorld(version = "0.2.0", gatefox = false) {
   const directory = await mkdtemp(join(tmpdir(), "gateway-app-cleanup-"));
   const root = join(directory, "install"); await mkdir(root, { mode: 0o700 }); await chmod(root, 0o700);
-  const archiveName = `harness-gateway-${version}-macos-arm64.tar.gz`, zipName = `Harness-Gateway-${version}-macos-arm64.zip`;
+  const rootName = `${gatefox ? "gatefox" : "harness-gateway"}-${version}-macos-arm64`;
+  const archiveName = `${rootName}.tar.gz`, zipName = `${gatefox ? "GateFox" : "Harness-Gateway"}-${version}-macos-arm64.zip`;
   const backendSha256 = sha("backend-bytes");
   const stage = join(root, `app-update-${randomUUID()}`); await mkdir(stage, { mode: 0o700 });
   await writeFile(join(stage, archiveName), "backend-bytes", { mode: 0o600 });
   const manifest = { schemaVersion: 1, version, source, branch: "production", appAsset: zipName, appSha256: "c".repeat(64), backendAsset: archiveName, backendSha256 };
   await writeFile(join(stage, "app-update.json"), JSON.stringify(manifest), { mode: 0o600 });
-  const backendRoot = join(stage, "backend", `harness-gateway-${version}-macos-arm64`), deep = join(backendRoot, "pkg", "deep");
+  const backendRoot = join(stage, "backend", rootName), deep = join(backendRoot, "pkg", "deep");
   await mkdir(deep, { recursive: true, mode: 0o700 });
   const file = join(deep, "file.js"); await writeFile(file, "x", { mode: 0o644 });
-  const appBundle = join(stage, "app", "Harness Gateway.app"); await mkdir(appBundle, { recursive: true, mode: 0o700 });
+  const appBundle = join(stage, "app", gatefox ? "GateFox.app" : "Harness Gateway.app"); await mkdir(appBundle, { recursive: true, mode: 0o700 });
   const pending: StageExpectation = { version, source, backendSha256, backendArchive: join(stage, archiveName) };
   const writeManifest = (change: Record<string, unknown>) => writeFile(join(stage, "app-update.json"), JSON.stringify({ ...manifest, ...change }), { mode: 0o600 });
   // Things that must survive: the retained rollback bundle, the releases and the state file.
@@ -54,6 +55,15 @@ test("a finished stage is removed whole while the retained bundle, releases and 
   assert.deepEqual(await w.survivors(), [true, true, true]);
   assert.deepEqual(await cleanupUpdateStage(w.root, w.pending), { removed: false, reason: "missing" }, "a second run is harmless");
 }));
+
+test("a finished stage of a GateFox-named release is removed the same way", async () => {
+  const w = await stageWorld("1.8.0", true);
+  try {
+    assert.deepEqual(await cleanupUpdateStage(w.root, w.pending, { protect: [w.retained] }), { removed: true });
+    assert.equal(await exists(w.stage), false);
+    assert.deepEqual(await w.survivors(), [true, true, true]);
+  } finally { await w.done(); }
+});
 
 test("planning and confirming only inspect, and the plan can be removed through an injected deletion", () => withStage(async w => {
   const plan = await planUpdateStageCleanup(w.root, w.pending);

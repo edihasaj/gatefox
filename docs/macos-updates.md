@@ -14,6 +14,24 @@ the updater never asks for, stores, or prints a token. A release provides one
 notarized app ZIP, its matching gateway backend archive, `app-update.json`, and
 `SHA256SUMS`.
 
+## Release tags and names
+
+From 1.7.6 the updater accepts two tag forms and two name sets. A release counts
+as an app update only when it carries `app-update.json`, so a command-line-only
+`vVERSION` release is ignored.
+
+| Release | Tag | App ZIP (app inside) | Backend archive |
+| --- | --- | --- | --- |
+| Through 1.7.6 | `app-vVERSION`, read by 1.7.5 and older | `Harness-Gateway-VERSION-macos-arm64.zip` (`Harness Gateway.app`) | `harness-gateway-VERSION-macos-arm64.tar.gz` |
+| 1.7.6 | also the standard `vVERSION`, same files | as above | as above |
+| 1.8.0 and later | `vVERSION` only | `GateFox-VERSION-macos-arm64.zip` (`GateFox.app`) | `gatefox-VERSION-macos-arm64.tar.gz` |
+
+A set is accepted only whole: a GateFox ZIP must hold `GateFox.app` and its
+archive must unpack to `gatefox-VERSION-macos-arm64`. 1.7.6 is the bridge: every
+Mac must run it before 1.8.0 is published, because 1.7.5 and older updaters read
+only `app-vVERSION` tags and the Harness Gateway names. The rules live in
+`src/app-updates/names.ts`.
+
 ```text
 private GitHub draft → signed ZIP + signed policy → daily check
                                                ↓

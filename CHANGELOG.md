@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The app updater now also accepts standard `vVERSION` release tags and the GateFox
+  release names (`GateFox-VERSION-macos-arm64.zip` holding `GateFox.app`, and
+  `gatefox-VERSION-macos-arm64.tar.gz`). A release must carry `app-update.json` to
+  count as an app update, so command-line-only releases are ignored. This prepares
+  the 1.8.0 rename; 1.7.6 itself keeps the Harness Gateway names.
+
 - A public [roadmap](docs/roadmap.md) lists the next steps for contributors: the
   Claude apps, DeepSeek, and a Chat Completions ingress for other harnesses, each
   with a GitHub issue.

@@ -80,6 +80,15 @@ test("stable releases sort numerically and never offer a downgrade", async () =>
   if (old.ok) assert.equal(old.result.available, false);
 }));
 
+test("standard v tags carrying the update manifest are app releases; command-line-only v releases are ignored", async () => withFixture(async fixture => {
+  const cliOnly: Release = { tag_name: "v9.0.0", assets: [{ id: 2, name: "harness-gateway-9.0.0-macos-arm64.tar.gz", size: 8 }] };
+  const result = await handleAppUpdate({ operation: "check", configPath: fixture.config }, fixture.dependencies([
+    cliOnly, release("v1.8.0"), release("app-v1.7.6"), release("v1.7.6"), release("v1.8"), release("vv1.9.0"),
+  ]));
+  assert.ok(result.ok, JSON.stringify(result));
+  if (result.ok) { assert.equal(result.result.latestVersion, "1.8.0"); assert.equal(result.result.available, true); }
+}));
+
 test("automatic updates remain off until the signed production app explicitly enables them", async () => withFixture(async fixture => {
   const enabled = await handleAppUpdate({ operation: "preferences", configPath: fixture.config, automatic: true }, fixture.dependencies());
   assert.equal(enabled.ok, true);
@@ -126,16 +135,18 @@ test("a waiting check refreshes state after the update lock and preserves an ear
   assert.equal((JSON.parse(await readFile(join(fixture.install, "app-update.json"), "utf8")) as { automatic: boolean }).automatic, false);
 }));
 
-test("a real ZIP and canonical TAR stage a signed-policy update, then tampering stops activation before execution", { skip: process.platform !== "darwin" }, async () => withFixture(async fixture => {
+for (const scheme of [{ label: "Harness Gateway names under app-v", tag: "app-v", gatefox: false }, { label: "GateFox names under a standard v tag", tag: "v", gatefox: true }])
+test(`a real ZIP and canonical TAR stage a signed-policy update (${scheme.label}), then tampering stops activation before execution`, { skip: process.platform !== "darwin" }, async () => withFixture(async fixture => {
   const current = join(fixture.install, "releases", "1.2.3");
   await mkdir(join(current, "package"), { recursive: true, mode: 0o700 });
   await writeFile(join(current, ".gateway-release"), "1.2.3\n", { mode: 0o600 });
   await writeFile(join(current, "package", "release.json"), JSON.stringify({ version: "1.2.3", source }), { mode: 0o600 });
   await symlink("releases/1.2.3", join(fixture.install, "current"));
 
-  const version = "1.2.4", stage = join(fixture.root, "release-input"), app = join(stage, "Harness Gateway.app");
-  const appAsset = `Harness-Gateway-${version}-macos-arm64.zip`, backendAsset = `harness-gateway-${version}-macos-arm64.tar.gz`;
-  const backendRoot = join(stage, `harness-gateway-${version}-macos-arm64`);
+  const version = "1.2.4", stage = join(fixture.root, "release-input"), app = join(stage, scheme.gatefox ? "GateFox.app" : "Harness Gateway.app");
+  const prefix = scheme.gatefox ? "gatefox" : "harness-gateway", rootName = `${prefix}-${version}-macos-arm64`;
+  const appAsset = `${scheme.gatefox ? "GateFox" : "Harness-Gateway"}-${version}-macos-arm64.zip`, backendAsset = `${rootName}.tar.gz`;
+  const backendRoot = join(stage, rootName);
   await mkdir(join(app, "Contents", "Resources"), { recursive: true, mode: 0o700 });
   await writeFile(join(app, "Contents", "Info.plist"), "candidate");
   await mkdir(join(app, "Contents", "MacOS"), { recursive: true, mode: 0o700 });
@@ -147,7 +158,7 @@ test("a real ZIP and canonical TAR stage a signed-policy update, then tampering 
   const checked = ["install", "package/release.json"];
   const sums = await Promise.all(checked.map(async path => `${sha256(await readFile(join(backendRoot, path)))}  ${path}`));
   await writeFile(join(backendRoot, "checksums.txt"), sums.join("\n") + "\n");
-  await exec("/usr/bin/tar", ["-czf", join(stage, backendAsset), "-C", stage, `harness-gateway-${version}-macos-arm64`]);
+  await exec("/usr/bin/tar", ["-czf", join(stage, backendAsset), "-C", stage, rootName]);
   policy.backendSha256 = sha256(await readFile(join(stage, backendAsset)));
   await writeFile(join(app, "Contents", "Resources", "app-build.json"), JSON.stringify({
     appVersion: version, backendVersion: version, source, sourceBranch: "production",
@@ -166,7 +177,7 @@ test("a real ZIP and canonical TAR stage a signed-policy update, then tampering 
     await exec(program, args);
     return { code: 0, stdout: "", stderr: "" };
   };
-  const deps = fixture.dependencies([{ tag_name: `app-v${version}`, assets: [
+  const deps = fixture.dependencies([{ tag_name: `${scheme.tag}${version}`, assets: [
     { id: 1, name: "app-update.json", size: (await stat(files.get(1)!)).size },
     { id: 2, name: appAsset, size: (await stat(files.get(2)!)).size },
     { id: 3, name: backendAsset, size: (await stat(files.get(3)!)).size },
