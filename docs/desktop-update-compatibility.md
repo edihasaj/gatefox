@@ -60,8 +60,11 @@ lost that Mac. Relative to the admitted 0.166.0-alpha.6, `app-server-transport`
 `CHATGPT_ACCOUNT_ID_HEADER` is still `chatgpt-account-id`. `login` now writes
 `auth.json` atomically and reports parse errors more clearly; the format is unchanged.
 The rebuilt relay passed its 47 tests and the upstream `remote_control` suite
-(165 passed). The engine is admitted for the relay only; it joins
-`hostVerifiedAppEngines` after the shared-native fixture passes against it.
+(165 passed). 1.7.7 admitted it for the relay only. On macbook-server, whose
+plan shares native execution, rollout then stayed `native_owner_pending`. The engine
+joined `hostVerifiedAppEngines` in 1.7.8 after `scripts/e2e-shared-native.mjs` passed
+all 24 phases over stdio and Unix, with and without `--host-codex`, with the native
+configuration unchanged and no owned process left behind.
 
 ## Verify an app update
 

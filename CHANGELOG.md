@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Macs that share the native ChatGPT engine can share the Codex 0.167.0-alpha.3.2 app
+  engine again. It passed every stdio and Unix shared-native check, with and without
+  an explicit host engine path. Until now such a Mac stayed `native_owner_pending`
+  and ran native chats in private engines.
+
 - The remote relay accepts the Codex 0.167.0-alpha.3.2 app engine that ChatGPT
   26.1103.41825 shipped on 8 November. The installed relay refused it after a service
   restart and paused as `failing`, so the phone could not reach that Mac. Its
