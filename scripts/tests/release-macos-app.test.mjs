@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
 import { assertReleaseContext, assertRemoteProduction, assertRemoteTag, assertVersionLockfile, finalJson, inspectFinalZip,
-  defaultRun, parseArgs, publishRelease, releaseAssets, releaseMacosApp, scrubFailureTail, validateBackendArchive, verifyUploadedAssets } from '../release-macos-app.mjs';
+  defaultRun, parseArgs, publishRelease, releaseAssets, releaseNotes, releaseTag, releaseMacosApp, scrubFailureTail, validateBackendArchive, verifyUploadedAssets } from '../release-macos-app.mjs';
 import { classifyFixtureError, evidenceRoot, fixtureCommand } from '../e2e-app-updates.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -427,4 +427,17 @@ test('accepts AppleDouble metadata from ditto signed archives', { skip: process.
   const archive = join(directory, 'app.zip');
   run('ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, archive]);
   assert.doesNotThrow(() => inspectFinalZip(archive));
+});
+
+test('1.8.0 and later publish the standard vVERSION tag with the changelog section as notes', () => {
+  assert.equal(releaseTag('1.7.6'), 'app-v1.7.6');
+  assert.equal(releaseTag('1.8.0'), 'v1.8.0');
+  assert.equal(releaseTag('2.0.0'), 'v2.0.0');
+  const directory = mkdtempSync(join(tmpdir(), 'release-notes-'));
+  try {
+    writeFileSync(join(directory, 'CHANGELOG.md'), '# Changelog\n\n## 1.8.0 — 2026-11-09\n\n- GateFox.app.\n\n## 1.7.8 — 2026-11-08\n\n- Older.\n');
+    assert.equal(releaseNotes('1.8.0', directory), '- GateFox.app.\n');
+    assert.equal(releaseNotes('1.7.8', directory), '- Older.\n');
+    assert.equal(releaseNotes('1.8.1', directory), 'GateFox macOS app 1.8.1\n');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
