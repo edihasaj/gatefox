@@ -14,7 +14,9 @@ The sidebar shows **GateFox** with **Harness Gateway** beneath it. The window
 title text is hidden, and the sidebar footer shows only the version.
 
 On first launch, the app finds the configuration named by the managed gateway
-LaunchAgent. If there is none, it looks in
+LaunchAgent. If there is none, a fresh installation uses
+`~/Library/Application Support/GateFox/gateway.json`. An installation created
+before 1.8.0 keeps its existing
 `~/Library/Application Support/Subscription Gateway/gateway.json`. Settings lets
 you choose a different existing JSON file. The app remembers that path locally;
 it does not copy your provider registrations or change your model choices.
@@ -106,7 +108,7 @@ Do not re-sign the Codex desktop app.
 
 ## Updates
 
-Signed production builds publish through a private GitHub app release. The app
+Signed production builds publish through standard GitHub releases. The app
 checks daily, waits for its GUI to close before activation, preserves the
 existing gateway service and active work, and retains the prior bundle for
 rollback. See [macOS app updates](macos-updates.md).

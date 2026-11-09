@@ -134,8 +134,8 @@ cannot create or change schedules or manage chats through these tools. Tasks
 created in the app's Scheduled screen still run on gateway models.
 
 The one supported way to have both is to stop putting the gateway in the engine's place:
-opt-in [API mode](api-mode.md) lets the app run its own signed engine and uses Harness
-Gateway only as a plain Responses model provider, so the `codex_app` tools work on gateway
+opt-in [API mode](api-mode.md) lets the app run its own signed engine and uses GateFox
+only as a plain Responses model provider, so the `codex_app` tools work on gateway
 models. Every model then goes through the gateway provider, and what is given up is the
 adapter's shared executor and its SDK patches.
 
