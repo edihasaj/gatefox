@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- After a service restart, a desktop, relay session or SSH listener no longer takes the
+  native ChatGPT engine away from the gateway host. The new host's claim could lose to the
+  old host that was still exiting; the next client then started its own private engine, and
+  every later client joined it, so rollout stayed `native_owner_pending` until every client
+  disconnected. While no private engines hold the native home, a refused client now asks
+  the host again for up to 20 seconds instead.
+
 - New gateway chats are recorded with the provider id `gatefox`. Chats saved earlier keep
   `subscription_gateway`, which every engine still registers and every list still shows,
   so nothing needs reopening. `gateway desktop register` publishes a native row for both

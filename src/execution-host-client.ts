@@ -7,7 +7,7 @@ import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import { object, type Message } from "./app-server-connection.js";
 import type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
 import type { NativeExecutionRecord } from "./native-execution-host-engine.js";
-import { nativeHomeOwnership } from "./native-execution-host-storage.js";
+import { nativeHomeOwnership, readNativeHomeOwnerRecord } from "./native-execution-host-storage.js";
 import { acquireNativeCompatible } from "./native-execution-compat.js";
 import { requestHostKick } from "./execution-host-kick.js";
 export type NativeLaunchRecord = NativeExecutionRecord & { instanceId: string };
@@ -43,6 +43,28 @@ export function nativeFallbackReason(error: unknown, sharedGateway: boolean): Na
   if ((error as { nativeOwnerHeld?: unknown } | undefined)?.nativeOwnerHeld === true) return "native_owner";
   if ((error as { capabilityAbsent?: unknown } | undefined)?.capabilityAbsent === "native") return sharedGateway ? "other" : undefined;
   return hostUnavailable(error) ? "host_unavailable" : undefined;
+}
+/** Whether private desktop engines (not a host) hold the native home now, so a refused adapter should join them. */
+export async function privateEnginesHoldNativeHome(nativeHome: string): Promise<boolean> {
+  return (await readNativeHomeOwnerRecord(nativeHome).catch(() => undefined))?.owner?.privateOwner !== undefined;
+}
+/**
+ * After a restart, the new host can start while the old host is still exiting: its claim of the native home is refused, and
+ * it claims again only at the next native request. An adapter refused then must not start a private engine, because the
+ * first private engine keeps the home from the host for as long as any desktop stays connected. So while no private engines
+ * hold the home, it asks the host again until the wait ends. It returns undefined when private engines do hold the home (the
+ * adapter joins them, as before) or the wait ran out; any refusal other than a held native home is thrown.
+ */
+export async function awaitHostNativeOwnership<T>(acquire: () => Promise<T>, privateHolds: () => Promise<boolean>, signal?: AbortSignal,
+  waitMs = hostWaitMs, pollMs = hostPollMs): Promise<T | undefined> {
+  const deadline = Date.now() + waitMs;
+  while (!signal?.aborted && Date.now() < deadline) {
+    if (await privateHolds()) return undefined;
+    try { await delay(Math.min(pollMs, Math.max(1, deadline - Date.now())), undefined, signal ? { signal } : {}); } catch { return undefined; }
+    try { return await acquire(); }
+    catch (error) { if (nativeFallbackReason(error, true) !== "native_owner") throw error; }
+  }
+  return undefined;
 }
 /** A receipt left by an owner that is gone must not look alive: its pid alone is not proof. */
 async function ownerMtime(home: string): Promise<number> { return (await lstat(resolve(home, "owner.json")).catch(() => undefined))?.mtimeMs ?? Number.POSITIVE_INFINITY; }

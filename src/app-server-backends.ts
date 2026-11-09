@@ -5,7 +5,7 @@ import { writePrivateJson, type GatewayConfig } from "./config.js";
 import { AppServerConnection, isId, object, type EngineStopReason, type Id, type Message } from "./app-server-connection.js";
 import { DesktopCatalog } from "./desktop-catalog.js";
 import { gatewayEngineHome, gatewayEnvironment } from "./gateway-engine-home.js";
-import { ExecutionHostClient, nativeFallbackReason, type NativeFallbackReason, type NativeLaunchRecord } from "./execution-host-client.js";
+import { ExecutionHostClient, awaitHostNativeOwnership, nativeFallbackReason, privateEnginesHoldNativeHome, type NativeFallbackReason, type NativeLaunchRecord } from "./execution-host-client.js";
 import { nothingToJoin, type PrivateNativeLease } from "./native-execution-host-storage.js";
 import { privateNativeOwnership, refusedFallback, underPrivateLease } from "./native-fallback.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
@@ -159,15 +159,21 @@ export class AppServerBackends {
         // A host that came back while private engines hold the native home refuses native ownership until they have all ended:
         // this adapter joins them with an engine of its own. A host writer or an older release's engine still keeps it out.
         const fallback = signal?.aborted ? undefined : nativeFallbackReason(error, plan.sharedExecutors === true); if (!fallback) throw error;
-        let joined: AppServerBackends | undefined;
-        try { joined = await privateNative(fallback); }
-        catch (refusal) {
-          // No private engine was left to join (they ended, or the refusal came from a busy lock): the host may take the
-          // home now, so it is asked once more; a second refusal fails the connection.
-          if (!nothingToJoin(refusal) || signal?.aborted) throw refusedFallback(fallback, error, refusal);
+        // A live owner that is not a group of private engines is a host still exiting after a restart: wait for this host to
+        // take the home rather than start a private writer that would keep it from the host.
+        const hosted = fallback === "native_owner" ? await awaitHostNativeOwnership(acquire, () => privateEnginesHoldNativeHome(nativeHome), signal) : undefined;
+        if (hosted) record = hosted;
+        else {
+          let joined: AppServerBackends | undefined;
+          try { joined = await privateNative(fallback); }
+          catch (refusal) {
+            // No private engine was left to join (they ended, or the refusal came from a busy lock): the host may take the
+            // home now, so it is asked once more; a second refusal fails the connection.
+            if (!nothingToJoin(refusal) || signal?.aborted) throw refusedFallback(fallback, error, refusal);
+          }
+          if (joined) { client!.close(); client = undefined; return joined; }
+          record = await acquire();
         }
-        if (joined) { client!.close(); client = undefined; return joined; }
-        record = await acquire();
       }
       // The socket follows the engine the host last handed out, so a reconnect after a host restart joins the new one.
       const target = { socketPath: record.socketPath };

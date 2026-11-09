@@ -76,6 +76,7 @@ markers and the old `Symbol.for` keys, and remove the Compatibility names sectio
 | --- | --- |
 | Provider id `gatefox` for new chats, both ids registered, listed and guarded | Done: code, SDK patches (`gateway-executor-v4`), 4,303 core and 147 desktop tests, 33 SDK gate tests |
 | Executor marker `GATEFOX_EXECUTOR` (old marker still set and read) | Done |
+| Clients wait for the host to claim the native home after a restart (the Studio `native_owner_pending` race) | Done |
 | Docs for the two ids (`harness-identity.md`, `app-server.md`, `RELEASING.md`, troubleshooting) | Done |
 | End-to-end scripts that still assert `subscription_gateway` for new chats (17 under `scripts/e2e-*.mjs`) | To do |
 | Install root and state folder move, LaunchAgent labels, ownership markers | To do |

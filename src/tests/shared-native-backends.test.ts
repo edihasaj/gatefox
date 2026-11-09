@@ -13,7 +13,7 @@ import { object, type Message } from "../app-server-connection.js";
 import type { DesktopCatalog } from "../desktop-catalog.js";
 import { writePrivateJson, type GatewayConfig } from "../config.js";
 import { executionHostHome, executionHostMarker, sdkIdentity, socketIdentity } from "../execution-host-storage.js";
-import type { ExecutionHostClient } from "../execution-host-client.js";
+import { setHostWaitForTests, type ExecutionHostClient } from "../execution-host-client.js";
 import { nativeHomeOwnerPath } from "../native-execution-host-storage.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { hostRunsInThisProcess } from "./in-process-host.js";
@@ -413,8 +413,8 @@ test("an unavailable host whose native engine still answers fails closed", { tim
   } finally { await f.clean(); }
 });
 
-// A host that refuses native ownership because a live owner holds the home lets the adapter join private engines, and only
-// join them: with none left (they ended, or the refusal came from a busy lock) the adapter asks the host once more.
+// A host that refuses native ownership because private engines hold the home lets the adapter join them, and only join them.
+// While no private engines hold it (a host still exiting after a restart), the adapter asks the host again until the wait ends.
 test("a host refusal with no private engine left to join is asked again, and the adapter shares the host's engine", { timeout: 30000 }, async () => {
   const f = await fixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
   try {
@@ -425,12 +425,25 @@ test("a host refusal with no private engine left to join is asked again, and the
   } finally { await f.clean(); }
 });
 
-test("a host refusal asked again and refused again fails the adapter, with no private engine started", { timeout: 30000 }, async () => {
+test("a host still refusing after its first claim is asked again until it takes the home, with no private engine started", { timeout: 30000 }, async () => {
+  // After a restart the new host's claim can lose to the old host that is still exiting; the adapter waits for it to claim.
   const f = await fixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
   try {
-    f.hooks.refuseNative = 2;
-    await assert.rejects(f.create(), (error: Error & { code?: number }) => error.code === -32001 && /ownership is held by a live owner/.test(error.message));
-    assert.equal(f.calls.filter(message => message.method === "native/acquire").length, 2); await f.noSpawn();
+    f.hooks.refuseNative = 3;
+    const first = await f.create(); assert.equal(first.adapter.native.shared, true);
+    assert.equal(f.calls.filter(message => message.method === "native/acquire").length, 4); await f.noSpawn();
     assert.equal(existsSync(nativeHomeOwnerPath(f.nativeHome)), false); assert.equal((await fallbackEvents(f, since)).length, 0);
   } finally { await f.clean(); }
 });
+
+test("a host that refuses through the whole wait fails the adapter, with no private engine started", { timeout: 30000 }, async () => {
+  const f = await fixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
+  setHostWaitForTests(600);
+  try {
+    f.hooks.refuseNative = 1_000_000;
+    await assert.rejects(f.create(), (error: Error & { code?: number }) => error.code === -32001 && /ownership is held by a live owner/.test(error.message));
+    await f.noSpawn();
+    assert.equal(existsSync(nativeHomeOwnerPath(f.nativeHome)), false); assert.equal((await fallbackEvents(f, since)).length, 0);
+  } finally { setHostWaitForTests(); await f.clean(); }
+});
+
