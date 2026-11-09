@@ -92,6 +92,13 @@ finishes normally, then the session closes instead of remaining parked in replay
   the same chat: only a successful, uncancelled compaction clears the unchanged
   crash hold. A newer session or replacement hold remains protected. Gateway
   does not replay the failed request automatically.
+- **Cancellation timeout:** if a cancelled turn does not produce its interrupt
+  result within two seconds, Gateway deliberately closes that CLI. This is a
+  controlled cancellation, so it creates no crash hold. The cancelled request
+  stays cancelled; only a later caller request can start a new session, under
+  the existing cache guard. Genuine CLI crashes still retain their replay holds.
+  Existing holds are not retroactively cleared, and sessions retained across an
+  in-place upgrade keep the cancellation behavior of the code that created them.
 - **Refused turn:** a `reasoning_extraction` refusal ends the session (`closed`,
   reason `refused`) without a hold, so the next message starts a new session and
   reaches Claude. Rebuilding the chat costs one full resend, and the
