@@ -121,7 +121,8 @@ The bridge sends opaque wire names, but a model may answer with the readable nam
 it was shown in the tool description. When the exact wire name is not found, a
 returned name is accepted only if it selects exactly one declared tool: its alias
 (`exec_command`, `files.read`), the alias with a `functions.` prefix, or the wire
-name differing only in letter case. An ambiguous or undeclared name, and any
+name differing only in ASCII letter case (a look-alike Unicode letter never matches); every one of these spellings is considered together,
+so a name that two tools could claim is refused. An ambiguous or undeclared name, and any
 near miss, still fails as `unknown_wire_tool`; there is no fuzzy matching, and
 arguments are never changed.
 Malformed custom function arguments fail before tool dispatch as

@@ -128,3 +128,45 @@ test("function bridge still refuses a namespace on a returned call, even when th
   assert.throws(() => catalog().restoreItem({ type: "function_call", name: "exec_command", namespace: "files" }),
     error => error instanceof ProviderError && error.upstream?.code === "unexpected_tool_namespace");
 });
+
+test("function bridge refuses a name that is the alias of one tool and a case variant of another tool's wire name", t => {
+  resetToolIdentityFallbackCounts(); t.after(resetToolIdentityFallbackCounts);
+  const exec = wire(catalog(), 0), variant = exec.toLowerCase();
+  assert.notEqual(variant, exec, "the fixture needs a wire name with upper-case letters");
+  const bridge = responsesFunctionTools({ model: "fixture", input: "go", tools: [{ type: "function", name: "exec_command" }, { type: "function", name: variant }] }, "or");
+  assert.equal(wire(bridge, 0), exec);
+  refused(bridge, variant);
+  assert.deepEqual(toolIdentityFallbackCounts(), { alias: 0, namespaced_alias: 0, functions_prefix: 0, wire_case: 0 });
+  // Each tool is still reachable by an unambiguous spelling, and the exact wire name is never a fallback.
+  assert.equal(bridge.restoreItem({ type: "function_call", name: exec }).name, "exec_command");
+  assert.equal(bridge.restoreItem({ type: "function_call", name: "exec_command" }).name, "exec_command");
+  assert.equal(bridge.restoreItem({ type: "function_call", name: wire(bridge, 1) }).name, variant);
+});
+
+test("function bridge bounds what it remembers about fallback calls, and still counts normal calls once", t => {
+  resetToolIdentityFallbackCounts(); t.after(resetToolIdentityFallbackCounts);
+  const bridge = catalog();
+  const call = (call_id: string) => ({ type: "function_call", call_id, name: "exec_command", arguments: "{}" });
+  // Added-only items are never validated by the provider, so an oversized id is neither remembered nor counted, and the call runs.
+  for (let i = 0; i < 64; i++) assert.equal(bridge.restoreItem(call(`${i}`.padEnd(256 * 1024, "x"))).name, "exec_command");
+  assert.equal(toolIdentityFallbackCounts().alias, 0);
+  // Normal ids count once each (added, then done), up to the tool-call limit; further calls still run but are not counted.
+  for (let i = 0; i < 1100; i++) { bridge.restoreItem(call(`call-${i}`)); bridge.restoreItem(call(`call-${i}`)); }
+  assert.equal(toolIdentityFallbackCounts().alias, 1024);
+  assert.equal(bridge.restoreItem(call("call-1099")).name, "exec_command");
+  assert.equal(toolIdentityFallbackCounts().alias, 1024);
+});
+
+test("function bridge folds case on ASCII letters only, so a look-alike Unicode letter never matches a wire name", t => {
+  resetToolIdentityFallbackCounts(); t.after(resetToolIdentityFallbackCounts);
+  // `toLowerCase` maps U+212A KELVIN SIGN to `k`; find a tool whose wire name has a k so the fixture exercises it.
+  let bridge = catalog(), index = 0, tool = "";
+  while (!/k/i.test(tool)) { tool = wire(bridge = responsesFunctionTools({ model: "fixture", input: "go", tools: [{ type: "function", name: `t${index++}` }] }, "or"), 0); }
+  const lookalike = tool.replace(/k/i, "K");
+  assert.equal(lookalike.toLowerCase(), tool.toLowerCase(), "the fixture must be one that Unicode case folding would accept");
+  refused(bridge, lookalike);
+  assert.deepEqual(toolIdentityFallbackCounts(), { alias: 0, namespaced_alias: 0, functions_prefix: 0, wire_case: 0 });
+  // ASCII case variants of the same name are still accepted.
+  assert.equal(bridge.restoreItem({ type: "function_call", name: tool.toUpperCase() }).name, `t${index - 1}`);
+  assert.equal(toolIdentityFallbackCounts().wire_case, 1);
+});
