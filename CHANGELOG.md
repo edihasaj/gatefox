@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.8.1 — 2026-11-09
 
 - `gatefox chats migrate --apply` no longer refuses because of an unrelated inference-only
   `gateway serve`; only ChatGPT, Codex app-servers, the shims and native relay that start
