@@ -1,0 +1,36 @@
+# Full gate on the isolated home runner. It runs only for the owner's pushes to main or
+# production and for manual runs; the runner control refuses every other run, including
+# fork pull requests, before a runner exists (see docs/ci.md). No secrets are used here,
+# and nothing prints the environment, because the logs of this public repository are public.
+name: Home CI
+on:
+  push:
+    branches: [main, production]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: home-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  gate:
+    if: >-
+      ${{ github.repository == 'edihasaj/gatefox' &&
+          github.actor == 'edihasaj' &&
+          github.triggering_actor == 'edihasaj' }}
+    runs-on: [self-hosted, home-public-linux]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24.22.1
+          cache: npm
+      - name: Verify the home runner policy
+        run: node --test scripts/tests/home-ci-policy.test.mjs
+      - run: npm ci
+      - run: npm run build
+      - run: npm run check
+      - run: npm test

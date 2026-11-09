@@ -15,6 +15,24 @@ disabled at the repository level (paused manually on October 14, 2026 per the
 Edi re-enables it and dispatches it himself. See [releasing](RELEASING.md) for
 the release side of the same pause.
 
+## Home CI
+
+`.github/workflows/home-ci.yml` runs the full gate (`npm ci`, build, check, test) on an
+isolated self-hosted runner for each push to `main` or `production` and for manual runs.
+It uses no hosted minutes. Because this repository is public, the runner is guarded in
+three places:
+
+| Guard | Where | What it stops |
+| --- | --- | --- |
+| Trust check before a runner exists | `edihasaj/home-runners` control Worker (`control/src/trust.ts`) | It registers a one-job runner only for a queued job in a `home-ci.yml` run that `edihasaj` started from `main` or `production` by push or manual run. A fork pull request can edit `runs-on` but never gets a runner; its job just waits. |
+| Same check inside the VM | `job-started` hook (`broker/hooks/trust_check.py`) | Repeats the check from the job's own GitHub context and fails the job before any step runs. |
+| Isolation | Separate `public-ci` VM and host key | Never shared with private repositories; egress firewall blocks the Mac host, home LAN and Tailscale. Broker and hooks are root-owned. |
+
+The workflow has a read-only token, uses no secrets, does not keep checkout credentials,
+and never prints the environment or host details, because its logs are public.
+`scripts/tests/home-ci-policy.test.mjs` enforces that and runs as the job's first step.
+Pull requests from forks get no home CI.
+
 Validation therefore happens locally on every change:
 
 ```
