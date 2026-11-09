@@ -109,7 +109,7 @@ test("the drain records the requests still running before it flushes and reports
 
 // Whoever starts the server waits for its "Listening" line and may stop it at once (a test, a supervisor). A signal that
 // arrives before the handlers exist kills the process without a drain, a flush or an exit code, so the line comes last.
-const cliSource = fileURLToPath(new URL("../../src/cli.ts", import.meta.url));
+const cliSource = fileURLToPath(new URL("../../src/cli-main.ts", import.meta.url));
 test("the CLI says it listens only after its signal handlers are installed", { skip: !existsSync(cliSource) }, () => {
   const source = readFileSync(cliSource, "utf8"); const listening = source.indexOf("Listening on http");
   assert.ok(listening > 0);

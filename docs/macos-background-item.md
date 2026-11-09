@@ -77,6 +77,11 @@ Do not use `sfltool resetbtm` to remove an old row. It resets background-item st
 for unrelated applications too. Do not restart active local or remote chats to
 refresh a name or icon.
 
+New registrations prefer the managed `gatefox` command. Fresh installations use
+`GateFox.app`, the `GateFox` configuration folder and `share/gatefox` install root.
+Historical command aliases and ownership markers remain readable so existing
+background registrations and rollback receipts continue working without a restart.
+
 ## Signing
 
 Build a local app from a verified gateway release, then sign that build with a

@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { launcherMarker, launcherName, legacyLauncherName } from "../command.js";
+import { gatefoxLauncherName, launcherMarker, launcherName, legacyLauncherName } from "../command.js";
 
 /** Thrown for a path the job must not trust. Callers turn it into the fixed `unsafe_path` reason. */
 export class UnsafePath extends Error {
@@ -102,7 +102,7 @@ export async function ensureJobTmp(directory: string, uid: number): Promise<void
 export async function verifiedLauncher(home: string, uid: number): Promise<string | undefined> {
   const directory = join(home, ".local", "bin");
   try { await privateDirectory(directory, uid); } catch { return undefined; }
-  for (const name of [launcherName, legacyLauncherName]) {
+  for (const name of [gatefoxLauncherName, launcherName, legacyLauncherName]) {
     const path = join(directory, name);
     if (launcherLooksManaged(path, uid)) return path;
   }

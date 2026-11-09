@@ -40,7 +40,7 @@ test("the published row is exactly the provider the adapter registers with -c", 
   assert.deepEqual(providerOverrides(row), {
     name: "GateFox", base_url: "http://127.0.0.1:3457/v1", wire_api: "responses", requires_openai_auth: false,
     supports_websockets: false, request_max_retries: 2, stream_idle_timeout_ms: 90000,
-    "auth.command": helper.command, "auth.args": [...helper.args, "token", "--config", "/state/gateway.json"], "auth.timeout_ms": 5000, "auth.refresh_interval_ms": 300000,
+    "auth.command": helper.command, "auth.args": [...helper.args, "token", "--config", "/state/gateway.json"], "auth.timeout_ms": 15000, "auth.refresh_interval_ms": 300000,
   });
 });
 

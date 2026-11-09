@@ -12,6 +12,8 @@ export function endpointURL(value: string): string {
 
 /** Codex gives up on a silent stream after this long; gateway heartbeats arrive every 15 seconds. */
 export const codexStreamIdleTimeoutMs = 90000;
+/** A cold local auth helper remains bounded but gets headroom while the host is under CPU or disk pressure. */
+export const codexAuthCommandTimeoutMs = 15000;
 
 /** The provider id the desktop adapter registers under in a native configuration. */
 /** The provider id the generated settings select; `subscription_gateway` is registered beside it so chats saved before 1.8.0 resolve. */
@@ -28,7 +30,7 @@ export function gatewayProviderTable(endpoint: string, credentialArgs: string[])
   const helper = gatewayCommand();
   return { name: "GateFox", base_url: endpointURL(endpoint), wire_api: "responses", supports_websockets: false,
     request_max_retries: 2, stream_idle_timeout_ms: codexStreamIdleTimeoutMs,
-    auth: { command: helper.command, args: [...helper.args, "token", ...credentialArgs], timeout_ms: 5000, refresh_interval_ms: 300000 } };
+    auth: { command: helper.command, args: [...helper.args, "token", ...credentialArgs], timeout_ms: codexAuthCommandTimeoutMs, refresh_interval_ms: 300000 } };
 }
 
 /** How the engine spells a settings value: strings quoted, arrays inline, numbers and booleans as they are. */

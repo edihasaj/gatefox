@@ -3,12 +3,12 @@ import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * macOS names a background item after the executable in the first ProgramArguments entry, so every plist the gateway
- * writes names the `harness-gateway` launcher, not the older `gateway` command, which stays installed and working.
+ * Historical launcher names remain valid for receipts and migration checks. New command references prefer the
+ * installer-owned `gatefox` sibling; old layouts without it keep their working launcher.
  */
 export const launcherName = "harness-gateway";
 export const legacyLauncherName = "gateway";
-/** The GateFox command, a third launcher with the same contents since 1.8.0. */
+/** The canonical GateFox command; supported alongside the historical launchers since 1.8.0. */
 export const gatefoxLauncherName = "gatefox";
 
 /** The line the installer puts in both launchers; a file without it is not ours to name in a plist. */
@@ -23,16 +23,13 @@ export function isManagedLauncher(path: string): boolean {
   } catch { return false; } finally { if (fd !== undefined) closeSync(fd); }
 }
 
-/**
- * The launcher a plist should name. The installer's launchers both export the harness-gateway path as GATEWAY_COMMAND;
- * a value that still names the older `gateway` (inherited environment) is moved to the sibling harness-gateway launcher
- * when that file is the installer's own (it carries the managed marker), and left alone where it is absent, foreign,
- * or not a regular file (a rollback to a release without it).
- */
+/** Prefers the real installer-owned GateFox launcher and leaves older or foreign layouts usable. */
 export function preferredLauncher(command: string, managed: (path: string) => boolean = isManagedLauncher): string {
-  if (basename(command) !== legacyLauncherName) return command;
+  if (![legacyLauncherName, launcherName, gatefoxLauncherName].includes(basename(command))) return command;
+  const gatefox = resolve(dirname(command), gatefoxLauncherName);
+  if (managed(gatefox)) return gatefox;
   const preferred = resolve(dirname(command), launcherName);
-  return managed(preferred) ? preferred : command;
+  return basename(command) === legacyLauncherName && managed(preferred) ? preferred : command;
 }
 
 export function gatewayCommand(): { command: string; args: string[] } {

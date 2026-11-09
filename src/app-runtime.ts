@@ -197,7 +197,7 @@ async function wrappers(root: string, commandPath: string): Promise<Launcher[]> 
     available.push({ path, source });
   }
   if (!commandFound) unsafe();
-  const primary = available.find(item => item.path === join(bin, "harness-gateway"))?.path ?? commandPath;
+  const primary = available.find(item => item.path === join(bin, "gatefox"))?.path ?? available.find(item => item.path === join(bin, "harness-gateway"))?.path ?? commandPath;
   return available.flatMap(({ path, source }) => {
     const output = Buffer.from(renderInstalledLauncher(root, primary));
     return source.bytes.equals(output) ? [] : [{ path, source, output }];

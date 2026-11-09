@@ -134,8 +134,8 @@ const fs=require("fs");fs.renameSync(process.argv[2],process.argv[3]);
 JS
   fi
 fi
-# harness-gateway is the managed launcher, because macOS names a background item after the executable a LaunchAgent runs.
-# gateway stays a second managed launcher with the same contents, so the older command and old LaunchAgents keep working.
+# All managed launchers remain available for existing registrations.
+# Current transactions select gatefox as primary; an older journal keeps the launcher it knows how to roll back.
 launcher="$prefix/bin/harness-gateway"
 compat="$prefix/bin/gateway"
 # gatefox is a third launcher with the same contents, the command name since 1.8.0.
@@ -154,9 +154,10 @@ if [ "$gatefox_tracked" = yes ] && { [ -e "$gatefox" ] || [ -L "$gatefox" ]; }; 
   test -f "$gatefox" && [ ! -L "$gatefox" ] && grep -q "$managed" "$gatefox" || { echo 'gatefox command is occupied by another installation.' >&2; exit 2; }
 fi
 staged_gatefox=""
-[ "$gatefox_tracked" = yes ] && staged_gatefox="$gatefox.new"
+primary="$launcher"
+if [ "$gatefox_tracked" = yes ]; then staged_gatefox="$gatefox.new"; primary="$gatefox"; fi
 # Staging names are exclusive. A leftover file or link is evidence of another publisher and is never removed here.
-./runtime/bin/node --input-type=module - "$root" "$launcher" "$launcher.new" "$compat.new" ${staged_gatefox:+"$staged_gatefox"} <<'JS'
+./runtime/bin/node --input-type=module - "$root" "$primary" "$launcher.new" "$compat.new" ${staged_gatefox:+"$staged_gatefox"} <<'JS'
 import {writeFileSync} from 'node:fs';
 const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
 const [root,launcher,...files]=process.argv.slice(2);

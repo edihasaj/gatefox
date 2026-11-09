@@ -48,20 +48,15 @@ struct GatewayView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 11) {
                 FoxMark(size: 38)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("GateFox")
-                        .font(GatewayTheme.display(22))
-                    Text("Harness Gateway")
-                        .font(GatewayTheme.body(11, weight: .medium))
-                        .foregroundStyle(GatewayTheme.charcoal.opacity(0.58))
-                }
-                .foregroundStyle(GatewayTheme.charcoal)
+                Text("GateFox")
+                    .font(GatewayTheme.display(22))
+                    .foregroundStyle(GatewayTheme.charcoal)
             }
             .padding(.horizontal, 20)
             .padding(.top, 24)
             .padding(.bottom, 25)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("GateFox, Harness Gateway")
+            .accessibilityLabel("GateFox")
 
             List(selection: $navigation.selection) {
                 Label("Overview", systemImage: "rectangle.grid.1x2")
@@ -100,6 +95,9 @@ struct GatewayView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
+                Link("Submit an issue", destination: URL(string: "https://zapfeed.io/?board=gatefox")!)
+                    .font(GatewayTheme.body(12))
+                    .accessibilityIdentifier("sidebar.submit-issue")
                 Text(appVersion)
                     .font(GatewayTheme.body(12))
             }

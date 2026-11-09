@@ -169,6 +169,15 @@ loopback gateway and the `gateway token` helper. The gateway writes it through t
 own engine, as API mode writes its settings, so comments and every other key stay as
 they are.
 
+New auth command references prefer the installer-owned `gatefox` launcher. The older
+`gateway` and `harness-gateway` files stay valid for existing registrations. `token`
+uses a lightweight CLI entry path that validates the configuration and reads the private
+credential without loading provider adapters or service code. Native auth rows allow
+15 seconds for a cold helper under host load (previously five); token refresh remains
+five minutes. Token contents are written only to the requesting client's stdout and
+never to logs.
+
+
 - **What registration writes:** the row only. It never writes `model_provider`, a model or
   a catalog, so new native chats keep `openai`.
 - **When it skips:** a row it already wrote is left unchanged. A row with the same id that

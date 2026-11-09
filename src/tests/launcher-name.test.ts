@@ -40,7 +40,7 @@ test("gatewayCommand names harness-gateway for either launcher, and leaves the o
       assert.deepEqual(await withCommand(join(both.bin, name), async () => gatewayCommand()), { command: join(both.bin, "harness-gateway"), args: [] }, name);
     }
     assert.deepEqual(await withCommand(join(only.bin, "gateway"), async () => gatewayCommand()), { command: join(only.bin, "gateway"), args: [] }, "a rollback layout keeps what it has");
-    assert.equal(preferredLauncher("/x/bin/gateway", () => true), "/x/bin/harness-gateway");
+    assert.equal(preferredLauncher("/x/bin/gateway", () => true), "/x/bin/gatefox");
     // A harness-gateway without the installer's marker, or one that is only a link, is not ours to name in a plist.
     await writeFile(join(only.bin, "harness-gateway"), "#!/bin/sh\necho foreign\n", { mode: 0o700 });
     assert.deepEqual(await withCommand(join(only.bin, "gateway"), async () => gatewayCommand()), { command: join(only.bin, "gateway"), args: [] }, "no marker: keep gateway");
@@ -221,4 +221,28 @@ test("a native relay started with the older launcher name is the same registrati
   assert.equal(sameNativeRegistration(written("/h/.local/bin/other"), written(harness), harness), false);
   assert.equal(sameNativeRegistration(undefined, written(harness), harness), false);
   assert.equal(sameNativeRegistration(written(harness), written(legacy), legacy), false, "only the harness-gateway form is migrated from");
+});
+
+
+test("new installations name only the managed gatefox command in generated native auth rows", async () => {
+  const layout = await installed(["gateway", "harness-gateway", "gatefox"]);
+  try {
+    for (const name of ["gateway", "harness-gateway", "gatefox"]) await withCommand(join(layout.bin, name), async () => {
+      assert.equal(gatewayCommand().command, join(layout.bin, "gatefox"));
+      const { nativeProviderRow } = await import("../native-provider-row.js");
+      const row = nativeProviderRow(3457, join(layout.root, "gateway.json"));
+      assert.equal(row.name, "GateFox"); assert.equal(row.auth.command, join(layout.bin, "gatefox"));
+    });
+    await writeFile(join(layout.bin, "gatefox"), "#!/bin/sh\necho not-managed\n", { mode: 0o700 });
+    assert.equal(await withCommand(join(layout.bin, "gateway"), async () => gatewayCommand().command), join(layout.bin, "harness-gateway"));
+  } finally { await rm(layout.root, { recursive: true, force: true }); }
+});
+
+
+test("native relay registrations accept migration from both historical sibling launchers to gatefox", () => {
+  const base = "/h/.local/bin", gatefox = join(base, "gatefox");
+  const written = (command: string) => `<array><string>/relay</string><string>--gateway</string><string>${command}</string><string>--native-home</string><string>/home</string></array>`;
+  for (const name of ["gateway", "harness-gateway", "gatefox"]) assert.equal(sameNativeRegistration(written(join(base, name)), written(gatefox), gatefox), true, name);
+  assert.equal(sameNativeRegistration(written("/elsewhere/gatefox"), written(gatefox), gatefox), false);
+  assert.equal(sameNativeRegistration(written(join(base, "gateway")).replace("/home", "/foreign"), written(gatefox), gatefox), false);
 });
