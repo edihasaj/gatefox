@@ -10,6 +10,8 @@ read_when:
 The native app sets up and manages gateway connections. It
 uses the same accounts, model routes, background service, and desktop registration
 as the command line. The fox appears in its window and Dock icon.
+The sidebar shows **GateFox** with **Harness Gateway** beneath it. The window
+title text is hidden, and the sidebar footer shows only the version.
 
 On first launch, the app finds the configuration named by the managed gateway
 LaunchAgent. If there is none, it looks in

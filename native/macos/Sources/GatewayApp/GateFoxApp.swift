@@ -75,6 +75,7 @@ struct GateFoxApp: App {
                     }
                 }
         }
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 960, height: 680)
         .commands {
             CommandGroup(replacing: .appSettings) {
