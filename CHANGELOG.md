@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.8.1 — 2026-11-09
 
 - The package is `@edihasaj/gatefox`. The installer and app builder still accept a backend
   packaged as `@edihasaj/harness-gateway` or `@edihasaj/subscription-gateway`. The Claude
