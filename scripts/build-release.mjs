@@ -14,6 +14,7 @@ import { assertFreeSpace, releaseDiskSpaceRequirements } from './disk-space.mjs'
 import { withReleaseTempStorage } from './release-temp-storage.mjs';
 import { packReleasePackage } from './release-package.mjs';
 import { verifiedBackend } from './macos-app-backend.mjs';
+import { backendName } from './release-names.mjs';
 
 const { values } = parseArgs({ options: { 'allow-dirty': { type: 'boolean' }, 'with-native': { type: 'boolean' },
   'with-gateway-sdk': { type: 'boolean' }, 'reuse-components-from': { type: 'string' }, 'components-sha256': { type: 'string' },
@@ -35,7 +36,7 @@ const result = withReleaseTempStorage({ outputDir: values['output-dir'] }, stora
   // The relay can come from its own published bundle, authenticated and selected independently of the SDK's.
   if (plan.reuseNative) sources.native = { archivePath: resolve(plan.reuseNative.from), expectedSha256: plan.reuseNative.sha256, flag: '--native-sha256' };
   const reused = plan.reuse || plan.reuseNative ? verifyReleaseComponentSources(sources) : undefined;
-  const name = `harness-gateway-${version}-macos-arm64`; const directory = join(root, name);
+  const name = backendName(version); const directory = join(root, name);
   const runtimeArchive = resolve('.state/release-runtime/node-v24.22.1-darwin-arm64.tar.gz');
   const runtimeDigest = createHash('sha256').update(readFileSync(runtimeArchive)).digest('hex');
   if (runtimeDigest !== '89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7') throw new Error('Official Node runtime checksum mismatch');

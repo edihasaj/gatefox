@@ -99,7 +99,7 @@ test("shim preserves approval correlation while native IDs overlap with its RPC 
     const models = (await rpc("model/list")).result as { data: Array<{ model: string }> };
     assert.deepEqual(models.data.map(model => model.model), ["native", "claude/model"]);
     const start = (await rpc("thread/start", { model: "claude/model", modelProvider: "openai" })).result as { modelProvider: string; thread: { id: string } };
-    assert.equal(start.modelProvider, "subscription_gateway");
+    assert.equal(start.modelProvider, "gatefox");
     await rpc("turn/start", { threadId: start.thread.id, model: "claude/model", input: [] });
     assert.ok(approval);
     await new Promise(resolve => setTimeout(resolve, 20)); assert.ok(completed); assert.equal(resolvedId, approvalId);

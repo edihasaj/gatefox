@@ -20,7 +20,7 @@ export function launcherCli(text) {
  * Chooses the dist folder that holds `execution-host.js` and `config.js` for the shared-execution check.
  * - `package` (an installed package folder) wins and must have them, or this throws.
  * - Otherwise the package comes from `gateway`: the installed launcher's `current/package`, the package two levels above a
- *   `dist/cli.js` path (as e2e-compaction-switch.mjs does), or `<prefix>/share/subscription-gateway/current/package` beside it.
+ *   `dist/cli.js` path (as e2e-compaction-switch.mjs does), or `<prefix>/share/gatefox/current/package` (or the pre-1.8.0 `share/subscription-gateway`) beside it.
  * - If none of those has them, the checkout's own `fallback` dist is used.
  * `exists(path)` and `readText(path)` (undefined when unreadable) are injected so the choice stays a pure function.
  * @returns {{directory: string, source: 'package' | 'launcher' | 'gateway-path' | 'install-layout' | 'checkout'}}
@@ -39,7 +39,7 @@ export function resolveDistDirectory({package: explicit, gateway, fallback, exis
     const candidates = [
       ...(cli ? [['launcher', resolve(dirname(cli), '..')]] : []),
       ['gateway-path', resolve(command, '../..')],
-      ['install-layout', resolve(dirname(command), '../share/subscription-gateway/current/package')],
+      ...['gatefox', 'subscription-gateway'].map(name => ['install-layout', resolve(dirname(command), '../share', name, 'current/package')]),
     ];
     for (const [source, packageDirectory] of candidates) if (holds(packageDirectory)) return {directory: join(packageDirectory, 'dist'), source};
   }

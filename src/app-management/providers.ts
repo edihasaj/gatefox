@@ -150,7 +150,7 @@ export async function runSubscriptionLogin(provider: ProviderConfig, deps: Manag
   }
   if (provider.type === "codex-subscription") {
     if (!provider.credentialFile || !deps.signIn) throw new ManagementError("authentication_failed");
-    await deps.signIn(provider.credentialFile, provider.agentName || "Harness Gateway", deps.openBrowser || openBrowser, deps.signal, expectedEmail); return;
+    await deps.signIn(provider.credentialFile, provider.agentName || "GateFox", deps.openBrowser || openBrowser, deps.signal, expectedEmail); return;
   }
   const command = cliFor[provider.type]; if (!command) throw new ManagementError("authentication_failed");
   if (!await (deps.lookupCli || cliAvailable)(command)) throw new ManagementError("missing_cli");

@@ -2,6 +2,44 @@
 
 ## 1.7.8 — 2026-11-08
 
+- The app is GateFox.app, published as `GateFox-VERSION-macos-arm64.zip` with
+  `gatefox-VERSION-macos-arm64.tar.gz`, under the standard `vVERSION` tag only. A Mac
+  updated from 1.7.x first gets the new app at its old `Harness Gateway.app` path; at its
+  next launch the app renames itself to `GateFox.app` beside it, relaunches, and moves
+  the service and the command-line runtime to the new path. Permissions stay, because
+  the bundle identifier and signature are unchanged. The rename waits while an update is
+  unfinished. See `docs/macos-updates.md`.
+
+- The installer also writes a `gatefox` command, with the same contents as
+  `harness-gateway` and `gateway`, which keep working. An update run by a 1.7.x app adds
+  it at the next install, because that updater refuses receipts it does not know.
+
+- Fresh installations use `~/.local/share/gatefox` and
+  `~/Library/Application Support/GateFox` (`~/.config/gatefox` on Linux). A Mac installed
+  earlier keeps its `subscription-gateway` folders; nothing moves. The signed service
+  launcher, the updater, uninstall and the app accept both.
+
+- The Claude Desktop profile and the ChatGPT sign-in agent are named GateFox. A profile
+  created as Harness Gateway is still selected.
+
+- After a service restart, a desktop, relay session or SSH listener no longer takes the
+  native ChatGPT engine away from the gateway host. The new host's claim could lose to the
+  old host that was still exiting; the next client then started its own private engine, and
+  every later client joined it, so rollout stayed `native_owner_pending` until every client
+  disconnected. While no private engines hold the native home, a refused client now asks
+  the host again for up to 20 seconds instead.
+
+- New gateway chats are recorded with the provider id `gatefox`. Chats saved earlier keep
+  `subscription_gateway`, which every engine still registers and every list still shows,
+  so nothing needs reopening. `gateway desktop register` publishes a native row for both
+  ids, so ChatGPT's own engine opens either. The native-config guard refuses both ids.
+  Executors carry `GATEFOX_EXECUTOR` (and the older marker). The patched SDK is
+  `gateway-executor-v4`. See `docs/harness-identity.md` and `docs/gatefox-rename.md`.
+
+- gatefox.dev has search and sharing metadata on every page: canonical URLs, Open Graph
+  and Twitter cards with a share image per page, JSON-LD, `robots.txt`, a sitemap with
+  images and a web manifest. The deploy adds the IndexNow key file.
+
 - Macs that share the native ChatGPT engine can share the Codex 0.167.0-alpha.3.2 app
   engine again. It passed every stdio and Unix shared-native check, with and without
   an explicit host engine path. Until now such a Mac stayed `native_owner_pending`

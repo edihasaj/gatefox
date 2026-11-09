@@ -24,7 +24,9 @@ cd "$source_dir"
 test "$(uname -s)" = Darwin && test "$(uname -m)" = arm64 || { echo 'This installer requires an Apple Silicon Mac.' >&2; exit 2; }
 shasum -a 256 -c checksums.txt >/dev/null
 version=$(./runtime/bin/node -p 'JSON.parse(require("fs").readFileSync("package/package.json","utf8")).version')
-root="$prefix/share/subscription-gateway"
+# A fresh installation uses share/gatefox; one from before 1.8.0 keeps share/subscription-gateway.
+root="$prefix/share/gatefox"
+if [ ! -e "$root" ] && [ -e "$prefix/share/subscription-gateway" ]; then root="$prefix/share/subscription-gateway"; fi
 release="$root/releases/$version"
 mkdir -p "$root/releases" "$prefix/bin"
 if [ -e "$root/.gateway-installation" ]; then
@@ -40,14 +42,16 @@ trap 'status=$?; release_installation_lock; exit "$status"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# An updater from 1.8.0 on records bin/gatefox in its journal; an older one does not, and would refuse its receipt.
+gatefox_tracked=yes
 if [ -n "$transaction_nonce" ]; then
-  ./runtime/bin/node --input-type=module - "$root" "$prefix" "$version" "$transaction_nonce" <<'JS'
+  gatefox_tracked=$(./runtime/bin/node --input-type=module - "$root" "$prefix" "$version" "$transaction_nonce" <<'JS'
 import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, readlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 const [root,prefix,version,nonce]=process.argv.slice(2);
 try {
-  if(resolve(root)!==root||resolve(prefix)!==prefix||resolve(root)!==resolve(prefix,"share","subscription-gateway"))throw Error();
+  if(resolve(root)!==root||resolve(prefix)!==prefix||!["gatefox","subscription-gateway"].some(name=>resolve(root)===resolve(prefix,"share",name)))throw Error();
   const file=openSync(join(root,"app-update-transaction.json"),constants.O_RDONLY|constants.O_NOFOLLOW), info=fstatSync(file);
   try {
     const value=JSON.parse(readFileSync(file,"utf8"));
@@ -60,11 +64,14 @@ try {
     if(!match||selectedMajor>nextMajor||selectedMajor===nextMajor&&(selectedMinor>nextMinor||selectedMinor===nextMinor&&selectedPatch>nextPatch))throw Error();
     if(!same(join(root,"current"),value.before?.current)||!same(join(root,"previous-release"),value.before?.previous)||
       !same(join(prefix,"bin","gateway"),value.before?.wrappers?.gateway)||!same(join(prefix,"bin","harness-gateway"),value.before?.wrappers?.["harness-gateway"])||
-      !same(join(prefix,"bin","subscription-gateway"),value.before?.wrappers?.["subscription-gateway"]))throw Error();
+      !same(join(prefix,"bin","subscription-gateway"),value.before?.wrappers?.["subscription-gateway"])||
+      value.before?.wrappers?.gatefox!==undefined&&!same(join(prefix,"bin","gatefox"),value.before.wrappers.gatefox))throw Error();
+    process.stdout.write(value.before?.wrappers?.gatefox===undefined?"no":"yes");
   }
   finally { closeSync(file); }
 } catch { process.exit(2); }
 JS
+)
 fi
 transaction_receipt() {
   [ -z "$transaction_nonce" ] && return 0
@@ -74,8 +81,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 const [root,prefix,version,nonce,key,path]=process.argv.slice(2);
 const fail=()=>process.exit(2), journal=join(root,"app-update-transaction.json");
-const expected={current:/^current\.new-[0-9]+$/,previous:/^previous-release\.new-[0-9]+$/,gateway:/^gateway\.new$/, "harness-gateway":/^harness-gateway\.new$/};
-if (!expected[key] || resolve(root)!==root || resolve(prefix)!==prefix || resolve(root)!==resolve(prefix,"share","subscription-gateway")) fail();
+const expected={current:/^current\.new-[0-9]+$/,previous:/^previous-release\.new-[0-9]+$/,gateway:/^gateway\.new$/, "harness-gateway":/^harness-gateway\.new$/, gatefox:/^gatefox\.new$/};
+if (!expected[key] || resolve(root)!==root || resolve(prefix)!==prefix || !["gatefox","subscription-gateway"].some(name=>resolve(root)===resolve(prefix,"share",name))) fail();
 const parent=key==="current"||key==="previous"?root:join(prefix,"bin");
 if (dirname(path)!==parent || !expected[key].test(path.slice(parent.length+1))) fail();
 let descriptor; try { descriptor=openSync(journal,constants.O_RDONLY|constants.O_NOFOLLOW); const info=fstatSync(descriptor);
@@ -131,6 +138,8 @@ fi
 # gateway stays a second managed launcher with the same contents, so the older command and old LaunchAgents keep working.
 launcher="$prefix/bin/harness-gateway"
 compat="$prefix/bin/gateway"
+# gatefox is a third launcher with the same contents, the command name since 1.8.0.
+gatefox="$prefix/bin/gatefox"
 managed='^# Managed by subscription-gateway installer$'
 if [ -L "$launcher" ]; then
   # Only the installer's own link to its gateway launcher is replaced.
@@ -141,8 +150,13 @@ fi
 if [ -e "$compat" ] || [ -L "$compat" ]; then
   test -f "$compat" && grep -q "$managed" "$compat" || { echo 'gateway command is occupied by another installation.' >&2; exit 2; }
 fi
+if [ "$gatefox_tracked" = yes ] && { [ -e "$gatefox" ] || [ -L "$gatefox" ]; }; then
+  test -f "$gatefox" && [ ! -L "$gatefox" ] && grep -q "$managed" "$gatefox" || { echo 'gatefox command is occupied by another installation.' >&2; exit 2; }
+fi
+staged_gatefox=""
+[ "$gatefox_tracked" = yes ] && staged_gatefox="$gatefox.new"
 # Staging names are exclusive. A leftover file or link is evidence of another publisher and is never removed here.
-./runtime/bin/node --input-type=module - "$root" "$launcher" "$launcher.new" "$compat.new" <<'JS'
+./runtime/bin/node --input-type=module - "$root" "$launcher" "$launcher.new" "$compat.new" ${staged_gatefox:+"$staged_gatefox"} <<'JS'
 import {writeFileSync} from 'node:fs';
 const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
 const [root,launcher,...files]=process.argv.slice(2);
@@ -150,14 +164,16 @@ const appRuntime=root+'/app-runtime';
 const text='#!/bin/sh\n# Managed by subscription-gateway installer\n# App runtime is registered by Harness Gateway.\nruntime='+quote(root+'/current/runtime/bin/node')+'\nif [ -L '+quote(appRuntime)+' ] || [ -e '+quote(appRuntime)+' ]; then\n runtime='+quote(appRuntime+'/bin/node')+'\n [ -x "$runtime" ] || { echo \'Harness Gateway app runtime is unavailable.\' >&2; exit 78; }\n PATH='+quote(appRuntime+'/bin')+':"${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"\n export PATH\nfi\nGATEWAY_COMMAND='+quote(launcher)+' GATEWAY_INSTALLED=1 exec "$runtime" '+quote(root+'/current/package/dist/cli.js')+' "$@"\n';
 for(const file of files)writeFileSync(file,text,{flag:'wx'});
 JS
-chmod 700 "$launcher.new" "$compat.new"
+chmod 700 "$launcher.new" "$compat.new" ${staged_gatefox:+"$staged_gatefox"}
 ln -s "releases/$version" "$root/current.new-$$"
 transaction_receipt current "$root/current.new-$$"
 transaction_receipt harness-gateway "$launcher.new"
 transaction_receipt gateway "$compat.new"
+[ -z "$staged_gatefox" ] || transaction_receipt gatefox "$staged_gatefox"
 ./runtime/bin/node -e 'require("fs").renameSync(process.argv[1],process.argv[2])' "$root/current.new-$$" "$root/current"
 mv "$launcher.new" "$launcher"
 mv "$compat.new" "$compat"
+[ -z "$staged_gatefox" ] || mv "$staged_gatefox" "$gatefox"
 printf 'subscription-gateway\n' > "$root/.gateway-installation"
 if [ -z "$transaction_nonce" ] && [ "$prefix" = "$HOME/.local" ] && [ -n "$legacy_command" ] && [ "$legacy_command" != "$launcher" ] && [ "$legacy_command" != "$compat" ] && [ -L "$legacy_command" ]; then
   if ./runtime/bin/node - "$legacy_command" <<'JS'

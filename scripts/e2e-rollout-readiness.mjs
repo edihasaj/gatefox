@@ -8,6 +8,7 @@ import { createServer } from "node:net";
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { installRoot } from './install-root.mjs';
 import { parseArgs } from "node:util";
 import { promisify } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
@@ -161,11 +162,11 @@ try {
   }
   evidence.installerRepeated = true;
 
-  const installed = join(prefix, "share", "subscription-gateway", "releases", expectedVersion);
+  const installed = join(installRoot(prefix), "releases", expectedVersion);
   const gateway = join(prefix, "bin", "harness-gateway");
   const receipt = JSON.parse(await readFile(join(installed, "package", "release.json"), "utf8"));
   assert.equal(receipt.version, expectedVersion, "The installed immutable receipt must match the candidate");
-  assert.equal(await realpath(join(prefix, "share", "subscription-gateway", "current")), installed, "Current must resolve to the installed candidate");
+  assert.equal(await realpath(join(installRoot(prefix), "current")), installed, "Current must resolve to the installed candidate");
 
   const port = await reservePort();
   const config = join(fixture, "gateway.json");

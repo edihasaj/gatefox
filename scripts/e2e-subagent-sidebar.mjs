@@ -33,7 +33,7 @@ process.env.CODEX_HOME = native;
 process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = '1';
 process.env.GATEWAY_TELEMETRY = 'off';
 process.env.GATEWAY_ERROR_REPORTS = 'off';
-for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'HARNESS_GATEWAY_EXECUTOR']) delete process.env[key];
+for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'HARNESS_GATEWAY_EXECUTOR', 'GATEFOX_EXECUTOR']) delete process.env[key];
 const load = name => import(pathToFileURL(join(code, 'dist', name + '.js')));
 const { AppServerBackends } = await load('app-server-backends');
 const { AppServerRouter } = await load('app-server-router');
@@ -90,7 +90,7 @@ const until = async (check, label, ms = 30_000) => {
 };
 let calls = 0, childCalls = 0, seededHigh = false, spawned = false, gateway, host, phase = 'setup', parentOperation, nativeConfig;
 const clients = [], usageEvents = [], compactionThreads = [];
-const evidence = { fixture, shared: !values.private, identity: values.openai ? 'openai' : 'subscription_gateway',
+const evidence = { fixture, shared: !values.private, identity: values.openai ? 'openai' : 'gatefox',
   realGatewaySdk: true, paidInferenceRequests: 0, collaborationVersion: values.v2 ? 'v2' : 'v1',
   ...(values.accounts ? { codexAccounts: 2, childAccount: 'selected' } : {}), passed: false };
 if (values['role-fork']) Object.assign(evidence, { mode: 'role-fork', fullHistoryFork: true,

@@ -110,8 +110,8 @@ function authenticateArchive(archivePath, expectedSha256, flag) {
   const archive = readFileSync(archivePath);
   if (digest(archive) !== expectedSha256) throw invalid('archive SHA-256 mismatch');
   const entries = tarEntries(gunzipSync(archive, { maxOutputLength: 768 * 1024 * 1024 }));
-  // Releases before the rename use the subscription-gateway archive prefix.
-  const roots = [...entries.keys()].filter(name => /^(harness|subscription)-gateway-\d+\.\d+\.\d+-macos-arm64$/.test(name));
+  // Releases from 1.8.0 use the gatefox prefix; earlier ones harness-gateway, and before that subscription-gateway.
+  const roots = [...entries.keys()].filter(name => /^(?:gatefox|(?:harness|subscription)-gateway)-\d+\.\d+\.\d+-macos-arm64$/.test(name));
   if (roots.length !== 1 || !entries.get(roots[0]).directory) throw invalid('unexpected release root');
   const root = roots[0]; const release = json(entries, `${root}/package/release.json`);
   const pkg = json(entries, `${root}/package/package.json`); const version = root.match(/-(\d+\.\d+\.\d+)-macos/)[1];

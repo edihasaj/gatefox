@@ -49,7 +49,7 @@ the one-pass distribution command:
 
 ```sh
 node scripts/release-macos-app.mjs \
-  --backend-archive /absolute/harness-gateway-VERSION-macos-arm64.tar.gz \
+  --backend-archive /absolute/gatefox-VERSION-macos-arm64.tar.gz \
   --backend-sha256 LOWERCASE_SHA256 \
   --identity DEVELOPER_ID_SHA1 \
   --keychain /absolute/signing.keychain-db \
@@ -84,8 +84,8 @@ Omit `--publish` only to exercise the local build, signing, and archive gates.
 It leaves the versioned stage in place and deliberately cannot resume it as a
 later publication. For an actual distribution, rerun only after moving that
 failed or inspection-only stage to Trash, then use the one-pass command above.
-`--publish` uses `~/Applications/Harness Gateway.app` and
-`~/.local/share/subscription-gateway/current` by default for the updater fixture;
+`--publish` uses `~/Applications/GateFox.app` (or a `Harness Gateway.app` not yet renamed) and
+`~/.local/share/gatefox/current` (or the pre-1.8.0 `share/subscription-gateway`) by default for the updater fixture;
 pass absolute `--previous-app` and `--installed-release` paths to select the
 intended existing signed app and CLI release.
 
@@ -196,8 +196,8 @@ JavaScript. Installing a CLI update preserves the registration. See
    retry a garbled tool call and finish. It uses a local mock and spends no credit.
    For chat identity changes, run `scripts/e2e-identity.mjs --package
    INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY`. With the package's own
-   gateway SDK and a mock upstream it proves that new chats stay
-   `subscription_gateway` by default, and that with the `openai` opt-in a new gateway
+   gateway SDK and a mock upstream it proves that new chats are recorded as
+   `gatefox` by default (a chat saved as `subscription_gateway` before 1.8.0 keeps its id), and that with the `openai` opt-in a new gateway
    chat is recorded as `openai` (thread, rollout and SQLite), is in the registry when its start returns,
    compacts locally on the selected model, routes to the gateway when a new connection
    resumes it, sends nothing with the gateway token to the ChatGPT backend, and is
@@ -445,7 +445,7 @@ source-less workspace versions. All external package versions, sources, checksum
 and dependency blocks remain byte-identical. The repaired lockfile and helper are
 hashed in the receipt; Cargo tests and builds still use `--locked`.
 The test gate runs three executor-identity unit tests in `codex-model-provider-info`
-and six compaction cases: the four for `subscription_gateway` and native chats, and
+and six compaction cases: the four for the gateway's ids (`gatefox`, `subscription_gateway`) and native chats, and
 two for `openai` inside a marked gateway executor. It also runs two queue integration
 tests covering both gateway identities, writes during a pause, cold resume,
 explicit continuation, explicit queue start, and the native failure behavior.

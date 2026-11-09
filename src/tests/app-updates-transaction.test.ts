@@ -50,6 +50,26 @@ test("partial canonical publication restores current and wrappers", async () => 
     await assert.rejects(readFile(join(f.root, "app-update-transaction.json")), { code: "ENOENT" });
   } finally { await rm(f.directory, { recursive: true, force: true }); }
 });
+test("a failed update removes a gatefox launcher it published where none existed before", async () => {
+  const f = await fixture(); try {
+    const gatefox = join(f.prefix, "bin", "gatefox");
+    await assert.rejects(runCanonicalInstall(await f.tx(), { installer: async () => {
+      await writeFile(gatefox, "# Managed by subscription-gateway installer\nnew gatefox\n", { mode: 0o700 }); await f.receipt("gatefox", gatefox);
+      await f.install(true);
+    }, command: noop }), /partial/);
+    await assert.rejects(lstat(gatefox), { code: "ENOENT" });
+    assert.equal(await readlink(join(f.root, "current")), "releases/0.1.0");
+  } finally { await rm(f.directory, { recursive: true, force: true }); }
+});
+test("a journal written by an updater from before 1.8.0, without gatefox, still recovers", async () => {
+  const f = await fixture(); try {
+    const tx = await f.tx(), path = join(f.root, "app-update-transaction.json"), journal = JSON.parse(await readFile(path, "utf8"));
+    assert.ok(journal.before.wrappers.gatefox, "a 1.8.0 journal records gatefox");
+    delete journal.before.wrappers.gatefox; journal.phase = "installing"; await writeFile(path, JSON.stringify(journal), { mode: 0o600 });
+    assert.equal(await recoverInstallationTransaction({ installation: tx.installation, app: tx.app, team: tx.team, command: noop }), "rolled_back");
+    await assert.rejects(readFile(path), { code: "ENOENT" });
+  } finally { await rm(f.directory, { recursive: true, force: true }); }
+});
 test("a transaction cannot downgrade a release selected by a concurrent canonical installer", async () => {
   const f = await fixture(); try {
     await mkdir(join(f.root, "releases", "0.3.0")); await writeFile(join(f.root, "releases", "0.3.0", ".gateway-release"), "0.3.0\n");

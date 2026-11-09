@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { digest, verifiedBackend } from './macos-app-backend.mjs';
+import { backendAsset } from './release-names.mjs';
 
 const BACKEND = 'Contents/Resources/backend';
 const BUILD_RECEIPT = 'Contents/Resources/app-build.json';
@@ -130,7 +131,7 @@ export function preflightProductionSigning(app, receipt, { runGit = sourceGit } 
   const policy = readJson(appPath(app, UPDATE_POLICY), 'update policy');
   const expected = {
     schemaVersion: 1, version: receipt.appVersion, source: receipt.source, branch: 'production',
-    backendAsset: `harness-gateway-${receipt.appVersion}-macos-arm64.tar.gz`,
+    backendAsset: backendAsset(receipt.appVersion),
     backendSha256: receipt.backendSha256,
   };
   if (JSON.stringify(policy) !== JSON.stringify(expected)) throw new Error('Production update policy does not match app build receipt');

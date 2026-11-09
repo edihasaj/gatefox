@@ -33,7 +33,7 @@ const serving = serveUnix(socketPath, controller.signal, async (input, emit) => 
   }
 }, null, () => listening());
 const env = { ...process.env, HOME: home, CODEX_HOME: home };
-for (const name of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'HARNESS_GATEWAY_EXECUTOR']) delete env[name];
+for (const name of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'HARNESS_GATEWAY_EXECUTOR', 'GATEFOX_EXECUTOR']) delete env[name];
 const bridge = createServer(input => {
   clients.add(input); input.once('close', () => clients.delete(input)); input.on('error', () => {});
   const flight = proxyNative(resolve(values.codex), ['app-server', 'proxy', '--sock', socketPath], env, input, device,

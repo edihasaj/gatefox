@@ -16,7 +16,7 @@ for (const folder of [root, native, work, join(fixture, 'home')]) await mkdir(fo
 process.env.HOME = join(fixture, 'home'); process.env.CODEX_HOME = native;
 process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = '1';
 process.env.GATEWAY_TELEMETRY = 'off'; process.env.GATEWAY_ERROR_REPORTS = 'off';
-for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'HARNESS_GATEWAY_EXECUTOR']) delete process.env[key];
+for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'HARNESS_GATEWAY_EXECUTOR', 'GATEFOX_EXECUTOR']) delete process.env[key];
 const load = name => import(pathToFileURL(join(code, 'dist', name + '.js')));
 const { loadConfig, writePrivateJson } = await load('config');
 const { gatewaySdkRuntime } = await load('gateway-sdk-runtime');

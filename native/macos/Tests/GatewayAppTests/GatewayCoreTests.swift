@@ -4,6 +4,15 @@ import XCTest
 
 @MainActor
 final class GatewayCoreTests: XCTestCase {
+    func testFreshInstallUsesGateFoxConfigurationAndExistingMacKeepsItsOwn() {
+        let home = URL(filePath: "/Users/dev")
+        let gatefox = "/Users/dev/Library/Application Support/GateFox/gateway.json"
+        let legacy = "/Users/dev/Library/Application Support/Subscription Gateway/gateway.json"
+        XCTAssertEqual(GatewayModel.defaultConfigPath(homeDirectory: home, exists: { _ in false }), gatefox)
+        XCTAssertEqual(GatewayModel.defaultConfigPath(homeDirectory: home, exists: { $0 == legacy }), legacy)
+        XCTAssertEqual(GatewayModel.defaultConfigPath(homeDirectory: home, exists: { _ in true }), gatefox)
+    }
+
     func testTerminationWaitsForGatewaySetupToFinish() async throws {
         let home = try temporaryHome()
         let config = home.appending(path: "gateway.json")

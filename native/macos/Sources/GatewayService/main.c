@@ -16,14 +16,21 @@ enum {
     path_size = 4096,
 };
 
-static const char installer_marker[] =
-    "# Managed by subscription-gateway installer";
+/* GateFox installers write the first marker; installations from before 1.8.0 carry the second. */
+static const char *const installer_markers[] = {
+    "# Managed by gatefox installer",
+    "# Managed by subscription-gateway installer",
+};
 static const char failure_message[] = "Gateway service launcher failed\n";
 static const char service_suffix[] = "/Contents/MacOS/GatewayService";
 static const char runtime_suffix[] = "/Contents/Resources/backend/runtime/bin/node";
-static const char cli_suffix[] = "/share/subscription-gateway/current/package/dist/cli.js";
+/* A fresh installation lives in share/gatefox; one from before 1.8.0 keeps share/subscription-gateway. */
+static const char *const cli_suffixes[] = {
+    "/share/gatefox/current/package/dist/cli.js",
+    "/share/subscription-gateway/current/package/dist/cli.js",
+};
 static const char *const command_names[] = {
-    "gateway", "harness-gateway", "subscription-gateway",
+    "gateway", "gatefox", "harness-gateway", "subscription-gateway",
 };
 
 static void fail(void) {
@@ -55,16 +62,18 @@ static int is_expected_mode(const char *mode) {
 }
 
 static int has_installer_marker(const char *contents, size_t length) {
-    const size_t marker_length = sizeof(installer_marker) - 1;
     size_t line_start = 0;
 
     for (size_t index = 0; index <= length; index++) {
         if (index != length && contents[index] != '\n') {
             continue;
         }
-        if (index - line_start == marker_length &&
-            memcmp(contents + line_start, installer_marker, marker_length) == 0) {
-            return 1;
+        for (size_t marker = 0; marker < sizeof(installer_markers) / sizeof(installer_markers[0]); marker++) {
+            size_t marker_length = strlen(installer_markers[marker]);
+            if (index - line_start == marker_length &&
+                memcmp(contents + line_start, installer_markers[marker], marker_length) == 0) {
+                return 1;
+            }
         }
         line_start = index + 1;
     }
@@ -220,10 +229,15 @@ int main(int argc, char *argv[]) {
     char node[path_size];
     char cli[path_size];
     if (snprintf(node, sizeof(node), "%s%s", root, runtime_suffix) >= (int)sizeof(node) ||
-        snprintf(cli, sizeof(cli), "%s%s", prefix, cli_suffix) >= (int)sizeof(cli)) {
+        !check_file(node, 1)) {
         fail();
     }
-    if (!check_file(node, 1) || !check_file(cli, 0)) {
+    int found = 0;
+    for (size_t index = 0; !found && index < sizeof(cli_suffixes) / sizeof(cli_suffixes[0]); index++) {
+        found = snprintf(cli, sizeof(cli), "%s%s", prefix, cli_suffixes[index]) < (int)sizeof(cli) &&
+            check_file(cli, 0);
+    }
+    if (!found) {
         fail();
     }
 

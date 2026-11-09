@@ -2,6 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { installRoot } from './install-root.mjs';
+import { appAsset, appBundle, backendAsset } from './release-names.mjs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { copyVerifiedBackend, verifiedBackend } from './macos-app-backend.mjs';
@@ -27,7 +29,7 @@ const backend = production
     productionStage = stageProductionBackend({ ...production, version, source });
     return productionStage.backend;
   })()
-  : verifiedBackend(resolve(values.backend ?? join(homedir(), '.local/share/subscription-gateway/current')));
+  : verifiedBackend(resolve(values.backend ?? join(installRoot(join(homedir(), '.local')), 'current')));
 if (backend.version !== version) throw new Error('Bundled backend version must match the app version');
 process.on('exit', () => { if (productionStage) removeProductionStage(productionStage.stage); });
 const buildEnvironment = { ...process.env };
@@ -41,7 +43,7 @@ const binaryDirectory = execFileSync('swift', ['build', '--package-path', 'nativ
 const output = join(root, '.state/macos-app');
 mkdirSync(output, { recursive: true });
 const stage = mkdtempSync(join(output, 'build-'));
-const app = join(stage, 'Harness Gateway.app');
+const app = join(stage, appBundle);
 const resources = join(app, 'Contents/Resources');
 mkdirSync(join(app, 'Contents/MacOS'), { recursive: true });
 mkdirSync(resources, { recursive: true });
@@ -176,21 +178,21 @@ writeFileSync(join(resources, 'app-build.json'), JSON.stringify({
 if (production) {
   writeFileSync(join(resources, 'update-policy.json'), JSON.stringify({
     schemaVersion: 1, version, source, branch: 'production',
-    backendAsset: `harness-gateway-${version}-macos-arm64.tar.gz`,
+    backendAsset: backendAsset(version),
     backendSha256: production.sha256,
   }, null, 2) + '\n');
 }
 run('/usr/bin/plutil', ['-lint', join(app, 'Contents/Info.plist')]);
-const archive = join(stage, `Harness-Gateway-${version}-macos-arm64.zip`);
+const archive = join(stage, appAsset(version));
 run('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, archive]);
 if (values['install-local']) {
   const applications = join(homedir(), 'Applications');
-  const target = join(applications, 'Harness Gateway.app');
+  const target = join(applications, appBundle);
   mkdirSync(applications, { recursive: true });
   // Exclusive creation also refuses dangling links and concurrent installers.
   try { mkdirSync(target); }
   catch (error) {
-    if (error.code === 'EEXIST') throw new Error('Harness Gateway.app already exists. Quit it and move it to Trash before reinstalling.');
+    if (error.code === 'EEXIST') throw new Error(`${appBundle} already exists. Quit it and move it to Trash before reinstalling.`);
     throw error;
   }
   run('/usr/bin/ditto', [app, target]);

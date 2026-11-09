@@ -14,7 +14,9 @@ export function endpointURL(value: string): string {
 export const codexStreamIdleTimeoutMs = 90000;
 
 /** The provider id the desktop adapter registers under in a native configuration. */
-export const adapterProvider = "subscription_gateway";
+/** The provider id the generated settings select; `subscription_gateway` is registered beside it so chats saved before 1.8.0 resolve. */
+export const adapterProvider = "gatefox";
+export const legacyAdapterProvider = "subscription_gateway";
 
 /**
  * The gateway's own Responses provider, in the spelling `config.toml` uses. Both the adapter's generated settings and
@@ -24,7 +26,7 @@ export const adapterProvider = "subscription_gateway";
  */
 export function gatewayProviderTable(endpoint: string, credentialArgs: string[]): Record<string, unknown> {
   const helper = gatewayCommand();
-  return { name: "Harness Gateway", base_url: endpointURL(endpoint), wire_api: "responses", supports_websockets: false,
+  return { name: "GateFox", base_url: endpointURL(endpoint), wire_api: "responses", supports_websockets: false,
     request_max_retries: 2, stream_idle_timeout_ms: codexStreamIdleTimeoutMs,
     auth: { command: helper.command, args: [...helper.args, "token", ...credentialArgs], timeout_ms: 5000, refresh_interval_ms: 300000 } };
 }
@@ -41,7 +43,7 @@ function providerTableToml(endpoint: string, credentialArgs: string[], id: strin
 
 export function codexSettings(model: string, catalog: string, endpoint: string, credentialArgs: string[]): string {
   const quoted = (value: string) => JSON.stringify(value);
-  return `model = ${quoted(model)}\nmodel_provider = "${adapterProvider}"\nmodel_catalog_json = ${quoted(resolve(catalog))}\nmodel_reasoning_summary = "auto"\n\n${providerTableToml(endpoint, credentialArgs, adapterProvider)}`;
+  return `model = ${quoted(model)}\nmodel_provider = "${adapterProvider}"\nmodel_catalog_json = ${quoted(resolve(catalog))}\nmodel_reasoning_summary = "auto"\n\n${providerTableToml(endpoint, credentialArgs, adapterProvider)}\n${providerTableToml(endpoint, credentialArgs, legacyAdapterProvider)}`;
 }
 
 /** Fetch only the public catalog. The inference host keeps provider credentials. */

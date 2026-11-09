@@ -170,7 +170,7 @@ test("a host restarted under a loaded chat re-attaches with a resume that leaves
   } finally { await f.clean(); }
 });
 
-test("a chat saved as openai and one saved as subscription_gateway each re-attach under their own saved provider", { timeout: 30000 }, async () => {
+test("a chat saved as openai and one saved as gatefox each re-attach under their own saved provider", { timeout: 30000 }, async () => {
   const f = await fixture();
   try {
     await f.start("mine", "openai"); await f.start("theirs");
@@ -179,7 +179,7 @@ test("a chat saved as openai and one saved as subscription_gateway each re-attac
     for (const id of ["mine", "theirs"]) await f.backends.request("turn/start", turn(id, "after the restart"));
     const resumes = (await f.logged()).filter(row => row.method === "thread/resume");
     assert.equal(resumes.length, 2); assert.deepEqual(resumes.map(row => row.modelProvider), [undefined, undefined], "neither resume names a provider");
-    for (const [id, provider] of [["mine", "openai"], ["theirs", "subscription_gateway"]] as const) {
+    for (const [id, provider] of [["mine", "openai"], ["theirs", "gatefox"]] as const) {
       const thread = (await f.backends.request("thread/read", { threadId: id, includeTurns: false })).thread as Message;
       assert.equal(thread.modelProvider, provider, `${id} still carries its saved provider`);
     }

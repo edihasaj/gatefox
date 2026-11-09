@@ -31,7 +31,7 @@ async function fixture() {
 const {createInterface}=require('node:readline');const {readFileSync,writeFileSync,existsSync}=require('node:fs');
 if(process.argv.includes('--version')){console.log('codex-cli 0.162.0-alpha.17.2');process.exit(0);}
 const args=process.argv.slice(2),root=args[args.indexOf('--fixture-root')+1],saved=root+'/threads.json';
-const gateway=args.some(arg=>arg==='model_provider="subscription_gateway"');let sequence=0,held=null;
+const gateway=args.some(arg=>arg==='model_provider="subscription_gateway"'||arg==='model_provider="gatefox"');let sequence=0,held=null;
 const all=()=>existsSync(saved)?JSON.parse(readFileSync(saved,'utf8')):{};
 const keep=t=>{const value=all();value[t.id]=t;writeFileSync(saved,JSON.stringify(value));};
 const send=m=>process.stdout.write(JSON.stringify(m)+'\\n');
@@ -177,10 +177,10 @@ for (const identity of gatewayIdentities) test(`the probe path classifies a save
     // The classification is recorded once per chat on this connection, with the rule and the method only.
     const events = await f.classified();
     assert.deepEqual(events.map(event => [event.rule, event.method]).sort(), [
-      [identity.name === "legacy" ? "legacy_provider" : "alias", "thread/resume"],
+      [identity.name !== "openai" ? "legacy_provider" : "alias", "thread/resume"],
       ["native", "thread/resume"],
       ["parent", "thread/resume"],
-      [identity.name === "legacy" ? "legacy_provider" : "registry", "thread/resume"],
+      [identity.name !== "openai" ? "legacy_provider" : "registry", "thread/resume"],
     ].sort());
     for (const event of events) assert.deepEqual(Object.keys(event).sort(), ["at", "component", "event", "host", "method", "pid", "rule"]);
   } finally { await f.clean(); }

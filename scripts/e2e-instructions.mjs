@@ -31,7 +31,7 @@ const rpc = (method, params = {}) => new Promise((resolve, reject) => {
 const lines = createInterface({ input: child.stdout });
 lines.on('line', line => { const m = JSON.parse(line); const p = pending.get(m.id); if (p) { clearTimeout(p.timer); pending.delete(m.id); m.error ? p.reject(new Error(m.error.message)) : p.resolve(m.result); } else if (m.method && m.id !== undefined) child.stdin.write(JSON.stringify({ id: m.id, error: { code: -32601, message: 'No test approval handler' } }) + '\n'); else if (m.method) { events.push(m); if (m.method === 'turn/completed') completed.set(m.params.turn.id, m.params.turn); } });
 async function check(model, effort, trigger, expected, revision = "initial") {
-  const thread = await rpc('thread/start', { model, cwd: workspace, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true }); assert.ok(['openai', 'subscription_gateway'].includes(thread.modelProvider));
+  const thread = await rpc('thread/start', { model, cwd: workspace, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true }); assert.ok(['openai', 'gatefox', 'subscription_gateway'].includes(thread.modelProvider));
   const offset = events.length; const turn = await rpc('turn/start', { threadId: thread.thread.id, model, effort, input: [{ type: 'text', text: trigger }] });
   const end = Date.now() + 120000; while (!completed.has(turn.turn.id) && Date.now() < end) await delay(100);
   const result = completed.get(turn.turn.id); assert.equal(result?.status, 'completed', result?.error?.message);

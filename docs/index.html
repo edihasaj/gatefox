@@ -44,8 +44,8 @@
         <span>Codex · Claude Code</span><b aria-hidden="true">→</b><span>Gateway on this Mac</span><b aria-hidden="true">→</b><span>Your accounts</span>
       </div>
       <div class="split">
-        <div><h3>The gateway does</h3><ul><li>Sign in to each account the official way</li><li>Add its models to your app's picker</li><li>Translate requests and stream answers back</li></ul></div>
-        <div><h3>Your app still does</h3><ul><li>Run tools and ask for approvals</li><li>Own chats, names and permissions</li><li>Choose the model and agents</li></ul></div>
+        <div><h2>The gateway does</h2><ul><li>Sign in to each account the official way</li><li>Add its models to your app's picker</li><li>Translate requests and stream answers back</li></ul></div>
+        <div><h2>Your app still does</h2><ul><li>Run tools and ask for approvals</li><li>Own chats, names and permissions</li><li>Choose the model and agents</li></ul></div>
       </div>
       <p>Each account keeps its own sign-in. A failed request never moves to another account or billing plan, and the gateway never logs tokens, request bodies or tool arguments.</p>
     </header>
@@ -68,7 +68,7 @@
 
       <h3>The command-line way</h3>
       <p>Run these in a new, empty download folder. The installer needs no administrator access and installs under your user folder.</p>
-      <pre><code>VERSION=1.7.7
+      <pre><code>VERSION=1.7.8
 gh release download "v$VERSION" -R edihasaj/gatefox \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
@@ -177,7 +177,7 @@ gateway versions --check</code></pre>
       <div class="table-wrap"><table><thead><tr><th>Symptom</th><th>Next step</th></tr></thead><tbody>
         <tr><td>Added models are missing</td><td>Quit Codex normally once and reopen it. Then run <code>gateway desktop status</code> and <code>gateway doctor</code>.</td></tr>
         <tr><td>“Model not supported with a ChatGPT account”</td><td>Start a new chat with the gateway model selected. An existing native chat cannot switch to it.</td></tr>
-        <tr><td>Model provider <code>subscription_gateway</code> not found</td><td>Run <code>gateway desktop register</code> on the Mac that owns the chat's project, then reopen the chat.</td></tr>
+        <tr><td>Model provider <code>gatefox</code> (or <code>subscription_gateway</code>) not found</td><td>Run <code>gateway desktop register</code> on the Mac that owns the chat's project, then reopen the chat. It registers both of the gateway's ids.</td></tr>
         <tr><td>An extra Mac sees no models</td><td>Check that the main Mac is awake, then run <code>gateway doctor</code> on the extra Mac to test the tunnel.</td></tr>
         <tr><td>An answer stops early</td><td>Check <code>gateway service status</code>. Keep the chat and logs; the gateway does not retry on another account.</td></tr>
       </tbody></table></div>

@@ -16,6 +16,7 @@ import { lstatSync, readlinkSync, statSync } from "node:fs";
 import { isAbsolute, resolve, sep } from "node:path";
 import { isDesktopPreferenceKey } from "./desktop-preferences.js";
 import { parseKeyPath } from "./app-server-config-writes-key-path.js";
+import { gatewayOwnProviders } from "./chat-identity.js";
 
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => value && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : {};
@@ -88,9 +89,11 @@ export const partitionConfigEdits = (edits: unknown[]): { privateEdits: ObjectVa
   nativeEdits: edits.filter(edit => !isGatewayPreferenceEdit(edit)),
 });
 
+/** The ids that name the gateway: the router's own, plus both of the gateway's ids (`gatefox`, and `subscription_gateway` before 1.8.0). */
+const gatewayIds = (provider: string): string[] => [provider, ...gatewayOwnProviders];
 // A provider row only identifies the gateway while it holds something; a cleared row is a deletion.
 const holdsGatewayProviderRow = (value: unknown, provider: string): boolean =>
-  plain(value) && Object.hasOwn(value, provider) && value[provider] !== null;
+  plain(value) && gatewayIds(provider).some(id => Object.hasOwn(value, id) && value[id] !== null);
 
 /** The path the engine reads a string as, resolving anything merely relative to it against `base`: a
  * lone `~` is the home directory; `~/rest` is home with `rest` below it, where only a slash is the
@@ -403,7 +406,7 @@ const isModelBearingKey = (key: string): boolean => key === "model" || key.endsW
 const isProviderKey = (key: string): boolean => key === "model_provider" || key === "oss_provider";
 
 const isProviderRowPath = (segments: string[], provider: string): boolean =>
-  segments.some((segment, index) => segment === "model_providers" && segments[index + 1] === provider);
+  segments.some((segment, index) => segment === "model_providers" && gatewayIds(provider).includes(segments[index + 1]!));
 
 type Finding = "clear" | "identity" | "catalog" | "unreadable" | "too-deep";
 // A profile or plugin block can carry its own model settings; search it the way the engine reads it back.
@@ -417,7 +420,7 @@ const scanValue = (value: unknown, guard: GatewayPathGuard, depth: number): Find
   }
   for (const [key, item] of Object.entries(value as ObjectValue)) {
     if (isModelBearingKey(key) && identity.isGatewayModel(item)) return "identity";
-    if (isProviderKey(key) && item === identity.provider) return "identity";
+    if (isProviderKey(key) && gatewayIds(identity.provider).includes(item as string)) return "identity";
     if (key === "model_providers" && holdsGatewayProviderRow(item, identity.provider)) return "identity";
     if (key === "model_catalog_json" && catalogPathUnreadable(item)) return "unreadable";
     if (key === "model_catalog_json" && holdsGatewayCatalogPath(item, guard)) return "catalog";
@@ -445,7 +448,7 @@ const editViolation = (edit: ObjectValue, identity: GatewayIdentity, guard: Gate
   if (isGatewayPreferencePath(segments) && !plainSpelling(keyPath, segments)) return gatewayPreferenceSpellingMessage;
   const last = segments[segments.length - 1]!;
   if (isModelBearingKey(last) && identity.isGatewayModel(value)) return last === "model" ? gatewayProfileMessage : gatewayIdentityMessage;
-  if (isProviderKey(last) && value === identity.provider) return gatewayIdentityMessage;
+  if (isProviderKey(last) && gatewayIds(identity.provider).includes(value as string)) return gatewayIdentityMessage;
   // Saving any row of the gateway provider is refused; clearing one with null must stay possible.
   if (value !== null && isProviderRowPath(segments, identity.provider)) return gatewayIdentityMessage;
   if (last === "model_providers" && holdsGatewayProviderRow(value, identity.provider)) return gatewayIdentityMessage;

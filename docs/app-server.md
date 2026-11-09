@@ -11,17 +11,17 @@ The experimental adapter keeps the original Codex executable and native login.
 By default it adds configured gateway models after the native models; native picker
 placement is configurable below. It routes every chat by its kind, not by its
 provider id. The adapter classifies a chat with the first rule that
-answers, in this order: the legacy provider id `subscription_gateway`; the registry of
+answers, in this order: the gateway's own provider id (`gatefox`, or `subscription_gateway` on a chat saved before 1.8.0); the registry of
 gateway chats; a gateway ancestor of a sub-agent, read from its saved record when this
 connection has not seen it; and a model alias that is not a native model slug. Any other chat is native and keeps its provider. The registry is the file
 `<state directory>/gateway-chats/<scope>.json`, where `<scope>` identifies the native
 Codex home. The adapter writes a gateway chat's start or fork to the registry before it
 returns the reply, a sub-agent that a gateway engine announces before it forwards
 the announcement, and a chat that only its ancestors or alias identified when it routes
-it to an executor. New gateway chats are recorded as `subscription_gateway` by default; a
+it to an executor. New gateway chats are recorded as `gatefox` by default (`subscription_gateway` before 1.8.0); a
 Mac whose native relay is verified can opt in to `"chatIdentity": "openai"` (0.4.7), so a
 stock engine lists them too. Existing chats keep the id they were saved with. A chat list
-that asks only for the native default provider also gets the `subscription_gateway`
+that asks only for the native default provider also gets the `gatefox` and `subscription_gateway`
 chats, which is how the phone sees them through the relay. See
 [harness identity](harness-identity.md) for when to opt in, the executor contract, the
 phone and rollback. A gateway model
@@ -284,7 +284,7 @@ or model cache. It validates that the rows are well formed and writes a combined
 catalog. Cache identity and authentication are excluded.
 The public rows form a combined catalog for gateway executors. The original
 native process keeps its native model and account defaults. The adapter registers
-only the added `subscription_gateway` provider through process arguments, so
+only the gateway's own providers (`gatefox` and `subscription_gateway`) through process arguments, so
 saved gateway chats can resolve that provider when read or resumed. Gateway
 executors get it too, and serve `openai` as a second name for it
 ([harness identity](harness-identity.md)). It does not
@@ -379,8 +379,8 @@ objects in the caller's own order, including an entry the adapter cannot read,
 which is forwarded unchanged. The app writes those keys the same way without the
 gateway, so a setting changed in ChatGPT still reaches its own configuration.
 The adapter itself never writes native configuration on its own initiative.
-Desktop registration is the one exception, and it writes only a single entry: the
-`model_providers.subscription_gateway` row, so saved gateway chats open in any
+Desktop registration is the one exception, and it writes only the gateway's own rows:
+`model_providers.gatefox` and `model_providers.subscription_gateway`, so saved gateway chats open in any
 engine. See [the provider row](harness-identity.md#the-provider-row-in-native-configuration).
 A client edit that saves that row is still refused, as below, because only
 registration maintains it.
@@ -390,7 +390,7 @@ native edit would store gateway identity in native configuration. A key path is
 parsed into segments exactly as the Codex engine parses it: dots separate
 segments, a segment may open with `"` to carry separators literally, and inside
 quotes a `\` escapes the next character. Every rule below reads those segments,
-so a quoted spelling such as `model_providers."subscription_gateway".base_url`
+so a quoted spelling such as `model_providers."gatefox".base_url`
 is refused like the dotted one. A gateway default spelled another way, such as
 `"model"`, is not a key the adapter can save: it reads as a native key to the
 engine, so the write is refused rather than sent. A byte-order mark is not
@@ -402,7 +402,7 @@ whitespace carries no name and is refused.
 | A gateway default key given another spelling, such as `"model"` or `desktop."appearanceTheme"`: the engine reads those segments as a native key, so the adapter neither saves nor forwards it | Gateway defaults must be written with their plain key |
 | A key path the engine cannot parse: empty, or whitespace in the Unicode sense that carries no name, with an empty segment, with a quote that can neither open nor close a segment, or with an unterminated quote or escape | This configuration key is not valid |
 | A key whose last segment is `model` set to a gateway alias | Gateway defaults cannot be saved into a native Codex profile |
-| `model_provider` or `oss_provider`, at the top level or below a profile, set to `subscription_gateway`; a `model_providers.subscription_gateway` key, or any key below it, given a value other than `null`; a `model_providers` key whose value holds that provider with a non-null value | Gateway models and the gateway provider cannot be saved into native Codex configuration |
+| `model_provider` or `oss_provider`, at the top level or below a profile, set to `gatefox` or `subscription_gateway`; a `model_providers.gatefox` or `model_providers.subscription_gateway` key, or any key below it, given a value other than `null`; a `model_providers` key whose value holds that provider with a non-null value | Gateway models and the gateway provider cannot be saved into native Codex configuration |
 | A key whose last segment ends with `_model` (such as `review_model`, `profiles.work.review_model` or `features.guardianv2.review_model`) set to a gateway alias | Gateway models and the gateway provider cannot be saved into native Codex configuration |
 | A value that anywhere holds a gateway alias under a `model` or `*_model` key, that provider under a `model_provider` or `oss_provider` key, or that provider as a non-null key of a `model_providers` value. Values are searched through objects and arrays to 65 nested levels, counting the written value as level 1; a value containing a 66th level is refused. | Gateway models and the gateway provider cannot be saved into native Codex configuration |
 | A `model_catalog_json` key, at the top level or anywhere inside a value, set to the gateway's catalog file or to anything inside the gateway state directory. Files and folders that exist are compared by identity, by device and inode, so a symlink, a firmlink such as `/System/Volumes/Data/private/var/...`, or another letter case of the same name on a case-insensitive volume is refused like the path written out directly; a file or folder that does not exist yet is judged by the identity of its existing ancestor folders as well as by its spellings, the lexical and the resolved one. A path longer than 4096 bytes, the longest any platform accepts and the same cutoff on every platform, is compared by its spelling only, without touching the file system; a single value of about 512 KiB or more (the exact length depends on how many spellings the native home has: 1 MiB divided by that number) is refused outright, because its size charge alone could not fit the budget below. One request may spend at most 16384 units of work on the paths its edits name. A unit is one folder passed while walking a path, whether or not its answer is already remembered; one file-system read (`stat`, `lstat` or `readlink`); or a size charge on every path value judged, of 1 for each full 64 characters of its text, paid each time the value is tried against a base (the native home has up to two spellings) before any of it is resolved. A short name has no size charge, but the first time the guard meets a value it also pays 1 unit per base, and it remembers the answer for that exact value (up to 4096 values): a repeat of a short value costs nothing more, while different short values such as `0/../a`, `1/../a` and so on spend the budget two units apiece. Each time a value is tried against a base also counts as one judgment, and one request may make at most 65,536 of them, remembered answers included; 20,000 profiles judged against two spellings of the native home make 40,000. The size charge is paid for a repeated path too, and for a path whose first folder does not exist, so the string work of a long path is bounded as well as its reads: no more than a few hundred paths of 4000 bytes, distinct or repeated, fit in one request. Links are followed one folder at a time and each step is charged; the resolver gives up after 40 links, and the operating system stops sooner (32 on macOS, 40 on Linux). A folder shared by several paths is read once, but a deep path still costs a unit for every folder each time it is walked. A request that spends the budget is refused whole with "This configuration write names too many different paths to check" instead of being checked by spelling alone, and so is a request past the judgment cap; a single value too long to ever fit is refused with "This configuration write names a path too long to check". A real batch stays far below this limit: one or two catalog paths of ten folders cost under 150 units, 50 edits about 15 folders deep cost about 3400, and 50 edits 33 folders deep about 6200. Every spelling the engine reads is tried: a `~` on its own or `~/rest` is the home directory, and any other relative path is read below the native home in both its lexical and its resolved spelling, never below the directory of the request's `filePath`. With the native home at `~/.codex` and the state directory at `~/.codex/state`, that makes `state/codex-models.json`, `~/.codex/state/codex-models.json` and `../.codex/state/codex-models.json` all the gateway's catalog; `../state/codex-models.json` reaches it only where the state directory sits beside the native home. A name the engine does not expand, such as `~rest`, stays one of the caller's own files and is forwarded | The gateway catalog cannot be saved into native Codex configuration |
@@ -844,8 +844,8 @@ a direct, user-owned release beneath that installation; a checkout, escaped link
 partial old package, or present package whose SDK is missing or invalid never falls
 back.
 
-The connection keeps the provider it selected for new chats. A legacy
-`subscription_gateway` connection can use a newly verified SDK without changing its
+The connection keeps the provider it selected for new chats. A `gatefox`
+connection can use a newly verified SDK without changing its
 identity. A connection that selected `openai` continues only when the replacement
 proves the gateway executor capability; it never resumes gateway history on a stock
 executor.
@@ -895,7 +895,7 @@ gives it directly.
 
 A gateway executor can spawn a Codex 2 or Claude sub-agent whose saved model is a
 native catalog slug such as `gpt-6.1-sol`. That child remains a gateway chat: its
-saved provider stays `subscription_gateway` or (on an opted-in Mac) `openai`, and
+saved provider stays `gatefox` (`subscription_gateway` if saved before 1.8.0) or, on an opted-in Mac, `openai`, and
 the adapter routes reads, history, interrupts, turns and resumes to the executor
 that owns it. A resume with no model or reasoning override lets the SDK restore
 its saved state. The child's web search settings are forwarded as the caller saved them,

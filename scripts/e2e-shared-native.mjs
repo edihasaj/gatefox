@@ -269,7 +269,7 @@ try {
     const followRequests = requests.slice(followAt); assert.ok(followRequests.length && followRequests.every(row => row.model === 'native-fixture' && row.hasSeed && row.serviceTier !== 'priority'));
     await save({ phase, passed: true, historyReplayed: true, nativeStandardPreserved: true });
     phase = transport + '-gateway-capability-separation'; const gatewayChat = await reader.client.rpc('thread/start', { model: 'fixture/gateway', cwd: work, approvalPolicy: 'never', sandbox: 'read-only', serviceTier: 'priority' });
-    assert.ok(['openai', 'subscription_gateway'].includes(gatewayChat.modelProvider)); const gatewayAt = requests.length; await complete(reader.client, gatewayChat.thread.id, 'fixture/gateway');
+    assert.ok(['openai', 'gatefox', 'subscription_gateway'].includes(gatewayChat.modelProvider)); const gatewayAt = requests.length; await complete(reader.client, gatewayChat.thread.id, 'fixture/gateway');
     assert.ok(requests.slice(gatewayAt).length && requests.slice(gatewayAt).every(row => row.model === 'mock-gateway' && row.serviceTier === 'priority'));
     const status = await control.request('execution/status', {});
     if (sharedGateway) {
@@ -289,7 +289,7 @@ try {
         changed = false; for (const row of processRows) if (descendants.has(row.parent) && !descendants.has(row.pid)) { descendants.add(row.pid); changed = true; }
       }
       const children = processRows.filter(row => descendants.has(row.pid) && row.pid !== reader.backendPid)
-        .filter(row => row.args.includes('model_provider=') && row.args.includes('subscription_gateway'));
+        .filter(row => row.args.includes('model_provider=') && /model_provider="(gatefox|subscription_gateway)"/.test(row.args));
       assert.equal(children.length, 1, 'The private gateway executor was not a descendant of its frontend adapter'); assert.notEqual(children[0].pid, native.pid); sdkPids.add(children[0].pid);
       await assertMappedSdk(children[0].pid, adapterGatewayRuntime?.executable ?? sdk);
       assert.ok(children[0].args.includes('features.fast_mode=true') && children[0].args.includes('features.step_model_switching=true'));

@@ -8,6 +8,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const exec = promisify(execFile), script = fileURLToPath(import.meta.url);
@@ -78,7 +79,7 @@ async function main(prefixArgument) {
   try {
     requireProof(process.platform === "darwin" && prefixArgument, "MACOS_PREFIX_REQUIRED");
     const input = await realpath(resolve(prefixArgument)), base = (await stat(input)).isDirectory() ? input : dirname(dirname(input));
-    const candidates = [base, join(base, "share/subscription-gateway/current")];
+    const candidates = [base, join(base, "share/gatefox/current"), join(base, "share/subscription-gateway/current")];
     const prefix = await realpath(await waitFor(async () => {
       for (const candidate of candidates) if (await present(join(candidate, "package/dist/mac-login-consolidate.js"))) return candidate;
       return null;

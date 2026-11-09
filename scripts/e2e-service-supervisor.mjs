@@ -4,6 +4,7 @@ import {promisify} from 'node:util';
 import {mkdtemp,writeFile,readFile} from 'node:fs/promises';
 import {tmpdir,homedir} from 'node:os';
 import {resolve,join,dirname} from 'node:path';
+import { installRoot } from './install-root.mjs';
 import {pathToFileURL} from 'node:url';
 import {createServer} from 'node:http';
 import {createServer as tcpServer} from 'node:net';
@@ -14,7 +15,7 @@ import {randomUUID,createHash} from 'node:crypto';
 // changes desktop registration or the working gateway service.
 if(process.platform!=='darwin'||!process.argv[2])throw Error('Usage: node scripts/e2e-service-supervisor.mjs /absolute/installed/bin/gateway');
 const run=promisify(execFile);const command=resolve(process.argv[2]);
-const root=resolve(dirname(command),'../share/subscription-gateway/current');
+const root=join(installRoot(resolve(dirname(command),'..')),'current');
 const {servicePlist}=await import(pathToFileURL(join(root,'package/dist/mac-service.js')));
 const {writePrivateJson,readClientToken}=await import(pathToFileURL(join(root,'package/dist/config.js')));
 const directory=await mkdtemp(join(tmpdir(),'gateway-service-e2e-'));const configPath=join(directory,'config.json');

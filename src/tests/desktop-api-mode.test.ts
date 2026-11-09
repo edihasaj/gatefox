@@ -327,9 +327,11 @@ test("the shared provider builder keeps the adapter's settings exactly as they w
   const table = gatewayProviderTable("http://127.0.0.1:3457/v1", ["--config", "/state/gateway.json"]);
   assert.deepEqual(Object.keys(table), ["name", "base_url", "wire_api", "supports_websockets", "request_max_retries", "stream_idle_timeout_ms", "auth"]);
   const settings = codexSettings("alias", "/state/codex-models.json", "http://127.0.0.1:3457/v1", ["--config", "/state/gateway.json"]);
-  // The adapter's own native provider id, spelled the way it has always been written.
-  assert.equal(settings.includes('model_provider = "subscription_gateway"'), true);
+  // The adapter selects `gatefox` and registers `subscription_gateway` beside it, so chats saved before 1.8.0 resolve.
+  assert.equal(settings.includes('model_provider = "gatefox"'), true);
+  assert.equal(settings.includes("[model_providers.gatefox.auth]"), true);
   assert.equal(settings.includes("[model_providers.subscription_gateway.auth]"), true);
+  assert.equal(table.name, "GateFox");
   assert.equal(settings.includes("stream_idle_timeout_ms = 90000"), true);
   assert.equal(settings.includes(`args = [${[...gatewayCommand().args, "token", "--config", "/state/gateway.json"].map(value => JSON.stringify(value)).join(", ")}]`), true);
 });

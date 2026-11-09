@@ -1,5 +1,5 @@
 import { object, type Message } from "./app-server-connection.js";
-import { legacyGatewayProvider, type ChatKind } from "./chat-identity.js";
+import { isGatewayProvider, type ChatKind } from "./chat-identity.js";
 
 /** What an engine announced about one of its chats: kind, latest model and, for a gateway chat, its saved identity. */
 interface Announced { provider?: ChatKind; model?: string; identity?: "legacy" | "openai" }
@@ -23,7 +23,7 @@ export class AnnouncedThreads {
       // An engine this connection cannot name still announced its chat's model, so keep whatever the notice has.
       // Only a gateway chat has an identity, and it follows the router's rule: the gateway's own id is `legacy`.
       const identity = engine === "gateway" && typeof thread.modelProvider === "string"
-        ? { identity: thread.modelProvider === legacyGatewayProvider ? "legacy" as const : "openai" as const } : {};
+        ? { identity: isGatewayProvider(thread.modelProvider) ? "legacy" as const : "openai" as const } : {};
       this.threads.delete(thread.id);
       this.threads.set(thread.id, { ...(engine ? { provider: engine } : {}), ...(text(thread.model) ? { model: thread.model } : {}), ...identity });
       while (this.threads.size > this.limit) this.threads.delete(this.threads.keys().next().value as string);

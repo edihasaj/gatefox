@@ -55,7 +55,7 @@ test("live additions use a new gateway catalog while native and loaded gateway c
     await assert.rejects(c.rpc("turn/start", { threadId: old.thread.id, collaborationMode: { settings: { model: "claude/new" } } }), /older catalog/);
     await c.rpc("thread/unsubscribe", { threadId: old.thread.id });
     const resumed = await c.rpc("thread/resume", { threadId: old.thread.id, model: "claude/new" });
-    assert.equal(resumed.modelProvider, "subscription_gateway");
+    assert.equal(resumed.modelProvider, "gatefox");
     assert.equal((await c.rpc("engine/info", { threadId: old.thread.id })).pid, latestEngine.pid);
   } finally { await c.stop(); }
 });
@@ -139,8 +139,8 @@ test("credential-free clients read saved gateway chats before model discovery an
   await first.rpc("thread/unsubscribe", { threadId: started.thread.id }); await first.stop(true);
   const reopened = await client(files);
   try {
-    const read = await reopened.rpc("thread/read", { threadId: started.thread.id, includeTurns: false }); assert.equal(read.thread.modelProvider, "subscription_gateway");
-    const resumed = await reopened.rpc("thread/resume", { threadId: started.thread.id }); assert.equal(resumed.modelProvider, "subscription_gateway");
+    const read = await reopened.rpc("thread/read", { threadId: started.thread.id, includeTurns: false }); assert.equal(read.thread.modelProvider, "gatefox");
+    const resumed = await reopened.rpc("thread/resume", { threadId: started.thread.id }); assert.equal(resumed.modelProvider, "gatefox");
     assert.equal((await reopened.rpc("account/read")).account.email, "primary-test-account");
     assert.equal(await readFile(join(files.nativeHome, "config.toml"), "utf8"), 'model = "native"\n');
   } finally { await reopened.stop(); }
@@ -164,7 +164,7 @@ for (const identity of gatewayIdentities) test(`a saved gateway chat resumes on 
     // A new gateway chat is recorded in the gateway's registry, so it is told apart without the provider id. This checkout has no
     // gateway SDK artifact, so its executor is a stock Codex and new chats keep the legacy id (docs/harness-identity.md).
     const started = await c.rpc("thread/start", { model: "claude/model" });
-    assert.equal(started.modelProvider, "subscription_gateway");
+    assert.equal(started.modelProvider, "gatefox");
     const registry = JSON.parse(await readFile(join(c.value.stateDirectory, "gateway-chats", (await readdir(join(c.value.stateDirectory, "gateway-chats"))).find(name => name.endsWith(".json"))!), "utf8"));
     // A saved `openai` chat that only its alias identified is written too when it is routed; a legacy one needs no entry.
     assert.deepEqual(registry.chats.map((chat: { id: string; origin: string }) => [chat.id, chat.origin]).sort(),

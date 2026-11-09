@@ -6,8 +6,14 @@ import { telemetry } from "./telemetry.js";
 export type { ChatKind };
 /** The engine a request is meant for. The router decides it; a provider id in the request never does. */
 export interface EngineHint { engine: ChatKind }
-/** The provider id gateway chats are written with by default; `chatIdentity: "openai"` (0.4.7) opts a Mac into the native identity. */
+/** The provider id new gateway chats are written with (1.8.0); `chatIdentity: "openai"` (0.4.7) opts a Mac into the native identity. */
+export const gatewayProvider = "gatefox";
+/** The provider id gateway chats were written with before 1.8.0. Still registered and read, so every saved chat keeps working. */
 export const legacyGatewayProvider = "subscription_gateway";
+/** Both of the gateway's own provider ids. */
+export const gatewayOwnProviders: readonly string[] = [gatewayProvider, legacyGatewayProvider];
+/** Whether a provider id is the gateway's own: `gatefox`, or `subscription_gateway` on a chat saved before 1.8.0. */
+export const isGatewayProvider = (id: unknown): boolean => id === gatewayProvider || id === legacyGatewayProvider;
 /** The catalogs a classification reads, as thunks: a chat that the provider or the registry answers never builds them. */
 export interface IdentityCatalogs { aliases: () => ReadonlySet<string>; nativeSlugs: () => ReadonlySet<string> }
 
@@ -82,7 +88,7 @@ export class ChatIdentity {
    * nothing is read for it. Call it after `refresh`, so the registry answers from the file's current state.
    */
   async learnAncestors(thread: ClassifyThread, catalogs: IdentityCatalogs, read: (id: string) => Promise<unknown>): Promise<void> {
-    if (thread.modelProvider === legacyGatewayProvider || (text(thread.id) && this.registry.hasCached(thread.id))) return;
+    if (isGatewayProvider(thread.modelProvider) || (text(thread.id) && this.registry.hasCached(thread.id))) return;
     if (text(thread.model) && catalogs.aliases().has(thread.model) && !catalogs.nativeSlugs().has(thread.model)) return;
     const seen = new Set<string>(text(thread.id) ? [thread.id] : []);
     let parent = parentOf(thread);
@@ -95,7 +101,7 @@ export class ChatIdentity {
         if (facts?.id !== parent) return;
         this.learn(facts);
       }
-      if (facts.modelProvider === legacyGatewayProvider) return;
+      if (isGatewayProvider(facts.modelProvider)) return;
       parent = parentOf(facts);
     }
   }

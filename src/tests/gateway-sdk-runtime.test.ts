@@ -130,7 +130,7 @@ test("a loaded module can recover after its own managed release directory is pru
 
 test("matching release receipt proves the gateway executor capability: selected-model compaction and the openai alias", async t => {
   const f = await fixture(t);
-  assert.equal(gatewaySdkCapability, "gateway-executor-v3");
+  assert.equal(gatewaySdkCapability, "gateway-executor-v4");
   assert.deepEqual(await gatewaySdkRuntime(f.root), { executable: f.executable, binarySha256: f.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true, codeModeHost: false });
 });
 

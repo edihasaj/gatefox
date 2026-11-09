@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
  */
 export const launcherName = "harness-gateway";
 export const legacyLauncherName = "gateway";
+/** The GateFox command, a third launcher with the same contents since 1.8.0. */
+export const gatefoxLauncherName = "gatefox";
 
 /** The line the installer puts in both launchers; a file without it is not ours to name in a plist. */
 export const launcherMarker = "# Managed by subscription-gateway installer";

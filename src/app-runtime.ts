@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, readlink, rename, symlink, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { installRootIn } from "./paths.js";
+import { retiredAppPath } from "./app-bundle.js";
 import { type InstallationGuard, withInstallationLock } from "./app-runtime-lock.js";
 
 const installerMarker = "# Managed by subscription-gateway installer";
@@ -9,7 +11,7 @@ const installationMarker = "subscription-gateway";
 const maximumWrapperBytes = 64 * 1024;
 const noFollow = constants.O_NOFOLLOW ?? 0;
 const owner = process.getuid?.();
-const launcherNames = ["gateway", "harness-gateway", "subscription-gateway"] as const;
+const launcherNames = ["gateway", "harness-gateway", "subscription-gateway", "gatefox"] as const;
 
 interface Source {
   bytes: Buffer;
@@ -23,7 +25,7 @@ interface Source {
 }
 interface Launcher { path: string; source: Source; output: Buffer }
 interface PublishedLauncher { launcher: Launcher; output: Source }
-interface PublishedLink { target: string }
+interface PublishedLink { target: string; previous?: string }
 export interface AppRuntimeOptions {
   home: string;
   appPath: string;
@@ -142,7 +144,7 @@ function recognizedLauncher(bytes: Buffer, root: string, command: string): boole
 export async function managedInstallationForCommand(commandPath: string): Promise<ManagedInstallation> {
   const command = await canonical(commandPath); const name = basename(command); const bin = dirname(command);
   if (!launcherNames.includes(name as typeof launcherNames[number]) || basename(bin) !== "bin") unsafe();
-  const prefix = dirname(bin); const root = join(prefix, "share", "subscription-gateway");
+  const prefix = dirname(bin); const root = installRootIn(prefix);
   if (command !== join(prefix, "bin", name)) unsafe();
   await validateInstall(root);
   const source = await readRegular(command, installerMarker);
@@ -159,11 +161,25 @@ async function validateAppRuntime(appPath: string): Promise<string> {
   } finally { await node.close(); }
   return runtime;
 }
-async function appRuntimeChange(path: string, target: string): Promise<boolean> {
+/**
+ * Whether the app-runtime link needs publishing: absent, or still naming the runtime of the `Harness Gateway.app`
+ * this renamed GateFox app replaced (returned as `previous`). Any other target is refused.
+ */
+async function appRuntimeChange(path: string, target: string, appPath: string): Promise<{ change: boolean; previous?: string }> {
   const info = await lstat(path).catch(error => (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : unsafe());
-  if (!info) return true;
-  if (!info.isSymbolicLink() || info.uid !== owner || resolve(dirname(path), await readlink(path).catch(unsafe)) !== target) unsafe();
-  return false;
+  if (!info) return { change: true };
+  if (!info.isSymbolicLink() || info.uid !== owner) unsafe();
+  const linked = await readlink(path).catch(unsafe), resolved = resolve(dirname(path), linked);
+  if (resolved === target) return { change: false };
+  const retired = retiredAppPath(appPath);
+  if (retired && resolved === join(retired, "Contents/Resources/backend/runtime")) return { change: true, previous: linked };
+  return unsafe();
+}
+/** Publishes a link atomically over whatever is at `path` now. */
+async function replaceLink(target: string, path: string): Promise<void> {
+  const temporary = join(dirname(path), `.${randomUUID()}.app-runtime-link`);
+  await symlink(target, temporary).catch(unsafe);
+  try { await rename(temporary, path).catch(unsafe); } finally { await unlink(temporary).catch(() => undefined); }
 }
 async function wrappers(root: string, commandPath: string): Promise<Launcher[]> {
   const bin = dirname(commandPath);
@@ -246,6 +262,10 @@ async function undoLink(path: string, published: PublishedLink): Promise<boolean
   if (!current || !current.isSymbolicLink()) return false;
   const target = await readlink(path).catch(() => undefined);
   if (target !== published.target) return false;
+  if (published.previous !== undefined) {
+    await replaceLink(published.previous, path).catch(() => undefined);
+    return await readlink(path).catch(() => undefined) === published.previous;
+  }
   await unlink(path).catch(() => undefined);
   return !(await lstat(path).catch(() => undefined));
 }
@@ -258,9 +278,9 @@ async function publishAssociation(options: AppRuntimeOptions, afterPublish: ((gu
   const installation = await managedInstallationForCommand(options.commandPath);
   // A command under a different user's home is never an association target for this app request.
   if (installation.commandPath !== join(installation.prefix, "bin", basename(installation.commandPath))) unsafe();
-  const runtime = await validateAppRuntime(await canonical(options.appPath));
+  const appPath = await canonical(options.appPath), runtime = await validateAppRuntime(appPath);
   const registration = join(installation.root, "app-runtime");
-  const registrationChange = await appRuntimeChange(registration, runtime);
+  const { change: registrationChange, previous } = await appRuntimeChange(registration, runtime, appPath);
   const changes = await wrappers(installation.root, installation.commandPath);
   const changed = registrationChange || changes.length > 0;
   if (options.apply === false || !changed && !afterPublish) return changed;
@@ -272,8 +292,9 @@ async function publishAssociation(options: AppRuntimeOptions, afterPublish: ((gu
   let link: PublishedLink | undefined; const launchers: PublishedLauncher[] = [];
   try {
     if (registrationChange) {
-      guard.check(); await options.beforePublish?.(registration, guard); guard.check(); await symlink(runtime, registration).catch(unsafe);
-      link = { target: runtime };
+      guard.check(); await options.beforePublish?.(registration, guard); guard.check();
+      if (previous === undefined) await symlink(runtime, registration).catch(unsafe); else await replaceLink(runtime, registration);
+      link = { target: runtime, ...(previous === undefined ? {} : { previous }) };
       await options.afterPublish?.(registration, guard); guard.check();
     }
     for (const launcher of changes) {

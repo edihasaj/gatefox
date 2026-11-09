@@ -8,6 +8,8 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { spawnSync } from "node:child_process";
 import { assertFreeSpace, freeBytes, releaseDiskSpaceRequirements } from "./disk-space.mjs";
+// The fixture keeps the old Mac's "Harness Gateway.app" installed; the candidate is a GateFox release.
+import { appAsset as appAssetName, appBundle, backendAsset as backendAssetName, backendName } from "./release-names.mjs";
 
 const usage = `Usage: node scripts/e2e-app-updates.mjs --app-archive ABS --backend-archive ABS --legacy-app ABS --installed-release ABS --root ABS [--keep]`;
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -181,7 +183,7 @@ async function inspectCandidate(paths, evidence, archive, runCommand) {
   await regular(paths["app-archive"]); await regular(paths["backend-archive"]);
   const inspect = join(evidence, "inspect");
   await mkdir(inspect, { mode: 0o700 });
-  const app = await archive.extractArchive("zip", paths["app-archive"], join(inspect, "app"), "Harness Gateway.app", runCommand);
+  const app = await archive.extractArchive("zip", paths["app-archive"], join(inspect, "app"), appBundle, runCommand);
   const receipt = await json(join(app, "Contents", "Resources", "app-build.json"));
   const policy = await json(join(app, "Contents", "Resources", "update-policy.json"));
   assert.equal(receipt.production, true); assert.equal(receipt.sourceBranch, "production");
@@ -190,12 +192,12 @@ async function inspectCandidate(paths, evidence, archive, runCommand) {
   assert.equal(receipt.backendVersion, receipt.appVersion);
   assert.match(receipt.source, /^[a-f0-9]{40}$/);
   const version = receipt.appVersion, source = receipt.source;
-  const backendAsset = `harness-gateway-${version}-macos-arm64.tar.gz`;
+  const backendAsset = backendAssetName(version);
   const backendSha256 = await digest(paths["backend-archive"]);
   assert.deepEqual(policy, { schemaVersion: 1, version, source, branch: "production", backendAsset, backendSha256 });
   assert.equal(receipt.backendSha256, backendSha256);
   const backend = await archive.extractArchive("tar", paths["backend-archive"], join(inspect, "backend"),
-    `harness-gateway-${version}-macos-arm64`, runCommand);
+    backendName(version), runCommand);
   await archive.verifyChecksummedTree(backend);
   const release = await json(join(backend, "package", "release.json"));
   assert.equal(release.version, version); assert.equal(release.source, source);
@@ -249,7 +251,7 @@ async function makeFixture({ root: fixtureRoot, input: paths, candidate, runtime
   const sentinels = [config, join(home, ".codex-sentinel")];
   await writeFile(sentinels[1], "fixture sentinel\n", { mode: 0o600 });
   const assets = join(fixtureRoot, "release-assets"); await mkdir(assets, { mode: 0o700 });
-  const appAsset = `Harness-Gateway-${candidate.version}-macos-arm64.zip`;
+  const appAsset = appAssetName(candidate.version);
   const backendAsset = candidate.backendAsset;
   await copyFile(paths["app-archive"], join(assets, appAsset)); await chmod(join(assets, appAsset), 0o600);
   await copyFile(paths["backend-archive"], join(assets, backendAsset)); await chmod(join(assets, backendAsset), 0o600);

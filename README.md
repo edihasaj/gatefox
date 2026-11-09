@@ -40,7 +40,7 @@ desktop app, and the official CLI for each subscription you connect (for example
 Claude Code for a Claude subscription).
 
 **Option A: the app.** Download
-[**Harness-Gateway-1.7.7-macos-arm64.zip**](https://github.com/edihasaj/gatefox/releases/download/v1.7.7/Harness-Gateway-1.7.7-macos-arm64.zip)
+[**Harness-Gateway-1.7.8-macos-arm64.zip**](https://github.com/edihasaj/gatefox/releases/download/v1.7.8/Harness-Gateway-1.7.8-macos-arm64.zip)
 (notarized, Apple silicon) or pick a version from
 [all releases](https://github.com/edihasaj/gatefox/releases). Unzip it, move the
 app to Applications and open it. The setup wizard connects your accounts, picks
@@ -49,7 +49,7 @@ models and starts the background service. From 1.8.0 the app is `GateFox.app`.
 **Option B: the command line.**
 
 ```sh
-VERSION=1.7.7
+VERSION=1.7.8
 gh release download "v$VERSION" -R edihasaj/gatefox \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
@@ -122,13 +122,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as desc
 
 GateFox was called Harness Gateway, and before that Subscription Gateway. Names that
 existing installations and saved chats depend on keep an older spelling: the Codex provider ID
-`subscription_gateway` (stored in gateway chats, and registered in every gateway executor;
+`subscription_gateway` (stored in gateway chats saved before 1.8.0, which records new chats as `gatefox`; both ids are registered in every gateway executor;
 a Mac that opts in to `"chatIdentity": "openai"` stores its new chats as `openai`, see
 [harness identity](docs/harness-identity.md)), the LaunchAgent labels
-`com.edihasaj.subscription-gateway*`, the install root `~/.local/share/subscription-gateway`,
-the state folder `~/Library/Application Support/Subscription Gateway`, and the
+`com.edihasaj.subscription-gateway*`, the install root `~/.local/share/subscription-gateway`
+(fresh installations since 1.8.0 use `~/.local/share/gatefox`), the state folder
+`~/Library/Application Support/Subscription Gateway` (fresh installations use `GateFox`), and the
 ownership markers in service and execution-host receipts. Changing any of them
-needs a migration on every Mac. The installed command is `harness-gateway`, and
+needs a migration on every Mac. The installed command is `harness-gateway`; since 1.8.0 the
+installer also writes `gatefox` with the same contents (an update run by a 1.7.x app adds it
+on the next install), and
 `gateway` remains as a second launcher with the same contents, so existing scripts
 and old LaunchAgents keep working. macOS names a background item after the program a
 LaunchAgent runs, so the plists the gateway writes name `harness-gateway`, and System

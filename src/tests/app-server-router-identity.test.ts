@@ -13,7 +13,7 @@ import { ThreadServiceTiers } from "../thread-service-tiers.js";
 import { TurnTelemetry } from "../turn-telemetry.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import type { GatewayConfig } from "../config.js";
-import { identityTest, legacyProvider, type GatewayIdentityCase } from "./identity-cases.js";
+import { gatewayProvider, identityTest, legacyProvider, type GatewayIdentityCase } from "./identity-cases.js";
 
 type ObjectValue = Record<string, unknown>;
 type Call = { method: string; params: ObjectValue; hint?: EngineHint };
@@ -95,7 +95,7 @@ nodeTest("a new chat's engine is the router's hint: an alias or the gateway's ow
   const f = await fixture();
   await f.router.request("thread/start", { model: sol, modelProvider: "openai" });
   assert.deepEqual(f.sent("thread/start").hint, { engine: "gateway" });
-  assert.equal(f.sent("thread/start").params.modelProvider, legacyProvider, "the router asks for a gateway chat; the backends record it with the connection's identity");
+  assert.equal(f.sent("thread/start").params.modelProvider, gatewayProvider, "the router asks for a gateway chat; the backends record it with the connection's identity");
   await f.router.request("thread/start", { model: sol, modelProvider: "openai", config: { web_search: "enabled" } });
   assert.equal((f.sent("thread/start").params.config as ObjectValue).web_search, "enabled", "a gateway chat keeps the caller's web_search setting instead of forcing it off");
   const nativeStart = { model: native, modelProvider: "openai", config: { trusted: true } };
@@ -176,14 +176,14 @@ test("a gateway chat whose route came from a settings notification still resumes
   assert.equal(f.calls.some(call => call.method === "thread/read"), false, "the route came from the notification alone");
   await f.router.request("thread/resume", { threadId: "gw" });
   assert.equal(f.sent("thread/resume").params.modelProvider, identity.provider, "the saved provider, never a rewrite");
-  assert.equal(f.router.describeThread("gw").identity, identity.name === "legacy" ? "legacy" : "openai");
+  assert.equal(f.router.describeThread("gw").identity, identity.name !== "openai" ? "legacy" : "openai");
 });
 
 test("forks follow their chat: a gateway fork gets the gateway's request, a native or prediction fork reaches the engine as sent", async () => {
   const f = await fixture();
   await f.router.request("thread/resume", { threadId: "gw" });
   const fork = await f.router.request("thread/fork", { threadId: "gw" });
-  assert.equal(f.sent("thread/fork").params.modelProvider, legacyProvider);
+  assert.equal(f.sent("thread/fork").params.modelProvider, gatewayProvider);
   assert.equal(f.sent("thread/fork").params.model, sol);
   assert.equal(f.router.describeThread(String((fork.thread as ObjectValue).id)).provider, "gateway");
   const predicted = await f.router.request("thread/fork", prediction("gw"));
@@ -240,7 +240,7 @@ test("the tier and reasoning stores are written for gateway chats only", async (
 test("a chat classified without a provider id is described by kind, with the saved identity for gateway chats", async () => {
   const f = await fixture();
   for (const id of ["gw", "gw-native-slug", "gw-sub", "nat"]) await f.router.request("turn/start", { threadId: id, input: [] });
-  const gatewayIdentity = identity.name === "legacy" ? "legacy" : "openai";
+  const gatewayIdentity = identity.name !== "openai" ? "legacy" : "openai";
   assert.deepEqual(f.router.describeThread("gw"), { provider: "gateway", model: sol, identity: gatewayIdentity });
   assert.deepEqual(f.router.describeThread("gw-native-slug"), { provider: "gateway", model: nativeSol, identity: gatewayIdentity });
   assert.deepEqual(f.router.describeThread("gw-sub"), { provider: "gateway", model: nativeSol, identity: gatewayIdentity });
@@ -260,7 +260,7 @@ test("gateway_chat_classified names only the rule and the method, once per chat 
   for (const id of ["gw", "gw-native-slug", "gw-sub", "nat"]) await f.router.request("turn/start", { threadId: id, input: [] });
   await f.router.request("turn/start", { threadId: "nat", input: [] });
   const rules = (events: Awaited<ReturnType<typeof f.events>>) => events.map(event => event.rule).sort();
-  const expected = identity.name === "legacy" ? ["legacy_provider", "legacy_provider", "legacy_provider", "native"] : ["alias", "native", "parent", "registry"];
+  const expected = identity.name !== "openai" ? ["legacy_provider", "legacy_provider", "legacy_provider", "native"] : ["alias", "native", "parent", "registry"];
   const first = await f.events("gateway_chat_classified");
   assert.deepEqual(rules(first), [...expected].sort());
   for (const event of first) {

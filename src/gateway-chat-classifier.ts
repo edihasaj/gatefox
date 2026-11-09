@@ -23,8 +23,8 @@ export interface ClassifyContext {
   readParent: (id: string) => ClassifyThread | undefined;
 }
 
-/** Providers older than the alias catalog wrote on the thread; a gateway chat even when its alias is gone. */
-const legacyProvider = "subscription_gateway";
+/** The gateway's own provider ids written on a thread (`gatefox`, or `subscription_gateway` before 1.8.0); a gateway chat even when its alias is gone. */
+const gatewayProviders = new Set(["gatefox", "subscription_gateway"]);
 /** How far up the sub-agent chain a gateway parent is still followed. */
 export const maxParentDepth = 8;
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0;
@@ -63,7 +63,7 @@ const gatewayModel = (model: unknown, ctx: ClassifyContext): boolean =>
  * a gateway chat is a gateway chat; an alias that names a native slug is a native chat.
  */
 export function classifyThread(thread: ClassifyThread, ctx: ClassifyContext): { kind: ChatKind; rule: ClassifyRule } {
-  if (thread.modelProvider === legacyProvider) return { kind: "gateway", rule: "legacy_provider" };
+  if (gatewayProviders.has(String(thread.modelProvider))) return { kind: "gateway", rule: "legacy_provider" };
   if (text(thread.id) && ctx.registry.has(thread.id)) return { kind: "gateway", rule: "registry" };
   const seen = new Set<string>(text(thread.id) ? [thread.id as string] : []);
   for (let parent = parentOf(thread), depth = 0; parent !== undefined && depth < maxParentDepth; depth++) {
@@ -75,7 +75,7 @@ export function classifyThread(thread: ClassifyThread, ctx: ClassifyContext): { 
     // an ancestor by the provider or the alias it was started with.
     if (ctx.registry.has(parent)) return { kind: "gateway", rule: "parent" };
     const record = ctx.readParent(parent);
-    if (record?.modelProvider === legacyProvider || gatewayModel(record?.model, ctx)) return { kind: "gateway", rule: "parent" };
+    if (gatewayProviders.has(String(record?.modelProvider)) || gatewayModel(record?.model, ctx)) return { kind: "gateway", rule: "parent" };
     parent = record === undefined ? undefined : parentOf(record);
   }
   if (gatewayModel(thread.model, ctx)) return { kind: "gateway", rule: "alias" };

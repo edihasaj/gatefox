@@ -233,7 +233,7 @@ async function recoveredTurn(id, name, model = 'fixture/small', wireModel = 'moc
 async function automatic(transport) {
   await open(transport); phase = transport + '-native-passthrough';
   const config = await rpc('config/read', { includeLayers: false }); assert.equal(config.config.model, 'native-fixture');
-  const native = await start('native-fixture'); assert.notEqual(native.modelProvider, 'subscription_gateway');
+  const native = await start('native-fixture'); assert.ok(!['gatefox', 'subscription_gateway'].includes(native.modelProvider));
   assert.equal(native.model, 'native-fixture'); assert.equal(requests.filter(row => row.phase === phase).length, 0);
   await save({ phase, passed: true, nativeProviderPreserved: true, nativeInferenceRequests: 0 });
   const short = await start('fixture/large'); phase = transport + '-goal-metadata'; const goalsAt = requests.length;

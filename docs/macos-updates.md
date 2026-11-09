@@ -32,6 +32,24 @@ Mac must run it before 1.8.0 is published, because 1.7.5 and older updaters read
 only `app-vVERSION` tags and the Harness Gateway names. The rules live in
 `src/app-updates/names.ts`.
 
+### Renaming the installed app to GateFox.app
+
+An updater swaps a release into the app's existing path, so a Mac updated from
+1.7.x still has the 1.8.0 app at `Harness Gateway.app`. At its next launch the app
+renames itself to `GateFox.app` in the same folder and relaunches from there
+(`AppRelocation.swift`). The new instance's usual background association then
+moves the service plist's `Program` and the install's `app-runtime` link to the new
+path. Both accept the old path as the previous owner only when it is the
+`Harness Gateway.app` beside the running `GateFox.app` (`src/app-bundle.ts`); any
+other path is still refused. The bundle identifier and signature do not change, so
+macOS permissions stay.
+
+The rename is skipped while `GateFox.app` already exists, while an update journal
+(`app-update-transaction.json`) exists, or while `app-update.json` records a
+pending update, because those record the old path. It happens at a later launch
+instead. If the relaunch fails, the app moves back and keeps running. The service
+keeps running throughout; the new `Program` applies at its next start.
+
 ```text
 private GitHub draft → signed ZIP + signed policy → daily check
                                                ↓

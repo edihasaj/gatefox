@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { loadConfig } from "./config.js";
+import { userConfigPath } from "./paths.js";
 import { readServicePlan, serviceStatusPath } from "./service-plan.js";
 
 const exec = promisify(execFile);
@@ -70,7 +71,7 @@ export async function installClaudeDesktopService(configPath: string, deps: Clau
 }
 
 async function managedAdapter(home: string, configPath: string | undefined, execCommand: ClaudeDesktopExec, uid: number): Promise<Record<string, unknown> | undefined> {
-  const path = resolve(home, "Library/Application Support/Subscription Gateway/gateway.json");
+  const path = userConfigPath(home, "darwin");
   try { await lstat(path); } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw new Error("Cannot inspect the app-owned gateway service configuration");

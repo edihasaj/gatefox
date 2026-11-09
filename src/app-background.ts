@@ -9,6 +9,7 @@ import { withLoginRegistrationLock } from "./login-registration-lock.js";
 import { serviceLabel, serviceMarker } from "./service-plan.js";
 import { associateAppRuntime, associateAppRuntimeTransaction, managedInstallationForCommand } from "./app-runtime.js";
 import { installationAbortSignal, type InstallationGuard } from "./app-runtime-lock.js";
+import { retiredAppPath } from "./app-bundle.js";
 
 const appIdentifier = "com.edihasaj.harness-gateway.app";
 const maximumPlistBytes = 64 * 1024;
@@ -180,6 +181,12 @@ async function readBundleInfo(path: string, decode: (bytes: Buffer) => Promise<P
     return await decode(await file.readFile());
   } finally { await file.close(); }
 }
+/** The helper of the `Harness Gateway.app` a renamed GateFox app replaced; the plist may still name it until rebound. */
+function retiredHelper(helper: string): string | undefined {
+  const suffix = join("Contents", "MacOS", "GatewayService"), app = helper.endsWith(sep + suffix) ? helper.slice(0, -(suffix.length + 1)) : undefined;
+  const retired = app ? retiredAppPath(app) : undefined;
+  return retired ? join(retired, suffix) : undefined;
+}
 function plistIsAssociated(plist: Plist, helper: string): boolean {
   return plist.Program === helper && plist.AssociatedBundleIdentifiers === appIdentifier;
 }
@@ -190,7 +197,7 @@ async function validate(source: Source, configPath: string, helper: string, deco
   const commandPath = args[0]; if (typeof commandPath !== "string" || !await trustedLauncher(commandPath)) throw new Error("unsafe");
   const positions = args.flatMap((arg, index) => arg === "--config" ? [index] : []);
   if (positions.length !== 1 || args[positions[0]! + 1] !== configPath) throw new Error("unsafe");
-  if (plist.Program !== undefined && plist.Program !== commandPath && plist.Program !== helper) throw new Error("unsafe");
+  if (plist.Program !== undefined && plist.Program !== commandPath && plist.Program !== helper && plist.Program !== retiredHelper(helper)) throw new Error("unsafe");
   const associated = plist.AssociatedBundleIdentifiers;
   const emptyAssociated = associated === undefined || associated === "" || Array.isArray(associated) && associated.length === 0;
   if (!emptyAssociated && associated !== appIdentifier && !(Array.isArray(associated) && associated.length === 1 && associated[0] === appIdentifier)) throw new Error("unsafe");

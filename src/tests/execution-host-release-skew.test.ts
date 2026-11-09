@@ -192,7 +192,7 @@ async function releases(t: { after(fn: () => Promise<void>): void }, pins: Recor
   const receipt = join(sdk, "build.json");
   const save = (change: Record<string, unknown> = {}) => writeFile(receipt, JSON.stringify({ schemaVersion: 1, version: "0.4.7", codexVersion: "0.163.0", revision: "f".repeat(40), archiveSha256: "1".repeat(64), patchSha256: "2".repeat(64),
     lockfileSha256: "3".repeat(64), lockfileRepairSha256: "4".repeat(64), sourceSha256: "5".repeat(64), binarySha256, profile: "release", platform: process.platform, arch: process.arch,
-    capabilities: ["gateway-executor-v3"], ...pins, ...change }), { mode: 0o600 });
+    capabilities: ["gateway-executor-v4"], ...pins, ...change }), { mode: 0o600 });
   await save();
   const module = pathToFileURL(join(root, "releases", "0.4.6", "package", "dist", "self-update.js")).href;
   await symlink("releases/0.4.7", join(root, "current"));
