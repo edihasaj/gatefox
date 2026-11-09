@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { installRoot } from './install-root.mjs';
 import { fileURLToPath } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
 import { extractProductionBackend } from './macos-app-production.mjs';
@@ -31,7 +32,7 @@ export function parseArgs(argv) {
   const values = {
     profile: 'asc-notary', publish: false, prerelease: false,
     previousApp: join(homedir(), 'Applications/Harness Gateway.app'),
-    installedRelease: join(homedir(), '.local/share/subscription-gateway/current'),
+    installedRelease: join(installRoot(join(homedir(), '.local')), 'current'),
   };
   for (let index = 0; index < argv.length; index += 1) {
     const option = argv[index];

@@ -80,8 +80,10 @@ markers and the old `Symbol.for` keys, and remove the Compatibility names sectio
 | Docs for the two ids (`harness-identity.md`, `app-server.md`, `RELEASING.md`, troubleshooting) | Done |
 | End-to-end scripts: new chats expect `gatefox`, both markers stripped and checked; direct-SDK fixtures keep `subscription_gateway` as the old-chat coverage | Done (they run with the release package) |
 | Configuration default: fresh installs use `GateFox/gateway.json` (`~/.config/gatefox` on Linux); a Mac with only the `Subscription Gateway` one keeps it until `gatefox migrate` (CLI, app, Claude Desktop adapter, probe script) | Done |
-| Install root and state folder move, LaunchAgent labels, ownership markers | To do |
-| `gatefox` command, `GateFox.app` and the updater move | To do |
+| Install root: fresh installs use `share/gatefox`; an existing `share/subscription-gateway` keeps updating in place (installer, signed service launcher, app runtime, uninstall, consolidation, desktop agent, scripts). The launcher also accepts the `gatefox` command and a `# Managed by gatefox installer` marker | Done |
+| Moving an existing install root and state folder (`gatefox migrate`), LaunchAgent labels, writing the new ownership markers | To do |
+| `gatefox` command: a third managed launcher; update journals record it as optional, so a 1.7.x updater's journal still recovers, and the installer skips it under such a journal because that updater refuses unknown receipts | Done |
+| `GateFox.app` and the updater move | To do |
 | `gatefox chats migrate` | To do |
 | Release build with a fresh SDK, rollout one Mac at a time | To do |
 

@@ -1,6 +1,7 @@
 import { lstat, readFile, readdir, readlink, mkdir, rename } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
-import { launcherName, legacyLauncherName } from "./command.js";
+import { installRootIn } from "./paths.js";
+import { gatefoxLauncherName, launcherName, legacyLauncherName } from "./command.js";
 import { homedir } from "node:os";
 import { loadConfig } from "./config.js";
 import { macService } from "./mac-service.js";
@@ -45,7 +46,7 @@ export function uninstallFailure(error: unknown, stage: keyof typeof failureStag
 export async function uninstallGateway(configPath: string, deps: UninstallDeps = defaultDeps): Promise<Record<string, unknown>> {
   const command = process.env.GATEWAY_COMMAND;
   if (process.env.GATEWAY_INSTALLED !== "1" || !command) throw new Error("Uninstall requires an installed gateway command");
-  const root = resolve(dirname(command), "../share/subscription-gateway");
+  const root = installRootIn(resolve(dirname(command), ".."));
   if (await readFile(resolve(root, ".gateway-installation"), "utf8") !== "subscription-gateway\n" || !(await readFile(command, "utf8")).includes("# Managed by subscription-gateway installer")) throw new Error("Installation is not managed by this installer");
   // Plan the desktop unregister first, and write nothing: the plan reads the config, the receipt, the desktop
   // LaunchAgent and its managed marker, and the GUI session, so an unmanaged plist, an unreadable registration,
@@ -78,14 +79,14 @@ export async function uninstallGateway(configPath: string, deps: UninstallDeps =
   // Both launchers go, whichever one ran this command: harness-gateway and gateway are the same managed file, and an
   // older install may still have harness-gateway as a link to gateway. A sibling is moved only when it is the
   // installer's own file or link, never a foreign command of the same name.
-  for (const name of [launcherName, legacyLauncherName]) {
+  for (const name of [launcherName, legacyLauncherName, gatefoxLauncherName]) {
     const sibling = resolve(dirname(command), name); if (sibling === resolve(command)) continue;
     const info = await lstat(sibling).catch(() => undefined);
     const ours = info?.isSymbolicLink() ? [legacyLauncherName, launcherName, ...[launcherName, legacyLauncherName].map(other => resolve(dirname(command), other))].includes(await readlink(sibling))
       : info?.isFile() ? (await readFile(sibling, "utf8")).includes("# Managed by subscription-gateway installer") : false;
     if (ours) await rename(sibling, resolve(trash, `${name}.${suffix}`));
   }
-  await rename(command, resolve(trash, `${basename(command)}.${suffix}`)); await rename(root, resolve(trash, `subscription-gateway.${suffix}`));
+  await rename(command, resolve(trash, `${basename(command)}.${suffix}`)); await rename(root, resolve(trash, `${basename(root)}.${suffix}`));
   return uninstallResult(desktop, nativeProvider);
 }
 

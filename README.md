@@ -125,10 +125,13 @@ existing installations and saved chats depend on keep an older spelling: the Cod
 `subscription_gateway` (stored in gateway chats saved before 1.8.0, which records new chats as `gatefox`; both ids are registered in every gateway executor;
 a Mac that opts in to `"chatIdentity": "openai"` stores its new chats as `openai`, see
 [harness identity](docs/harness-identity.md)), the LaunchAgent labels
-`com.edihasaj.subscription-gateway*`, the install root `~/.local/share/subscription-gateway`,
-the state folder `~/Library/Application Support/Subscription Gateway`, and the
+`com.edihasaj.subscription-gateway*`, the install root `~/.local/share/subscription-gateway`
+(fresh installations since 1.8.0 use `~/.local/share/gatefox`), the state folder
+`~/Library/Application Support/Subscription Gateway` (fresh installations use `GateFox`), and the
 ownership markers in service and execution-host receipts. Changing any of them
-needs a migration on every Mac. The installed command is `harness-gateway`, and
+needs a migration on every Mac. The installed command is `harness-gateway`; since 1.8.0 the
+installer also writes `gatefox` with the same contents (an update run by a 1.7.x app adds it
+on the next install), and
 `gateway` remains as a second launcher with the same contents, so existing scripts
 and old LaunchAgents keep working. macOS names a background item after the program a
 LaunchAgent runs, so the plists the gateway writes name `harness-gateway`, and System

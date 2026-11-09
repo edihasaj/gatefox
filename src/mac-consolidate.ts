@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { installRootIn } from "./paths.js";
 import { loadConfig, writePrivateJson } from "./config.js";
 import { gatewayCommand } from "./command.js";
 import { servicePlist } from "./mac-service.js";
@@ -50,7 +51,7 @@ export async function collectServicePlan(configPath: string, directory = resolve
     if (kind === "native") {
       const gatewayIndex = component.args.indexOf("--gateway");
       if (gatewayIndex < 0 || !component.args.includes("--daemon")) throw new Error("Unexpected native relay arguments");
-      component.command = resolve(dirname(command.command), "../share/subscription-gateway/current/package/native/gateway-native-relay");
+      component.command = resolve(installRootIn(resolve(dirname(command.command), "..")), "current/package/native/gateway-native-relay");
       component.args[gatewayIndex + 1] = command.command;
     }
     if (kind === "tunnel" && args[0] !== "/usr/bin/ssh") throw new Error("Unexpected tunnel command");

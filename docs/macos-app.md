@@ -76,7 +76,8 @@ open "$HOME/Applications/Harness Gateway.app"
 ```
 
 If `--backend` is omitted, the builder uses the current installed gateway release
-under `~/.local/share/subscription-gateway/current`. It verifies every payload
+under `~/.local/share/gatefox/current`, or `~/.local/share/subscription-gateway/current`
+on a Mac installed before 1.8.0. It verifies every payload
 file against its checksum manifest, rejects symlinks and unlisted payload files,
 and copies only the release payload. The bundled Node license and all gateway
 component license files travel with it. Account files and local configuration

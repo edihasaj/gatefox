@@ -85,7 +85,7 @@ It leaves the versioned stage in place and deliberately cannot resume it as a
 later publication. For an actual distribution, rerun only after moving that
 failed or inspection-only stage to Trash, then use the one-pass command above.
 `--publish` uses `~/Applications/Harness Gateway.app` and
-`~/.local/share/subscription-gateway/current` by default for the updater fixture;
+`~/.local/share/gatefox/current` (or the pre-1.8.0 `share/subscription-gateway`) by default for the updater fixture;
 pass absolute `--previous-app` and `--installed-release` paths to select the
 intended existing signed app and CLI release.
 

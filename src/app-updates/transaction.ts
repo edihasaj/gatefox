@@ -7,7 +7,11 @@ import { withInstallationLock } from "../app-runtime-lock.js";
 
 const noFollow = constants.O_NOFOLLOW ?? 0;
 const journalFile = "app-update-transaction.json";
-const wrappers = ["gateway", "harness-gateway", "subscription-gateway"] as const;
+const wrappers = ["gateway", "harness-gateway", "subscription-gateway", "gatefox"] as const;
+/** Launchers a journal may omit: an updater from before 1.8.0 never recorded `gatefox`. */
+const optionalWrappers: ReadonlySet<string> = new Set(["gatefox"]);
+/** The launchers this journal records, in a fixed order. */
+const recorded = (set: Record<string, Saved>) => wrappers.filter(name => set[name] !== undefined);
 const maximum = 512 * 1024;
 
 export type TransactionCommand = (program: string, args: string[], signal?: AbortSignal) => Promise<void>;
@@ -84,7 +88,7 @@ async function wrapper(path: string, name: string, backup = false): Promise<Save
     return item;
   }
   const text = Buffer.from(item.bytes, "base64").toString("utf8");
-  if (!(item.receipt.mode & 0o111) || !text.includes("# Managed by subscription-gateway installer")) bad();
+  if (!(item.receipt.mode & 0o111) || !["# Managed by gatefox installer", "# Managed by subscription-gateway installer"].some(marker => text.includes(marker))) bad();
   return backup ? item : { ...item, bytes: "" };
 }
 async function currentLink(path: string, backup = false): Promise<Saved> {
@@ -133,9 +137,12 @@ function saved(value: unknown, backup: boolean): Saved | undefined {
   return { kind: "file", bytes: row.bytes, receipt: source };
 }
 function savedSet(value: unknown, backup: boolean): Record<string, Saved> | undefined {
-  const row = record(value); if (!row || Object.keys(row).length !== wrappers.length) return;
+  const row = record(value); if (!row || Object.keys(row).some(key => !(wrappers as readonly string[]).includes(key))) return;
   const result: Record<string, Saved> = {};
-  for (const name of wrappers) { const item = saved(row[name], backup); if (!item) return; result[name] = item; }
+  for (const name of wrappers) {
+    if (row[name] === undefined && optionalWrappers.has(name)) continue;
+    const item = saved(row[name], backup); if (!item) return; result[name] = item;
+  }
   return result;
 }
 function parseJournal(value: unknown, installation: InstallationLocation, app: string, team: string): Journal {
@@ -194,7 +201,7 @@ async function publication(tx: InstallationTransaction, journal: Journal): Promi
   if (!expected) {
     const visible = (item: Saved): Saved => item.kind === "file" ? { ...item, bytes: "" } : item;
     return { current: visible(journal.before.current), previous: visible(journal.before.previous),
-      wrappers: Object.fromEntries(wrappers.map(name => [name, visible(journal.before.wrappers[name]!)])) };
+      wrappers: Object.fromEntries(recorded(journal.before.wrappers).map(name => [name, visible(journal.before.wrappers[name]!)])) };
   }
   const choose = async (path: string, prior: Saved, read: () => Promise<Saved>, key: "current" | "previous" | typeof wrappers[number]) => {
     const output = await read();
@@ -203,7 +210,7 @@ async function publication(tx: InstallationTransaction, journal: Journal): Promi
       prior.kind === "file" ? { ...prior, bytes: "" } : prior;
   };
   const bin = inside(prefix, "bin"), output: Record<string, Saved> = {};
-  for (const name of wrappers) output[name] = await choose(inside(bin, name), journal.before.wrappers[name]!, () => wrapper(inside(bin, name), name), name);
+  for (const name of recorded(journal.before.wrappers)) output[name] = await choose(inside(bin, name), journal.before.wrappers[name]!, () => wrapper(inside(bin, name), name), name);
   const current = await choose(inside(root, "current"), journal.before.current, () => currentLink(inside(root, "current")), "current");
   const previous = await choose(inside(root, "previous-release"), journal.before.previous, () => source(inside(root, "previous-release")), "previous");
   return { current, previous, wrappers: output };
@@ -256,16 +263,16 @@ async function rollback(tx: InstallationTransaction, journal: Journal, command: 
     (!await appIs(tx.app, journal.swap.incoming) || !await appIs(journal.swap.stage, journal.before.app))) bad("app changed");
   if (journal.after) {
     const { root, prefix } = paths(tx.installation), bin = inside(prefix, "bin");
-    const checks = [
-      [inside(bin, "gateway"), journal.before.wrappers.gateway!, journal.after.wrappers.gateway!],
-      [inside(bin, "harness-gateway"), journal.before.wrappers["harness-gateway"]!, journal.after.wrappers["harness-gateway"]!],
-      [inside(bin, "subscription-gateway"), journal.before.wrappers["subscription-gateway"]!, journal.after.wrappers["subscription-gateway"]!],
+    const names = recorded(journal.before.wrappers);
+    if (names.some(name => !journal.after!.wrappers[name])) bad("published output changed");
+    const checks: Array<readonly [string, Saved, Saved]> = [
+      ...names.map(name => [inside(bin, name), journal.before.wrappers[name]!, journal.after!.wrappers[name]!] as const),
       [inside(root, "previous-release"), journal.before.previous, journal.after.previous],
       [inside(root, "current"), journal.before.current, journal.after.current],
-    ] as const;
+    ];
     for (const [path, before, after] of checks) if (!await desired(path, before) && !await matches(path, after)) bad("published output changed");
     await restoreApp(tx, journal, command, verifyIncoming, verifyRetained);
-    for (const name of wrappers) await restore(inside(bin, name), journal.before.wrappers[name]!, journal.after.wrappers[name]!);
+    for (const name of names) await restore(inside(bin, name), journal.before.wrappers[name]!, journal.after.wrappers[name]!);
     await restore(inside(root, "previous-release"), journal.before.previous, journal.after.previous);
     await restore(inside(root, "current"), journal.before.current, journal.after.current);
   } else await restoreApp(tx, journal, command, verifyIncoming, verifyRetained);

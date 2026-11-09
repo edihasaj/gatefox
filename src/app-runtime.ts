@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, readlink, rename, symlink, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { installRootIn } from "./paths.js";
 import { type InstallationGuard, withInstallationLock } from "./app-runtime-lock.js";
 
 const installerMarker = "# Managed by subscription-gateway installer";
@@ -9,7 +10,7 @@ const installationMarker = "subscription-gateway";
 const maximumWrapperBytes = 64 * 1024;
 const noFollow = constants.O_NOFOLLOW ?? 0;
 const owner = process.getuid?.();
-const launcherNames = ["gateway", "harness-gateway", "subscription-gateway"] as const;
+const launcherNames = ["gateway", "harness-gateway", "subscription-gateway", "gatefox"] as const;
 
 interface Source {
   bytes: Buffer;
@@ -142,7 +143,7 @@ function recognizedLauncher(bytes: Buffer, root: string, command: string): boole
 export async function managedInstallationForCommand(commandPath: string): Promise<ManagedInstallation> {
   const command = await canonical(commandPath); const name = basename(command); const bin = dirname(command);
   if (!launcherNames.includes(name as typeof launcherNames[number]) || basename(bin) !== "bin") unsafe();
-  const prefix = dirname(bin); const root = join(prefix, "share", "subscription-gateway");
+  const prefix = dirname(bin); const root = installRootIn(prefix);
   if (command !== join(prefix, "bin", name)) unsafe();
   await validateInstall(root);
   const source = await readRegular(command, installerMarker);

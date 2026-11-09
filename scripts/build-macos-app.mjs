@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { installRoot } from './install-root.mjs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { copyVerifiedBackend, verifiedBackend } from './macos-app-backend.mjs';
@@ -27,7 +28,7 @@ const backend = production
     productionStage = stageProductionBackend({ ...production, version, source });
     return productionStage.backend;
   })()
-  : verifiedBackend(resolve(values.backend ?? join(homedir(), '.local/share/subscription-gateway/current')));
+  : verifiedBackend(resolve(values.backend ?? join(installRoot(join(homedir(), '.local')), 'current')));
 if (backend.version !== version) throw new Error('Bundled backend version must match the app version');
 process.on('exit', () => { if (productionStage) removeProductionStage(productionStage.stage); });
 const buildEnvironment = { ...process.env };

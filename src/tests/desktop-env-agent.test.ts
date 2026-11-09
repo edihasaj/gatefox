@@ -66,7 +66,7 @@ test("the registered script checks the installed release's CLI", mac, async () =
   await inDesktopHome(f, async () => {
     await macDesktop("register", f.config, f.app, false, f.exec);
     const text = (await read(scriptOf(f)))!;
-    assert.ok(text.includes(`[ -f '${join(f.root, "../share/subscription-gateway/current/package/dist/cli.js")}' ]`), text);
+    assert.ok(text.includes(`[ -f '${join(f.root, "../share/gatefox/current/package/dist/cli.js")}' ]`), text);
     assert.match(text, /\|\| exit 0\nexec .*'desktop-preset' '--state' /);
   });
 });

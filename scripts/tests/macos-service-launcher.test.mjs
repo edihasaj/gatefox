@@ -51,14 +51,14 @@ console.log('cli stdout: ' + '${marker}');
 process.exit(Number(process.env.GATEWAY_TEST_EXIT || 0));
 `;
 
-function environment() {
+function environment({ dir = 'subscription-gateway', name = 'gateway', marker = 'subscription-gateway' } = {}) {
   const root = mkdtempSync(join(scratch, 'case-'));
   const prefix = join(root, 'prefix');
   const app = join(root, 'Harness Gateway.app');
   const service = join(app, 'Contents/MacOS/GatewayService');
   const node = join(app, 'Contents/Resources/backend/runtime/bin/node');
-  const command = join(prefix, 'bin/gateway');
-  const current = join(prefix, 'share/subscription-gateway/current');
+  const command = join(prefix, 'bin', name);
+  const current = join(prefix, 'share', dir, 'current');
   const record = join(root, 'record.json');
   const executed = join(root, 'wrapper-executed');
 
@@ -76,7 +76,7 @@ function environment() {
 
   mkdirSync(dirname(command), { recursive: true });
   writeFileSync(command,
-    '#!/bin/sh\n# Managed by subscription-gateway installer\n' +
+    `#!/bin/sh\n# Managed by ${marker} installer\n` +
     `printf executed > "${executed}"\nexit 99\n`);
   chmodSync(command, 0o700);
 
@@ -148,6 +148,26 @@ test('execs the app-bundled Node with the current installed CLI', () => {
   assert.equal(record.env.installed, '1');
   assert.equal(record.env.sentinel, sentinel);
   assert.equal(record.env.path, `${dirname(realpathSync(context.node))}:/usr/bin:/bin:/fixture/tools`);
+});
+
+test('runs a fresh GateFox installation through the gatefox command and marker', () => {
+  const context = environment({ dir: 'gatefox', name: 'gatefox', marker: 'gatefox' });
+  const result = launch(context);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readRecord(context.record).argvReal[1], realpathSync(join(context.current, 'package/dist/cli.js')));
+});
+
+test('prefers share/gatefox when an older share/subscription-gateway is still beside it', () => {
+  const context = environment({ dir: 'gatefox' });
+  release(join(context.prefix, 'share/subscription-gateway/current'), '0.9.0');
+  const result = launch(context);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /cli stdout: 1\.0\.0/);
+});
+
+test('rejects a launcher whose marker names another installer', () => {
+  const context = environment({ marker: 'someone-else' });
+  assertFailed(launch(context), context);
 });
 
 test('preserves a large argument list', () => {

@@ -40,12 +40,24 @@ if (process.argv.includes("--hold") || process.argv.includes("--legacy-hold") ||
 }
 const managedFile = `#!/bin/sh\n${marker}\nexec echo old\n`;
 
+test("an installation from before 1.8.0 keeps updating in share/subscription-gateway; a fresh one uses share/gatefox", apple, async () => {
+  const l = await layout();
+  try {
+    await mkdir(join(l.prefix, "share/subscription-gateway"), { recursive: true });
+    assert.equal((await l.install()).code, 0);
+    assert.equal(await readlink(join(l.prefix, "share/subscription-gateway/current")), "releases/9.9.9");
+    await assert.rejects(lstat(join(l.prefix, "share/gatefox")), "no second root appears beside the existing one");
+    assert.ok((await readFile(l.bin("gateway"), "utf8")).includes(join(l.prefix, "share/subscription-gateway/current/package/dist/cli.js")));
+  } finally { await l.cleanup(); }
+});
+
 test("the installer writes harness-gateway and gateway as two managed launchers that both export the harness-gateway path", apple, async () => {
   const l = await layout();
   try {
     assert.equal((await l.install()).code, 0);
     const [harness, legacy] = await Promise.all([readFile(l.bin("harness-gateway"), "utf8"), readFile(l.bin("gateway"), "utf8")]);
     assert.equal(harness, legacy, "the same contents");
+    assert.equal(await readFile(l.bin("gatefox"), "utf8"), harness, "gatefox is a third launcher with the same contents");
     assert.ok(harness.includes(marker + "\n"));
     assert.ok(harness.includes(`GATEWAY_COMMAND='${l.bin("harness-gateway")}' GATEWAY_INSTALLED=1 exec `), "both name harness-gateway");
     for (const name of ["harness-gateway", "gateway"]) {
@@ -109,7 +121,7 @@ test("an occupied staging name, including a link, refuses without writing throug
 test("installing the same version again keeps the last different release as previous-release", apple, async () => {
   const l = await layout();
   try {
-    const previous = join(l.prefix, "share/subscription-gateway/previous-release");
+    const previous = join(l.prefix, "share/gatefox/previous-release");
     const none = () => readFile(previous, "utf8").then(() => false, () => true);
     await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
     assert.equal(await none(), true, "a first install has no previous release");
@@ -126,7 +138,7 @@ test("installing the same version again keeps the last different release as prev
 test("a previous-release link to a release directory is atomically replaced, never followed", apple, async () => {
   const l = await layout();
   try {
-    const root = join(l.prefix, "share/subscription-gateway"), previous = join(root, "previous-release");
+    const root = join(l.prefix, "share/gatefox"), previous = join(root, "previous-release");
     await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
     await symlink("releases/1.0.0", previous);
     await l.publish("2.0.0"); assert.equal((await l.install()).code, 0);
@@ -137,12 +149,13 @@ test("a previous-release link to a release directory is atomically replaced, nev
   } finally { await l.cleanup(); }
 });
 
-test("a transaction nonce records receipts before each real installer publication", apple, async () => {
+async function transactionOutputs(withGatefox: boolean): Promise<{ outputs: string[]; gatefox: boolean }> {
   const l = await layout();
   try {
     await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
+    if (!withGatefox) await rm(l.bin("gatefox"));
     await l.publish("2.0.0");
-    const root = join(l.prefix, "share/subscription-gateway"), save = async (path: string) => {
+    const root = join(l.prefix, "share/gatefox"), save = async (path: string) => {
       const info = await lstat(path).catch(() => undefined);
       if (!info) return { kind: "none" };
       const bytes = info.isSymbolicLink() ? Buffer.from(await readlink(path)) : await readFile(path);
@@ -150,20 +163,29 @@ test("a transaction nonce records receipts before each real installer publicatio
         receipt: { dev: info.dev, ino: info.ino, mode: info.mode & 0o777, size: info.size, digest: createHash("sha256").update(bytes).digest("hex") } };
     };
     const nonce = randomUUID(), before = { current: await save(join(root, "current")), previous: await save(join(root, "previous-release")),
-      wrappers: { gateway: await save(l.bin("gateway")), "harness-gateway": await save(l.bin("harness-gateway")), "subscription-gateway": await save(l.bin("subscription-gateway")) } };
+      wrappers: { gateway: await save(l.bin("gateway")), "harness-gateway": await save(l.bin("harness-gateway")), "subscription-gateway": await save(l.bin("subscription-gateway")),
+        ...(withGatefox ? { gatefox: await save(l.bin("gatefox")) } : {}) } };
     await writeFile(join(root, "app-update-transaction.json"), JSON.stringify({ schema: 1, root, prefix: l.prefix, app: join(l.root, "Harness Gateway.app"),
       version: "2.0.0", team: "ABCDE12345", nonce, phase: "installing", before }), { mode: 0o600 });
     assert.equal((await l.install(["--update-transaction", nonce])).code, 0);
     const journal = JSON.parse(await readFile(join(root, "app-update-transaction.json"), "utf8"));
-    assert.deepEqual(Object.keys(journal.installer.outputs).sort(), ["current", "gateway", "harness-gateway", "previous"]);
+    return { outputs: Object.keys(journal.installer.outputs).sort(), gatefox: await lstat(l.bin("gatefox")).then(() => true, () => false) };
   } finally { await l.cleanup(); }
+}
+
+test("a transaction nonce records receipts before each real installer publication", apple, async () => {
+  assert.deepEqual(await transactionOutputs(true), { outputs: ["current", "gatefox", "gateway", "harness-gateway", "previous"], gatefox: true });
+});
+
+test("an update journal from before 1.8.0 gets no gatefox receipt, which that updater would refuse, and no gatefox launcher", apple, async () => {
+  assert.deepEqual(await transactionOutputs(false), { outputs: ["current", "gateway", "harness-gateway", "previous"], gatefox: false });
 });
 
 test("an active runtime publisher lock refuses an installer update without replacing wrappers", apple, async () => {
   const l = await layout();
   try {
     assert.equal((await l.install()).code, 0); const before = await readFile(l.bin("gateway"));
-    await mkdir(join(l.prefix, "share/subscription-gateway/.gateway-installation-lock"), { mode: 0o700 });
+    await mkdir(join(l.prefix, "share/gatefox/.gateway-installation-lock"), { mode: 0o700 });
     const result = await l.install(); assert.equal(result.code, 75); assert.match(result.stderr, /installation is busy/i);
     assert.deepEqual(await readFile(l.bin("gateway")), before);
   } finally { await l.cleanup(); }
@@ -186,7 +208,7 @@ test("TERM exits through cleanup without publishing wrappers after a controlled 
     const code = await new Promise<number | null>(resolve => installer.once("close", resolve)); assert.equal(code, 143);
     child = undefined;
     await assert.rejects(lstat(l.bin("gateway"))); await assert.rejects(lstat(l.bin("harness-gateway")));
-    await assert.rejects(lstat(join(l.prefix, "share/subscription-gateway/.gateway-installation-lock")));
+    await assert.rejects(lstat(join(l.prefix, "share/gatefox/.gateway-installation-lock")));
   } finally {
     if (child?.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch {} }
     await l.cleanup();
@@ -196,7 +218,7 @@ test("TERM exits through cleanup without publishing wrappers after a controlled 
 test("the installer runs gateway-codex --version once before current switches, and skips it when the file is missing", apple, async () => {
   const l = await layout();
   try {
-    const calls = join(l.home, "prewarm-calls"); const current = join(l.prefix, "share/subscription-gateway/current");
+    const calls = join(l.home, "prewarm-calls"); const current = join(l.prefix, "share/gatefox/current");
     assert.equal((await l.install()).code, 0, "no gateway-sdk in the release");
     assert.equal(await readFile(calls, "utf8").then(() => true, () => false), false, "nothing was run");
     const sdk = join(l.source, "package/gateway-sdk"); await mkdir(sdk);
@@ -215,7 +237,7 @@ test("a gateway-codex that fails does not stop the install, and the failure is r
     await writeFile(join(sdk, "gateway-codex"), "#!/bin/sh\nexit 3\n", { mode: 0o755 });
     const result = await l.install();
     assert.equal(result.code, 0); assert.match(result.stderr, /did not pre-warm/);
-    assert.equal(await readlink(join(l.prefix, "share/subscription-gateway/current")), "releases/9.9.9");
+    assert.equal(await readlink(join(l.prefix, "share/gatefox/current")), "releases/9.9.9");
   } finally { await l.cleanup(); }
 });
 
@@ -223,7 +245,7 @@ test("an app-owned Node retains its old immutable release while current advances
   const l = await layout(); let child: ReturnType<typeof spawn> | undefined;
   try {
     await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
-    const root = join(l.prefix, "share/subscription-gateway"), old = join(root, "releases/1.0.0");
+    const root = join(l.prefix, "share/gatefox"), old = join(root, "releases/1.0.0");
     child = spawn(process.execPath, [join(root, "current/package/dist/cli.js"), "--hold"], { cwd: l.source, stdio: ["ignore", "pipe", "ignore"] });
     await new Promise<void>((resolve, reject) => { child!.stdout!.once("data", () => resolve()); child!.once("error", reject); child!.once("exit", code => reject(new Error(`holder exited ${code}`))); });
     const open = await run("/usr/sbin/lsof", ["-nP", "-p", String(child.pid), "-Fn"]);
@@ -245,7 +267,7 @@ test("an unpinned legacy app-owned Node makes pruning fail closed", apple, async
   const l = await layout(); let child: ReturnType<typeof spawn> | undefined;
   try {
     await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
-    const root = join(l.prefix, "share/subscription-gateway"), old = join(root, "releases/1.0.0");
+    const root = join(l.prefix, "share/gatefox"), old = join(root, "releases/1.0.0");
     child = spawn(process.execPath, [join(root, "current/package/dist/cli.js"), "--legacy-hold"], { cwd: l.source, stdio: ["ignore", "pipe", "ignore"] });
     await new Promise<void>((resolve, reject) => { child!.stdout!.once("data", () => resolve()); child!.once("error", reject); child!.once("exit", code => reject(new Error(`legacy holder exited ${code}`))); });
     for (const version of ["2.0.0", "3.0.0", "4.0.0", "5.0.0"]) { await l.publish(version); assert.equal((await l.install()).code, 0); }
@@ -264,7 +286,7 @@ test("a legacy current CLI with only a runtime marker still blocks every prune",
   try {
     await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
     await l.publish("2.0.0"); assert.equal((await l.install()).code, 0);
-    const root = join(l.prefix, "share/subscription-gateway"), oldest = join(root, "releases/1.0.0");
+    const root = join(l.prefix, "share/gatefox"), oldest = join(root, "releases/1.0.0");
     child = spawn(process.execPath, [join(root, "current/package/dist/cli.js"), "--legacy-runtime-hold"], { cwd: l.source, stdio: ["ignore", "pipe", "ignore"] });
     await new Promise<void>((resolve, reject) => { child!.stdout!.once("data", () => resolve()); child!.once("error", reject); child!.once("exit", code => reject(new Error(`runtime holder exited ${code}`))); });
     for (const version of ["3.0.0", "4.0.0", "5.0.0", "6.0.0"]) { await l.publish(version); assert.equal((await l.install()).code, 0); }
@@ -280,7 +302,7 @@ test("a release deletion interrupted earlier is finished by the next install", a
   const l = await layout();
   try {
     await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
-    const leftover = join(l.prefix, "share/subscription-gateway/releases/.retired-0.9.0-123");
+    const leftover = join(l.prefix, "share/gatefox/releases/.retired-0.9.0-123");
     await mkdir(join(leftover, "package"), { recursive: true }); await writeFile(join(leftover, ".gateway-release"), "0.9.0\n");
     await l.publish("1.0.1"); assert.equal((await l.install()).code, 0);
     assert.equal(await lstat(leftover).then(() => true, () => false), false);

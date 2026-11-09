@@ -1,6 +1,7 @@
 import { readFile, mkdir, rename, writeFile, unlink, chmod } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
+import { installRootIn } from "./paths.js";
 import { ensureLaunchAgent } from "./mac-launch-agent.js";
 import { isOwnWrapperPath } from "./desktop-wrapper-path.js";
 import { gatewayCommand } from "./command.js";
@@ -45,7 +46,7 @@ export const envAgentScriptPath = (stateDirectory: string) => resolve(stateDirec
  */
 export function agentRuntimeFile(): string {
   const command = gatewayCommand();
-  return command.args.length ? command.args[0]! : resolve(dirname(command.command), "../share/subscription-gateway/current/package/dist/cli.js");
+  return command.args.length ? command.args[0]! : resolve(installRootIn(resolve(dirname(command.command), "..")), "current/package/dist/cli.js");
 }
 /**
  * The private script for one registered wrapper. It sets the variable only while both the wrapper and the gateway

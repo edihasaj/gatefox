@@ -16,9 +16,16 @@ export function userConfigPath(home = homedir(), platform = process.platform, ex
   const legacy = legacyConfigPath(home, platform);
   return exists(legacy) && !exists(gatefoxConfigPath(home, platform)) ? legacy : gatefoxConfigPath(home, platform);
 }
+/** Install folders under `<prefix>/share`: GateFox's for fresh installations, then the one installations before 1.8.0 created. */
+export const installDirectoryNames = ["gatefox", "subscription-gateway"] as const;
+/** The install root under a prefix: an existing GateFox one, else an existing pre-1.8.0 one, else GateFox's for a fresh installation. */
+export function installRootIn(prefix: string, exists: (path: string) => boolean = existsSync): string {
+  const [gatefox, legacy] = installDirectoryNames.map(name => resolve(prefix, "share", name)) as [string, string];
+  return exists(gatefox) || !exists(legacy) ? gatefox : legacy;
+}
 /** Where the installer keeps releases when no `--prefix` was given. */
-export function defaultInstallRoot(): string {
-  return resolve(homedir(), ".local/share/subscription-gateway");
+export function defaultInstallRoot(exists?: (path: string) => boolean): string {
+  return installRootIn(resolve(homedir(), ".local"), exists);
 }
 export async function configPath(explicit?: string): Promise<string> {
   if (explicit || process.env.GATEWAY_CONFIG) return resolve(explicit || process.env.GATEWAY_CONFIG!);
