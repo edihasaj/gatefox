@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.8.0 — 2026-11-09
+
+- A Claude chat whose login fails before any reply, tool result or queued message no
+  longer stays blocked behind a crash hold. The next request tries the saved login again.
+  A failure after the turn produced output keeps the hold, because the turn may have
+  advanced. See `docs/claude-sessions.md`.
 
 - The app's rename to GateFox.app leaves `Harness Gateway.app` as a link to it. launchd
   keeps the loaded service's old program path until the next login, and the service plan
@@ -50,16 +55,23 @@
   and Twitter cards with a share image per page, JSON-LD, `robots.txt`, a sitemap with
   images and a web manifest. The deploy adds the IndexNow key file.
 
+## 1.7.8 — 2026-11-08
+
 - Macs that share the native ChatGPT engine can share the Codex 0.167.0-alpha.3.2 app
   engine again. It passed every stdio and Unix shared-native check, with and without
   an explicit host engine path. Until now such a Mac stayed `native_owner_pending`
   and ran native chats in private engines.
+
+## 1.7.7 — 2026-11-08
 
 - The remote relay accepts the Codex 0.167.0-alpha.3.2 app engine that ChatGPT
   26.1103.41825 shipped on 8 November. The installed relay refused it after a service
   restart and paused as `failing`, so the phone could not reach that Mac. Its
   remote-control transport, state migrations and `auth.json` format are unchanged from
   the admitted 0.166.0-alpha.6. Native sharing on the host still waits for its own check.
+
+
+## 1.7.6 — 2026-11-08
 
 - The app updater now also accepts standard `vVERSION` release tags and the GateFox
   release names (`GateFox-VERSION-macos-arm64.zip` holding `GateFox.app`, and
@@ -83,6 +95,8 @@
   index of every doc, generated from each page's summary by `npm run docs:site` and
   checked by `npm run check`.
 
+## 1.7.5 — 2026-11-08
+
 - A large chat is no longer paused when its client changes the tool list. Codex can add
   MCP tools a few seconds after a chat resumes, which forces Claude to rebuild its cache.
   The cache guard counted that rebuild as a second cache failure and stopped the next
@@ -94,10 +108,14 @@
   Mac, the Claude CLI took up to 25 seconds to answer its first request, so chats
   failed with `initialize_timeout`.
 
+## 1.7.4 — 2026-11-06
+
 - Successful client compaction can recover a Claude chat held after its live
   session crashed. Previously compaction left the crash hold in place, so even
   a compacted chat remained blocked. The dead-session error now explains that
   retrying restarts the idle-hour wait. Thanks to Edi Hasaj for the report.
+
+## 1.7.1 — 2026-11-06
 
 - `gateway claude-config` now keeps Claude Code's auto mode working on 2.1.319 and later. That
   release asks the server for its safety review, which this gateway does not offer, so it denied
@@ -152,12 +170,16 @@
   compared only the label, so all three Macs reported `lagging native-relay` after every release.
   A relay whose bytes differ still warns.
 
+## 1.7.0 — 2026-11-05
+
 - A Claude refusal no longer holds the chat. Gateway treated a `reasoning_extraction` refusal as a
   crashed CLI, so every later message in that chat failed before reaching Claude until it had been
   quiet for an hour, and each attempt restarted the hour. The next message now starts a new session
   and goes to Claude, which costs one full resend of the chat. The cache stop still limits repeats:
   refused requests always count, including ones that report no usage, so repeated refusals stop
   after two resends. A chat that recovers is not stopped on its next message.
+
+## 1.6.9 — 2026-11-05
 
 - A follow-up message can no longer trip the cache stop. Sending a message during a turn cancels
   that request and can close Claude's live session, so the next request has to rebuild the chat.
@@ -167,6 +189,120 @@
   count, and the one rebuild after a cancellation is excused, for up to four rebuilds in a row
   without cache reuse. Timeouts, shutdowns and clients that disconnect in a retry loop still reach
   the stop, whose message now says to wait 5 minutes and that retrying restarts the wait.
+
+## 1.4.8 — 2026-11-02
+
+- Give identified SDK turns one compaction recovery signal after the large-context
+  cache guard stops inference. Unchanged retries and cold compactions remain bounded.
+- Fix Gateway SDK full-context accounting so the next user turn compacts the same
+  chat on its selected model, without rewriting cumulative usage totals. Preserve
+  native behavior outside marked Gateway executors.
+
+## 1.4.7 — 2026-11-02
+
+- Classify rejected Copilot tool names using fixed categories and counts, without
+  recording names or arguments. Distinguish malformed names, declared aliases
+  and undeclared names while preserving strict refusal and no automatic replay.
+
+## 1.4.6 — 2026-11-02
+
+- Preserve warm Copilot sessions across documented title, warning and empty queue
+  notifications. Adopt the updated event guard into existing sessions, while
+  refusing unattended model starts and retaining client-owned tool execution.
+- Stabilize equivalent OpenRouter Responses tool catalogs to avoid needless
+  cache-prefix changes. Add content-free diagnostics for large cold requests.
+- Recover a stale Claude reverse forward only with a private receipt proving
+  its exact process, start time and connection, after its source client exited.
+
+## 1.4.5 — 2026-11-02
+
+- Grant inactive cache histories inherited from the old guard one bounded fresh
+  warm-up. Resuming an hour-old or days-old chat no longer combines its cold seed
+  with stale pre-upgrade strikes. Tracked active requests retain their history,
+  and later module upgrades cannot repeatedly clear a new safety stop.
+
+## 1.4.4 — 2026-11-02
+
+- Copilot public reasoning summaries retain their type during live continuation.
+  Tool results and follow-up messages can continue the original session without
+  a false history mismatch, restart or full-history replay.
+
+## 1.4.3 — 2026-11-02
+
+- Cache safety starts a fresh warm-up after five minutes without request activity,
+  allowing chats to resume after provider cache or session expiry. Repeated large
+  uncached requests during active work still stop before another inference.
+- Overlapping requests and long inference preserve the active cache history;
+  blocked retries cannot reset their own safety stop.
+
+## 1.4.2 — 2026-11-02
+
+- Chat Completions providers now recover known transient connection failures
+  within the existing two-minute outage budget. Retries preserve the selected
+  account, model and request, keep streaming heartbeats active, and stop when
+  cancelled. HTTP replies and partial streams are never replayed by this recovery.
+- Tailnet diagnostics retain fixed network error codes, distinguishing temporary
+  DNS and dial timeouts from certificate failures without recording addresses.
+
+## 1.3.5 — 2026-11-01
+
+- Fix Claude live-session recovery when tool results arrive with new caller
+  messages. Apply a shared large-context cache safety stop across every provider,
+  including measured failures, cancellations and repeated missing cache metrics.
+
+## 1.3.4 — 2026-11-01
+
+- Routine worker policies can explicitly prefer paid DeepSeek V4 Flash after
+  local models and before subscriptions, while preserving existing policies and
+  worker pins. OpenRouter discovery retains published model names as labels.
+
+## 1.3.3 — 2026-10-31
+
+- Managed coding/test profiles can advertise an explicit compaction threshold.
+  Bounded 128K role settings avoid repeatedly compacting near a 32K window and
+  prevent a newly added worker alias from inheriting a generic SDK context size.
+
+## 1.3.1 — 2026-10-31
+
+- Managed worker policies are hidden from normal model pickers while configured
+  roles and existing chats retain their routes. Gateway Activity shows the pinned
+  model/account for locally served managed workers without changing their saved
+  model, permissions or execution state.
+
+- Internal worker policies can explicitly configure effort for one candidate,
+  allowing Qwen implementation at xhigh while subscription fallback keeps medium.
+  Existing policies and fixed model requests retain their reasoning behavior.
+
+- The remote relay no longer pauses itself after a gateway restart that coincides
+  with the native Codex database being recovered. Its registration read had no busy
+  timeout, failed at once with "database is locked" and exited three times in a row,
+  which set the relay aside for half an hour and cut the phone off from that Mac. The
+  read now waits for the lock and retries briefly, and every relay stop logs its fixed
+  reason instead of the same generic line.
+
+## 1.3.0 — 2026-10-31
+
+- Native engine sharing accepts the Codex app engine 0.166.0-alpha.5.1 after the
+  shared-native fixture passed against the signed engine over stdio and Unix.
+  Macs that share native work report `ready` again instead of
+  `native_owner_pending`.
+
+## 1.2.9 — 2026-10-31
+
+- The remote relay accepts the Codex app engine 0.166.0-alpha.5.1, which ChatGPT
+  shipped on 30 October. The relay refused it, paused itself after three exits, and
+  phones could no longer reach any Mac. The engine's remote-control contract was
+  reviewed against 0.165 and is unchanged.
+
+## 1.2.0 — 2026-10-29
+
+- Opt-in managed worker aliases now enforce provider selection, fresh capacity
+  checks, subscription reserves, permitted DeepSeek V4 Flash fallback and durable
+  provider affinity in Gateway code. Ordinary requests retain a bounded context
+  budget; client compaction has a separate capped allowance on the same existing
+  provider. Explicit models, permissions and independent reviewer roles retain
+  their bindings. Thanks to Edi Hasaj for requesting code-enforced routing and
+  identifying the duplicated instruction policy.
 
 - Fixed the cause of Qwen's garbled tool calls. Gateway showed Chat Completions models opaque
   tool names such as `tool_14`, and Qwen had to recall that index token by token. On real
@@ -384,16 +520,48 @@
   metadata for those models, the adapter records `native_catalog_incomplete`, and a
   corrupt cache or a gateway alias that equals an engine model ID is still refused.
 
+## 1.1.1 — 2026-10-27
+
 - SSH proxy output now crosses fresh child pipes with backpressure and complete
   draining. This prevents macOS error 35 from ending otherwise healthy Studio
   connections when the client briefly stops reading a large response.
 
+## 1.1.0 — 2026-10-27
+
 - Native sharing and the remote relay accept the verified Codex app engine
   0.165.0-alpha.1.2 after separate source review and signed-engine checks.
+
+## 1.0.9 — 2026-10-27
 
 - Desktop app distribution now requires both the native relay and gateway
   executor in its verified backend archive, preventing an incomplete desktop
   update from being signed and published.
+- The complete desktop bundle restores the signed gateway executor and native
+  relay omitted from 1.0.8. That incomplete release was removed from the stable
+  update channel. All Copilot and Diagnostics fixes from 1.0.7 remain included.
+- Copilot zero-parameter function calls accept omitted arguments as an empty
+  object, matching the provider protocol. Explicit invalid arguments still fail
+  validation, and custom tools continue to require their declared input.
+
+## 1.0.7 — 2026-10-27
+
+- Copilot tool calls now accept the SDK's documented default function type when
+  the optional type field is absent. Exact catalog matching, unique call IDs,
+  argument validation, and client-owned execution remain enforced. This fixes a
+  compatibility error that could trigger repeated response-stream reconnects.
+- The app adds Diagnostics for cache reads, writes and hit coverage, Copilot
+  session rebuilds, provider failures and retry signals. Missing cache reports
+  stay distinct from measured zero across provider adapters. New Copilot tool
+  failures record fixed structural reasons without storing prompts or arguments.
+- Loaded gateway chats retain compatible picker aliases after a Codex account
+  rename, and the account-name verification checks saved-chat resume behavior.
+
+## 1.0.6 — 2026-10-27
+
+- Managed Macs prefer the verified, Developer ID-signed gateway executor for
+  MCP Keychain access. The executor retains release compatibility checks and
+  safely falls back to the matching CLI during app updates. Keychain approval
+  persistence still requires verification on the target Mac.
 
 ## 1.0.5 — 2026-10-27
 
