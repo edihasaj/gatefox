@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
-import { holdsChatStore, migrateChats } from "../chat-migrate.js";
+import { holdsChatStore, holdsThisChatStore, migrateChats } from "../chat-migrate.js";
 
 const idle = async () => [];
 async function fixture() {
@@ -108,4 +108,13 @@ test("only processes that open the chat store block the migration", () => {
   for (const command of ["1 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT", "2 /x/codex -c a=b app-server --listen stdio://",
     "3 /x/node /x/dist/cli.js codex-shim --ssh --config c", "4 /x/node /x/dist/cli.js daemon --config c", "5 /x/native/gateway-native-relay --native-home /h"]) assert.equal(holdsChatStore(command), true, command);
   for (const command of ["6 /x/node /x/dist/cli.js serve --config /tmp/gw-fast/server.json", "7 /bin/zsh gatefox chats migrate --apply"]) assert.equal(holdsChatStore(command), false, command);
+});
+
+test("only processes on the same Codex home block the migration", () => {
+  const engine = "8283 /opt/homebrew/bin/codex app-server --listen stdio://";
+  assert.equal(holdsThisChatStore(engine, "PATH=/bin CODEX_HOME=/Users/dev/.codex", "/Users/dev/.codex", "/Users/dev"), true);
+  assert.equal(holdsThisChatStore(engine, "CODEX_HOME=/Users/dev/.codex-primary", "/Users/dev/.codex", "/Users/dev"), false, "another Mission Runtime home");
+  assert.equal(holdsThisChatStore(engine, "PATH=/bin", "/Users/dev/.codex", "/Users/dev"), true, "no CODEX_HOME means ~/.codex");
+  assert.equal(holdsThisChatStore("9 /x/node --import p.mjs --test --test-concurrency=4 dist/tests/app-server.test.js", "", "/Users/dev/.codex", "/Users/dev"), false, "a test runner");
+  assert.equal(holdsThisChatStore("10 /x/node /x/dist/cli.js codex-shim --config /tmp/t/gateway.json", "CODEX_HOME=/tmp/t/home", "/Users/dev/.codex", "/Users/dev"), false, "an isolated test home");
 });

@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- `gatefox chats migrate --apply` no longer refuses because of an unrelated inference-only
-  `gateway serve`; only ChatGPT, Codex app-servers, the shims and native relay that start
-  them, and the service daemon block it.
+- `gatefox chats migrate --apply` is blocked only by processes on the same Codex home: an
+  engine with another `CODEX_HOME` (such as Mission Runtime's `~/.codex-primary`), a test
+  run, or an inference-only `gateway serve` no longer stops it. A process without
+  `CODEX_HOME` counts as `~/.codex`.
 
 ## 1.8.3 — 2026-11-09
 
