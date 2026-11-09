@@ -54,6 +54,10 @@ output, timeouts, unexpected exits, and unknown or reused process identities
 remain refusals. This exception does not enable automatic restarts with Claude
 components configured.
 
+New service command references prefer the installer-owned `gatefox` launcher.
+Older `harness-gateway` and `gateway` registrations remain valid compatibility
+aliases; installing an update does not force a running service to restart.
+
 ## Choose a task
 
 | Task | Guide |

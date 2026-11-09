@@ -51,7 +51,7 @@ test("an installation from before 1.8.0 keeps updating in share/subscription-gat
   } finally { await l.cleanup(); }
 });
 
-test("the installer writes harness-gateway and gateway as two managed launchers that both export the harness-gateway path", apple, async () => {
+test("the installer writes compatible launchers that all export the canonical gatefox path", apple, async () => {
   const l = await layout();
   try {
     assert.equal((await l.install()).code, 0);
@@ -59,13 +59,13 @@ test("the installer writes harness-gateway and gateway as two managed launchers 
     assert.equal(harness, legacy, "the same contents");
     assert.equal(await readFile(l.bin("gatefox"), "utf8"), harness, "gatefox is a third launcher with the same contents");
     assert.ok(harness.includes(marker + "\n"));
-    assert.ok(harness.includes(`GATEWAY_COMMAND='${l.bin("harness-gateway")}' GATEWAY_INSTALLED=1 exec `), "both name harness-gateway");
+    assert.ok(harness.includes(`GATEWAY_COMMAND='${l.bin("gatefox")}' GATEWAY_INSTALLED=1 exec `), "all name gatefox");
     for (const name of ["harness-gateway", "gateway"]) {
       const info = await lstat(l.bin(name));
       assert.ok(info.isFile() && !info.isSymbolicLink(), name + " is a real file");
       assert.equal(info.mode & 0o777, 0o700);
       const { stdout } = await run(l.bin(name), []);
-      assert.equal(stdout.trim(), `1:${l.bin("harness-gateway")}`, name + " runs the release with GATEWAY_COMMAND at harness-gateway");
+      assert.equal(stdout.trim(), `1:${l.bin("gatefox")}`, name + " runs the release with GATEWAY_COMMAND at gatefox");
     }
     assert.equal((await l.install()).code, 0, "installing again is allowed");
     assert.equal(await readFile(l.bin("harness-gateway"), "utf8"), harness);

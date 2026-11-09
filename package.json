@@ -6,6 +6,7 @@
   "description": "A local gateway that serves subscription and API providers to agent harnesses through Responses and Messages APIs.",
   "license": "MIT",
   "bin": {
+    "gatefox": "dist/cli.js",
     "gateway": "dist/cli.js",
     "harness-gateway": "dist/cli.js"
   },

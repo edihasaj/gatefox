@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { packReleasePackage } from '../release-package.mjs';
 
-const required = ['dist/cli.js', 'dist/config.js', 'dist/catalog.js', 'dist/server.js', 'dist/app-management.js'];
+const required = ['dist/cli.js', 'dist/cli-main.js', 'dist/token-command.js', 'dist/config.js', 'dist/catalog.js', 'dist/server.js', 'dist/app-management.js'];
 function fixture({ dirty = false, missing, failBuild = false } = {}) {
   const calls = [];
   const run = (command, args) => {

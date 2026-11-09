@@ -7,7 +7,7 @@ import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, writePrivateJson } from "./config.js";
 import { nativeRelayHome } from "./native-control.js";
-import { gatewayCommand, launcherName, legacyLauncherName } from "./command.js";
+import { gatewayCommand, gatefoxLauncherName, launcherName, legacyLauncherName } from "./command.js";
 import { readServicePlan } from "./service-plan.js";
 import { consolidatedStatus } from "./mac-consolidate.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
@@ -52,15 +52,16 @@ async function enable(binary: string, args: string[]): Promise<void> {
 }
 
 /**
- * Whether the installed plist is this registration. A relay started by 0.4.5 names `.../bin/gateway` in its `--gateway`
- * argument and the same plist written now names `.../bin/harness-gateway`; both launchers run the same command, so
- * that difference alone is not "another registration" and does not force an uninstall.
+ * Whether the installed plist is this registration. The installer-owned sibling commands `gatefox`, `harness-gateway`
+ * and `gateway` are compatible aliases. A change only between those paths does not require uninstalling the relay.
  */
 export function sameNativeRegistration(existing: string | undefined, contents: string, command: string): boolean {
   if (existing === contents) return true;
-  if (existing === undefined || basename(command) !== launcherName) return false;
-  const older = `<string>${xml(resolve(dirname(command), legacyLauncherName))}</string>`; const current = `<string>${xml(command)}</string>`;
-  return existing === contents.replace(current, older);
+  if (existing === undefined) return false;
+  const names = basename(command) === gatefoxLauncherName ? [launcherName, legacyLauncherName]
+    : basename(command) === launcherName ? [legacyLauncherName] : [];
+  const current = `<string>${xml(command)}</string>`;
+  return names.some(name => existing === contents.replace(current, `<string>${xml(resolve(dirname(command), name))}</string>`));
 }
 /** The side effects of a unified-plan install; a test replaces all of them so it can never reach a process, ChatGPT or launchd. */
 export type NativeOptions = { codex?: string; nativeHome?: string; planDeps?: Partial<PlanRelayDeps>; holderDeps?: HolderDeps };

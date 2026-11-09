@@ -261,3 +261,12 @@ See [architecture](architecture.md), [Responses support](responses.md), [Message
 Local inference farms can opt into [automatic capacity discovery](upstream-capacity.md)
 so worker concurrency changes update admission without editing every Gateway.
 
+
+## Authentication helper startup
+
+`gatefox token --config PATH` and `gatefox token --file PATH` use the lightweight
+authentication entry path. They preserve configuration validation, private-file
+ownership and mode checks, and symlink refusal, while avoiding the rest of the
+provider and service CLI startup. Existing `gateway token` and `harness-gateway token`
+commands take the same path. Newly generated native provider rows use `gatefox` when
+its managed launcher is present and permit a bounded 15-second cold start.

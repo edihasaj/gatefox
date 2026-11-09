@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Provider token authentication uses a lightweight CLI path instead of importing the
+  entire provider/service stack. New auth rows permit a bounded 15-second cold start,
+  and new generated command references prefer `gatefox`. Existing `gateway` and
+  `harness-gateway` launchers remain compatible. Fresh installs select GateFox config
+  and install folders and export the canonical `gatefox` command from all launchers.
+
 - The sidebar brand is only GateFox. The Harness Gateway subtitle and its spoken
   accessibility label have been removed.
 

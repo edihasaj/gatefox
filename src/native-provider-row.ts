@@ -1,13 +1,13 @@
 import { resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { gatewayCommand } from "./command.js";
-import { adapterProvider, codexStreamIdleTimeoutMs, legacyAdapterProvider } from "./codex-config.js";
+import { adapterProvider, codexAuthCommandTimeoutMs, codexStreamIdleTimeoutMs, legacyAdapterProvider } from "./codex-config.js";
 import { apiModeEngine, apiModeNativeHome, openNativeConfig, type NativeConfigClient } from "./desktop-api-mode-native.js";
 import { telemetry } from "./telemetry.js";
 
 /**
  * The gateway's provider row in the native Codex configuration. Gateway chats are saved with the provider id
- * `subscription_gateway`. Every engine the gateway starts registers that id with `-c` settings, but the ChatGPT app's own
+ * `gatefox` (`subscription_gateway` before 1.8.0). Every engine the gateway starts registers both ids with `-c` settings, but the ChatGPT app's own
  * engine reads only `~/.codex/config.toml`. When the app starts before the gateway service has set CODEX_CLI_PATH at
  * login, or runs its own engine for any other reason, a gateway chat would fail to open with "Model provider
  * `subscription_gateway` not found". Publishing this one row lets any engine open those chats and send their turns to
@@ -21,7 +21,7 @@ export function nativeProviderRow(port: number, configPath: string): NativeProvi
   const helper = gatewayCommand();
   return { name: "GateFox", base_url: `http://127.0.0.1:${port}/v1`, wire_api: "responses", requires_openai_auth: false,
     supports_websockets: false, request_max_retries: 2, stream_idle_timeout_ms: codexStreamIdleTimeoutMs,
-    auth: { command: helper.command, args: [...helper.args, "token", "--config", resolve(configPath)], timeout_ms: 5000, refresh_interval_ms: 300000 } };
+    auth: { command: helper.command, args: [...helper.args, "token", "--config", resolve(configPath)], timeout_ms: codexAuthCommandTimeoutMs, refresh_interval_ms: 300000 } };
 }
 
 /** The row as the dotted `-c` keys an engine launch takes (`auth.command`, not a nested table). */

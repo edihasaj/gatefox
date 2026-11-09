@@ -4,7 +4,8 @@ import { chmod, copyFile, mkdtemp, mkdir, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { startServeRuntime } from "../serve-runtime.js";
@@ -74,5 +75,32 @@ test("a hot-swapped runtime holds its old release until its own request finishes
     if (gateway) await new Promise<void>(resolve => gateway!.server.close(() => resolve()));
     upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve()));
     delete process.env[key]; await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test("the real split CLI keeps cli.js and its immutable release marker open while its command runs", { skip: process.platform !== "darwin", timeout: 15000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "gatefox-split-cli-"));
+  let child: ReturnType<typeof spawn> | undefined;
+  try {
+    const release = join(root, "releases/1.0.0"), dist = join(release, "package/dist"), entry = join(dist, "cli.js"), marker = join(release, ".gateway-release");
+    await mkdir(dist, { recursive: true, mode: 0o700 }); await writeFile(marker, "1.0.0\n", { mode: 0o600 });
+    await writeFile(join(release, "package/package.json"), '{"type":"module"}');
+    for (const name of ["cli.js", "error-message.js", "release-retention.js"]) await copyFile(new URL(`../${name}`, import.meta.url), join(dist, name));
+    await writeFile(join(dist, "cli-main.js"), 'export async function main(){process.stdout.write("READY\\n"); setInterval(()=>{},1000); }');
+    child = spawn(process.execPath, [entry, "serve"], { stdio: ["ignore", "pipe", "pipe"] });
+    const active = child;
+    await new Promise<void>((resolve, reject) => {
+      active.stdout!.on("data", chunk => { if (String(chunk).includes("READY")) resolve(); });
+      active.once("exit", code => reject(new Error(`Fixture exited before readiness (${code})`)));
+      active.once("error", reject);
+    });
+    const { stdout } = await run("/usr/sbin/lsof", ["-nP", "-p", String(child.pid), "-Fn"]);
+    const names = stdout.split("\n");
+    assert.ok(names.includes(`n${await realpath(entry)}`), "installer can identify the immutable CLI entrypoint");
+    assert.ok(names.includes(`n${await realpath(marker)}`), "the running release is retained");
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) { const exited = once(child, "exit"); child.kill("SIGTERM"); await exited; }
+    await rm(root, { recursive: true, force: true });
   }
 });
