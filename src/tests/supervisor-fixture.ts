@@ -17,7 +17,8 @@ const pidFile = (directory: string) => join(directory, "fixture-pids");
 export function fixtureComponent(directory: string, id: string, kind: ServiceComponent["kind"], source: string): ServiceComponent {
   const pids = pidFile(directory); pidFiles.add(pids);
   const guard = `require('node:fs').appendFileSync(${JSON.stringify(pids)}, process.pid + '\\n'); { const parent = process.ppid; setInterval(() => { if (process.ppid !== parent) process.exit(0); }, 250).unref(); }`;
-  return { id, kind, command: process.execPath, args: ["-e", `${guard} ${source}`], log: join(directory, id + ".log") };
+  // Relay flags appended by a test belong to the evaluated fixture, not to the Node interpreter.
+  return { id, kind, command: process.execPath, args: ["-e", `${guard} ${source}`, "--"], log: join(directory, id + ".log") };
 }
 
 /**

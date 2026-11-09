@@ -19,6 +19,8 @@ jobs:
           github.actor == 'edihasaj' &&
           github.triggering_actor == 'edihasaj' }}
     runs-on: [self-hosted, home-public-linux]
+    env:
+      GATEWAY_TEST_CONCURRENCY: 2
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

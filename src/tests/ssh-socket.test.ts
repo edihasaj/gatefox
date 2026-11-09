@@ -142,10 +142,13 @@ test("the bind-time swap leaves an alias that already moved on", { skip: process
   try {
     const reuse = await reuseSshSocket(listener.path, { running: "0.4.2", installed: "0.4.2" });
     assert.ok(reuse.replace, "the older listener is to be replaced");
+    // Retain the original inode so Linux cannot recycle it for the deliberately different alias.
+    await link(listener.path, join(listener.socketDirectory, "retained-old-alias"));
     await listener.stop();
     const raced = await ownedListener("0.4.2", listener.folder);
     try {
       const racedInode = await lstat(listener.path, { bigint: true });
+      assert.notEqual(String(racedInode.ino), reuse.replace.inode, "the fixture must create a different alias identity");
       const late = new AbortController(); let replaced = false;
       try {
         await assert.rejects(serveUnix(listener.path, late.signal, async () => {}, "0.4.2", (_control, swapped) => { replaced = swapped; }, reuse.replace), /occupied/,
