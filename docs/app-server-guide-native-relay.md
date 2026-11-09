@@ -299,6 +299,29 @@ appear as an organization-settings error.
 
 ## Native sharing compatibility
 
+### Retained writers across auth-helper updates
+
+1.8.5 changed the generated gateway auth command from `harness-gateway` to
+`gatefox` and its timeout from 5000 to 15000 ms. Native writer launch identity
+includes those provider registrations. An older writer therefore rejected a new
+local desktop or SSH adapter even though the helpers use the same credential.
+ChatGPT could fail bootstrap with "Native execution startup settings differ";
+SSH login could succeed while its gateway WebSocket failed.
+
+A new adapter first sends its original launch unchanged. Only after the exact
+legacy identity refusal may it offer the old helper/deadline pair. Both current
+and legacy commands must be real, user-owned, non-writable executables with
+identical bytes and validated templates for the same managed installation. Both
+gateway provider IDs must have the expected explicit metadata. The retry changes
+only those four auth metadata overrides; endpoint, credential args, client policy
+and cwd remain strict. The retained writer is never restarted or relabelled.
+Existing analytics and redundant-Code-Mode compatibility checks remain bounded.
+
+`native-execution-host.test.ts` checks the real current provider-row generator
+against a retained legacy launch and requires the same native PID. Changed
+endpoints or credential arguments must still refuse.
+
+
 The host shares only app engines verified for sharing in
 `hostVerifiedAppEngines` (`src/native-engine-versions.ts`). The newest verified
 engine is `0.167.0-alpha.3.2`; earlier verified versions remain accepted. The relay

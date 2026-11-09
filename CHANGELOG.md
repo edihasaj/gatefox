@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Fixed a rolling-update regression introduced in 1.8.5: changing the gateway auth
+  command spelling and deadline made retained native writers reject new desktop and
+  SSH connections. New clients can attach using the earlier metadata only after
+  proving both command aliases execute identical code for the same managed install.
+  Endpoints, credential arguments, client settings and the existing writer stay exact.
+
 ## 1.8.5 — 2026-11-09
 
 - Provider token authentication uses a lightweight CLI path instead of importing the

@@ -1,4 +1,5 @@
 import type { Message } from "./app-server-connection.js";
+import { legacyNativeAuthArgs } from "./native-auth-compat.js";
 
 const analyticsDefault = "--analytics-default-enabled";
 const legacyMismatch = "Native execution startup settings differ; existing ownership was preserved";
@@ -34,11 +35,22 @@ export async function acquireNativeCompatible(request: (params: Message) => Prom
     let last = error;
     try { return await request({ args: alternateAnalyticsArgs(args), cwd }); }
     catch (error) { if (!mismatch(error)) throw error; last = error; }
+    // 1.8.5 renamed the credential command and enlarged its deadline. A retained host
+    // may still have the earlier launch. Only verified aliases of the same managed
+    // installation qualify; endpoints, credential args and client settings stay exact.
+    const legacyAuth = await legacyNativeAuthArgs(args);
+    if (legacyAuth) for (const compatible of [legacyAuth, alternateAnalyticsArgs(legacyAuth)]) {
+      try { return await request({ args: compatible, cwd }); }
+      catch (error) { if (!mismatch(error)) throw error; last = error; }
+    }
     const alternate = alternateCodeModeArgs(args);
     if (!alternate || !await codeModeAlreadyEnabled()) throw last;
     // The signed SDK must prove that this is a redundant enabled setting.
     // Changing a disabled feature, another setting, or cwd is never permitted.
-    for (const compatible of [alternate, alternateAnalyticsArgs(alternate)]) {
+    const variants = [alternate, alternateAnalyticsArgs(alternate)];
+    const legacyCodeMode = legacyAuth && alternateCodeModeArgs(legacyAuth);
+    if (legacyCodeMode) variants.push(legacyCodeMode, alternateAnalyticsArgs(legacyCodeMode));
+    for (const compatible of variants) {
       try { return await request({ args: compatible, cwd }); }
       catch (error) { if (!mismatch(error)) throw error; last = error; }
     }

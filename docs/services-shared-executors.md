@@ -254,7 +254,11 @@ Desktop startup also explicitly enables the Code Mode host. An adapter may treat
 that flag as redundant only after the existing signed SDK reports the feature
 enabled. Disabled, unavailable, or conflicting settings remain errors. The
 feature query is read-only and does not answer frontend approvals.
-Compatibility is bounded to four ownership requests, never inference requests.
+The 1.8.5 auth-helper rename/deadline change also has a bounded compatibility
+variant: both aliases must be verified identical managed executables for the same
+installation before the earlier metadata is offered to the retained host.
+Endpoints, credential args, permissions and cwd remain strict. Compatibility is
+bounded to eight ownership requests, never inference requests.
 Administrative reads use short-lived, non-originating SDK connections and never
 answer frontend approvals. Identical pending approvals replay with their original
 mapped client ID after resume.

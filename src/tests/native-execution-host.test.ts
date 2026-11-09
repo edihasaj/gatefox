@@ -231,3 +231,48 @@ test("native launches never replace a writer for changed values, profiles, or an
     assert.equal(livePid(record.pid), true);
   } finally { control.stop(); await host.close(); await f.clean(); }
 });
+
+test("a new auth-helper registration attaches to the retained native writer without changing its account or endpoint", { timeout: 20000 }, async () => {
+  const f = await fixture();
+  const { renderInstalledLauncher } = await import("../app-runtime.js");
+  const { nativeArguments } = await import("../gateway-engine-args.js");
+  const { acquireNativeCompatible } = await import("../native-execution-compat.js");
+  const prefix = join(f.root, "install"), installation = join(prefix, "share/gatefox"), bin = join(prefix, "bin");
+  await mkdir(join(installation, "releases/1.8.6/package/dist"), { recursive: true, mode: 0o700 }); await mkdir(bin, { recursive: true, mode: 0o700 });
+  await writeFile(join(installation, ".gateway-installation"), "subscription-gateway\n", { mode: 0o600 });
+  await writeFile(join(installation, "releases/1.8.6/package/dist/cli.js"), "// fixture\n");
+  await symlink("releases/1.8.6", join(installation, "current"));
+  const gatefox = join(bin, "gatefox"), legacy = join(bin, "harness-gateway"), wrapper = renderInstalledLauncher(installation, gatefox);
+  for (const command of [gatefox, legacy]) await writeFile(command, wrapper, { mode: 0o700 });
+  // Snapshot of the registration a retained 1.8.4-or-earlier writer actually received.
+  const prior = { name: "GateFox", base_url: "http://127.0.0.1:3457/v1", wire_api: "responses", requires_openai_auth: false,
+    supports_websockets: false, request_max_retries: 2, stream_idle_timeout_ms: 90000,
+    "auth.command": legacy, "auth.args": ["token", "--config", f.configPath], "auth.timeout_ms": 5000, "auth.refresh_interval_ms": 300000 };
+  const saved = { installed: process.env.GATEWAY_INSTALLED, command: process.env.GATEWAY_COMMAND };
+  let next: Record<string, unknown>;
+  try {
+    process.env.GATEWAY_INSTALLED = "1"; process.env.GATEWAY_COMMAND = gatefox;
+    const { nativeProviderRow, providerOverrides } = await import("../native-provider-row.js");
+    // Use the real current generator: future metadata changes must also pass this old-writer test.
+    next = providerOverrides(nativeProviderRow(3457, f.configPath));
+  } finally {
+    if (saved.installed === undefined) delete process.env.GATEWAY_INSTALLED; else process.env.GATEWAY_INSTALLED = saved.installed;
+    if (saved.command === undefined) delete process.env.GATEWAY_COMMAND; else process.env.GATEWAY_COMMAND = saved.command;
+  }
+  const olderArgs = nativeArguments(f.args, prior), newerArgs = nativeArguments(f.args, next), original = [...newerArgs];
+  const host = await startExecutionHost(f.options), control = await f.connection(join(f.home, "host.sock")); let admin;
+  try {
+    const first = await control.request("native/acquire", { args: olderArgs, cwd: f.cwd }) as unknown as NativeExecutionRecord;
+    await assert.rejects(control.request("native/acquire", { args: newerArgs, cwd: f.cwd }), /startup settings differ/);
+    const attached = await acquireNativeCompatible(params => control.request("native/acquire", params), newerArgs, f.cwd);
+    assert.equal(attached.pid, first.pid, "the retained native engine is not restarted");
+    assert.deepEqual(newerArgs, original, "caller launch settings are not mutated");
+    for (const overrides of [{ ...next, base_url: "http://127.0.0.1:3999/v1" }, { ...next, "auth.args": ["token", "--config", "/different-account.json"] }]) {
+      await assert.rejects(acquireNativeCompatible(params => control.request("native/acquire", params), nativeArguments(f.args, overrides), f.cwd), /startup settings differ/);
+    }
+    admin = await f.initialize(first.socketPath, "compatibility-proof");
+    const info = await admin.request("fixture/info", {});
+    assert.equal(info.pid, first.pid); assert.equal(info.home, f.nativeHome);
+    assert.ok((info.args as string[]).some(value => value.includes('auth.command=' + JSON.stringify(legacy))), "the original launch remains unchanged");
+  } finally { admin?.stop(); control.stop(); await host.close(); await f.clean(); }
+});
