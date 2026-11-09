@@ -8,7 +8,7 @@ export function packReleasePackage(destination, { allowDirty = false, run = exec
   }
   const packed = JSON.parse(run('npm', ['pack', '--json', '--pack-destination', destination], { encoding: 'utf8' }))[0];
   const files = new Set(packed?.files?.map(file => file.path));
-  for (const required of ['dist/cli.js', 'dist/cli-main.js', 'dist/token-command.js', 'dist/config.js', 'dist/catalog.js', 'dist/server.js', 'dist/app-management.js']) {
+  for (const required of ['dist/cli.js', 'dist/cli-main.js', 'dist/token-command.js', 'dist/native-auth-compat.js', 'dist/config.js', 'dist/catalog.js', 'dist/server.js', 'dist/app-management.js']) {
     if (!files.has(required)) throw new Error(`Release package is missing ${required}`);
   }
   return packed;
