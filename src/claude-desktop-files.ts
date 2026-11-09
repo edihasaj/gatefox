@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, readlink, rename, rm } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { claudeDesktopProfileName, type ClaudeDesktopAdapterConfig } from "./claude-desktop-profile.js";
+import { claudeDesktopProfileName, claudeDesktopProfileNames, type ClaudeDesktopAdapterConfig } from "./claude-desktop-profile.js";
 
 const maximumJsonBytes = 2 * 1024 * 1024;
 const safeProfileId = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
@@ -157,13 +157,13 @@ export async function readSelectedClaudeDesktopProfile(library: string): Promise
   const libraryRoot = await ensureExistingLibrary(library);
   const meta = await readJson(join(libraryRoot, "_meta.json"));
   if (!Array.isArray(meta.entries)) fail("Claude Desktop config library _meta.json has no entries array");
-  const matches = meta.entries.filter(entry => isRecord(entry) && entry.name === claudeDesktopProfileName && typeof entry.id === "string");
-  if (matches.length !== 1) fail(`Expected exactly one Claude Desktop profile named ${claudeDesktopProfileName}`);
+  const matches = meta.entries.filter(entry => isRecord(entry) && claudeDesktopProfileNames.includes(String(entry.name)) && typeof entry.id === "string");
+  if (matches.length !== 1) fail(`Expected exactly one Claude Desktop profile named ${claudeDesktopProfileName} (or Harness Gateway)`);
   const profileId = matches[0]!.id as string;
   if (meta.appliedId !== profileId) fail(`Claude Desktop appliedId must select the unique ${claudeDesktopProfileName} profile`);
-  if (!safeProfileId.test(profileId)) fail("Claude Desktop Harness Gateway profile ID is not a safe filename");
+  if (!safeProfileId.test(profileId)) fail(`Claude Desktop ${claudeDesktopProfileName} profile ID is not a safe filename`);
   const profilePath = resolve(libraryRoot, `${profileId}.json`);
-  if (!confined(libraryRoot, profilePath)) fail("Claude Desktop Harness Gateway profile escapes its config library");
+  if (!confined(libraryRoot, profilePath)) fail(`Claude Desktop ${claudeDesktopProfileName} profile escapes its config library`);
   const profileBytes = await readPlainFile(profilePath);
   return { profilePath, profile: parseJson(profileBytes), profileBytes, profileHash: profileHash(profileBytes) };
 }

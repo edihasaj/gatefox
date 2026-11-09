@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 
-export const claudeDesktopProfileName = "Harness Gateway";
+export const claudeDesktopProfileName = "GateFox";
+/** Profile names the gateway selects: GateFox, and the Harness Gateway name profiles created before 1.8.0 carry. */
+export const claudeDesktopProfileNames: readonly string[] = [claudeDesktopProfileName, "Harness Gateway"];
 const primaryProviderType = "claude-subscription";
 const defaultModelName = "claude-fable-5-1";
 const defaultAdapterPort = 3467;

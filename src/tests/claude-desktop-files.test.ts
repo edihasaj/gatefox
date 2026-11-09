@@ -118,3 +118,11 @@ test("rechecks the selected profile immediately before replacing it", async () =
   }), /selected profile changed/);
   assert.deepEqual(JSON.parse(await readFile(join(f.library, "gateway.json"), "utf8")), { preserved: true, userChangedDuringApply: "keep me" });
 });
+
+test("selects a profile named GateFox, and one created as Harness Gateway before 1.8.0", async () => {
+  for (const name of ["GateFox", "Harness Gateway"]) {
+    const f = await fixture();
+    await writeFile(join(f.library, "_meta.json"), JSON.stringify({ appliedId: "gateway", entries: [{ id: "gateway", name }] }));
+    assert.equal((await readSelectedClaudeDesktopProfile(f.library)).profilePath.endsWith("gateway.json"), true, name);
+  }
+});
