@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
-import { migrateChats } from "../chat-migrate.js";
+import { holdsChatStore, migrateChats } from "../chat-migrate.js";
 
 const idle = async () => [];
 async function fixture() {
@@ -102,4 +102,10 @@ test("an engine-compressed rollout (.jsonl.zst beside the recorded path) is rewr
     assert.deepEqual(lines.slice(1), before.slice(1));
     assert.equal((await f.providers()).a, "gatefox");
   } finally { await f.cleanup(); }
+});
+
+test("only processes that open the chat store block the migration", () => {
+  for (const command of ["1 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT", "2 /x/codex -c a=b app-server --listen stdio://",
+    "3 /x/node /x/dist/cli.js codex-shim --ssh --config c", "4 /x/node /x/dist/cli.js daemon --config c", "5 /x/native/gateway-native-relay --native-home /h"]) assert.equal(holdsChatStore(command), true, command);
+  for (const command of ["6 /x/node /x/dist/cli.js serve --config /tmp/gw-fast/server.json", "7 /bin/zsh gatefox chats migrate --apply"]) assert.equal(holdsChatStore(command), false, command);
 });

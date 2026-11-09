@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `gatefox chats migrate --apply` no longer refuses because of an unrelated inference-only
+  `gateway serve`; only ChatGPT, Codex app-servers, the shims and native relay that start
+  them, and the service daemon block it.
+
+## Unreleased
+
 - A cancelled Claude turn whose interrupt times out no longer blocks the chat for
   an hour. Gateway deliberately closes that CLI and permits a new session on the
   next caller request, subject to the cache guard. Genuine crashes still keep

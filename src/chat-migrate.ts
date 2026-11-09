@@ -34,12 +34,12 @@ interface Database { prepare(sql: string): Statement; exec(sql: string): void; c
 const marker = (provider: string) => `"model_provider":${JSON.stringify(provider)}`;
 const maxFirstLine = 4 * 1024 * 1024;
 
-/** ChatGPT, every Codex app-server and the GateFox service read or write the chat store. */
+/** ChatGPT, every Codex app-server, the shims and relay that start them, and the service daemon touch the chat store; an inference-only `serve` never does. */
+export const holdsChatStore = (command: string): boolean =>
+  /ChatGPT\.app\/Contents\/MacOS\/ChatGPT( |$)|\bapp-server\b|gateway-native-relay\b|dist\/cli\.js (daemon|codex-shim)\b/.test(command);
 async function defaultBusy(): Promise<string[]> {
   const { stdout } = await promisify(execFile)("/bin/ps", ["-axo", "pid=,command="], { maxBuffer: 16 * 1024 * 1024 });
-  return stdout.split("\n").map(line => line.trim()).filter(line =>
-    /ChatGPT\.app\/Contents\/MacOS\/ChatGPT( |$)|\bapp-server\b|dist\/cli\.js (daemon|serve|codex-shim)\b/.test(line))
-    .map(line => line.slice(0, 160));
+  return stdout.split("\n").map(line => line.trim()).filter(holdsChatStore).map(line => line.slice(0, 160));
 }
 
 async function openDatabase(path: string, readOnly: boolean): Promise<Database> {
