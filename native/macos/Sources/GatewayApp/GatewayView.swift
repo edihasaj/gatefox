@@ -100,6 +100,9 @@ struct GatewayView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
+                Link("Submit an issue", destination: URL(string: "https://zapfeed.io/?board=gatefox")!)
+                    .font(GatewayTheme.body(12))
+                    .accessibilityIdentifier("sidebar.submit-issue")
                 Text(appVersion)
                     .font(GatewayTheme.body(12))
             }

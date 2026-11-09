@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The macOS app includes a **Submit an issue** link in the sidebar that opens
+  the GateFox feedback board in the default browser.
+
 ## 1.8.4 — 2026-11-09
 
 - Home Linux CI now runs successfully with portable platform checks, bounded test
