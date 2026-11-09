@@ -36,8 +36,11 @@ only `app-vVERSION` tags and the Harness Gateway names. The rules live in
 
 An updater swaps a release into the app's existing path, so a Mac updated from
 1.7.x still has the 1.8.0 app at `Harness Gateway.app`. At its next launch the app
-renames itself to `GateFox.app` in the same folder and relaunches from there
-(`AppRelocation.swift`). The new instance's usual background association then
+renames itself to `GateFox.app` in the same folder, leaves `Harness Gateway.app`
+as a link to it, and relaunches from there (`AppRelocation.swift`). The link is
+required: launchd keeps the loaded job's old program path until the next login,
+and the service plan stores the old app's Node path for the Claude components, so
+without it the service cannot restart and those components fail until then. The new instance's usual background association then
 moves the service plist's `Program` and the install's `app-runtime` link to the new
 path. Both accept the old path as the previous owner only when it is the
 `Harness Gateway.app` beside the running `GateFox.app` (`src/app-bundle.ts`); any

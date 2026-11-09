@@ -62,7 +62,7 @@ Options:
   --keychain /absolute/signing.keychain-db  Use this keychain for codesign and notarytool
   --profile asc-notary                      Keychain profile for notarytool (default: asc-notary)
   --notarize                               Submit, staple, validate, and assess Gatekeeper
-  --archive [/absolute/Harness Gateway.zip] Write a final distributable ZIP (default: beside the app)
+  --archive [/absolute/GateFox.zip]        Write a final distributable ZIP (default: beside the app)
 `;
 
 function command(binary, args) {

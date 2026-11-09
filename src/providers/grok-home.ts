@@ -21,7 +21,9 @@ export async function grokCommand(): Promise<string> {
  * command is resolved from environment variables the gateway sets per request, so one config works
  * across gateway releases and concurrent requests with different catalogs.
  */
-const marker = "# Managed by Harness Gateway: inference backend only. Sections below are rewritten.";
+const marker = "# Managed by GateFox: inference backend only. Sections below are rewritten.";
+/** The same line as written before 1.8.1; a merge drops it so the config never carries two markers. */
+const legacyMarker = "# Managed by Harness Gateway: inference backend only. Sections below are rewritten.";
 export const grokManagedConfig = `${marker}
 [cli]
 auto_update = false
@@ -65,7 +67,7 @@ export function mergeGrokConfig(existing: string): string {
   for (const line of existing.split("\n")) {
     const header = /^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
     if (header) skip = managed(header[1]);
-    if (!skip && line !== marker) kept.push(line);
+    if (!skip && line !== marker && line !== legacyMarker) kept.push(line);
   }
   const rest = kept.join("\n").trim();
   return rest ? `${rest}\n\n${grokManagedConfig}` : grokManagedConfig;

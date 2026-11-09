@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "HarnessGateway",
+    name: "GateFox",
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "GatewayApp", targets: ["GatewayApp"]),

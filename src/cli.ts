@@ -38,6 +38,7 @@ import { stageNativeSharing } from "./service-native-staging.js";
 import { previewClaudeConsolidation, stageClaudeConsolidation } from "./service-claude-staging.js";
 import { disableSharing } from "./mac-shared-disable.js";
 import { runExecutionHostCommand } from "./execution-host-command.js";
+import { migrateChats } from "./chat-migrate.js";
 import { safeErrorMessage } from "./error-message.js";
 import { versionsCommand } from "./versions.js";
 import { healthCommand } from "./health.js";
@@ -81,6 +82,7 @@ const help = `gateway — local subscription and API inference
   gateway catalog [--config PATH] [--model ALIAS]
   gateway tool-search [on|off|status] [--config PATH]   Codex tool search through the gateway (opt-in bridge; default off)
   gateway diagnostics [--since HOURS] [--config PATH]   Summarize local telemetry: turns, failures, cache hits, restarts
+  gateway chats migrate [--apply] [--revert]   Move saved chats from subscription_gateway to gatefox (quit ChatGPT and stop the service first)
   gateway activity [--json] [--config PATH]   Inspect this execution host without resuming or changing chats
   gateway versions [--json] [--check]   Real release of each running gateway process; --check exits 1 if any lags, 2 with no release to compare.
   gateway health [--json] [--push] [--smoke]   Watchdog verdict: app update, releases, service, inference, failures. --push alerts a monitor; exit 0 ok, 1 warn, 2 fail, 3 push failed.
@@ -123,14 +125,19 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "from-config": { type: "string" }, "native-home": { type: "string" }, app: { type: "string" }, codex: { type: "string" },
     client: { type: "boolean" }, state: { type: "string" },
     "tunnel-id": { type: "string" }, host: { type: "string" }, "remote-port": { type: "string" }, reverse: { type: "boolean" }, "ssh-config": { type: "string" },
-    apply: { type: "boolean" }, "next-login": { type: "boolean" }, "on-restart": { type: "boolean" }, "with-gateway": { type: "boolean" }, force: { type: "boolean" }, interrupt: { type: "boolean" },
+    apply: { type: "boolean" }, revert: { type: "boolean" }, "next-login": { type: "boolean" }, "on-restart": { type: "boolean" }, "with-gateway": { type: "boolean" }, force: { type: "boolean" }, interrupt: { type: "boolean" },
   } });
   const [command, id, ...extra] = positionals;
   // `desktop api-mode` is the one command that takes a word after its id, so it is the one place an extra positional is allowed.
   const apiMode = command === "desktop" && id === "api-mode";
-  if (!command || (extra.length && !(apiMode && extra.length === 1)) || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native", "tool-search"].includes(command))) throw new Error("Choose one command; run gateway --help");
-  if (!["init", "setup", "desktop", "desktop-preset", "desktop-restore", "daemon", "executor-host", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "claude-config", "token", "catalog", "discover", "service", "diagnostics", "tool-search"].includes(command)) throw new Error("Unknown command; run gateway --help");
-  if (values.apply && (command !== "service" || !["consolidate", "shared-executors", "shared-native"].includes(id))) throw new Error("--apply is only valid for service consolidate, shared-executors, or shared-native");
+  if (!command || (extra.length && !(apiMode && extra.length === 1)) || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native", "tool-search", "chats"].includes(command))) throw new Error("Choose one command; run gateway --help");
+  if (!["chats", "init", "setup", "desktop", "desktop-preset", "desktop-restore", "daemon", "executor-host", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "claude-config", "token", "catalog", "discover", "service", "diagnostics", "tool-search"].includes(command)) throw new Error("Unknown command; run gateway --help");
+  if (values.apply && !(command === "chats" && id === "migrate") && (command !== "service" || !["consolidate", "shared-executors", "shared-native"].includes(id))) throw new Error("--apply is only valid for chats migrate, service consolidate, shared-executors, or shared-native");
+  if (values.revert && !(command === "chats" && id === "migrate")) throw new Error("--revert is only valid for chats migrate");
+  if (command === "chats") {
+    if (id !== "migrate") throw new Error("Use gateway chats migrate [--apply] [--revert]");
+    process.stdout.write(JSON.stringify(await migrateChats({ apply: values.apply, revert: values.revert }), null, 2) + "\n"); return;
+  }
   if (values.disable && (command !== "service" || !["shared-executors", "shared-native"].includes(id))) throw new Error("--disable is only valid for service shared-executors or shared-native");
   if (values["on-restart"] && (command !== "service" || !["shared-native", "claude-desktop"].includes(id))) throw new Error("--on-restart is only valid for service shared-native or claude-desktop");
   if (values["on-restart"] && (values.apply || values.disable)) throw new Error("--on-restart cannot be combined with --apply or --disable");

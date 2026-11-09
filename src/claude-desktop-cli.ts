@@ -20,7 +20,7 @@ const help = `gateway claude-desktop — isolated Claude Desktop aliases
   gateway claude-desktop status [--config ADAPTER_CONFIG.json] [--home PATH]
   gateway claude-desktop inference --gateway-config PATH --native-config PATH
 
-configure reads the selected Claude Desktop Harness Gateway profile and writes a
+configure reads the selected Claude Desktop GateFox profile and writes a
 candidate under Claude-3p/alias-trial/candidate. --apply requires Claude Desktop
 to be quit, writes a recoverable backup, and updates only that selected profile
 and the private adapter config. For a separate gateway, use a local http://

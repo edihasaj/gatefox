@@ -3,7 +3,7 @@ import Foundation
 import SwiftUI
 
 @main
-struct HarnessGatewayApp: App {
+struct GateFoxApp: App {
     @NSApplicationDelegateAdaptor(GatewayLifecycleDelegate.self) private var lifecycle
     @StateObject private var model: GatewayModel
     @StateObject private var connections: GatewayConnectionsModel

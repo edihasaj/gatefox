@@ -1,6 +1,31 @@
 # Changelog
 
+## Unreleased
+
+- The package is `@edihasaj/gatefox`. The installer and app builder still accept a backend
+  packaged as `@edihasaj/harness-gateway` or `@edihasaj/subscription-gateway`. The Claude
+  Desktop help and errors, the Grok config marker (an old marker is replaced, never
+  duplicated), the native app's type and Swift package, and the README now say GateFox.
+  The README links the 1.8.0 GateFox download.
+
+- `gatefox chats migrate` moves saved gateway chats from the provider id
+  `subscription_gateway` to `gatefox`. Without `--apply` it only reports. With `--apply`
+  it needs ChatGPT and the service stopped, rewrites the provider in each rollout's
+  first line (including the engine's compressed `.zst` rollouts), copies
+  `state_5.sqlite`, then moves the chat rows. `--revert` moves them back. Both ids stay
+  registered.
+
+- The app's rename to GateFox.app leaves `Harness Gateway.app` as a link to it. launchd
+  keeps the loaded service's old program path until the next login, and the service plan
+  stores the old app's Node path for the Claude components; without the link, a service
+  restart failed with exit 78 and the Claude adapter could not start until the next login.
+
 ## 1.8.0 — 2026-11-09
+
+- A Claude chat whose login fails before any reply, tool result or queued message no
+  longer stays blocked behind a crash hold. The next request tries the saved login again.
+  A failure after the turn produced output keeps the hold, because the turn may have
+  advanced. See `docs/claude-sessions.md`.
 
 - A Claude chat whose login fails before any reply, tool result or queued message no
   longer stays blocked behind a crash hold. The next request tries the saved login again.

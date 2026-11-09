@@ -274,10 +274,10 @@ function adapterModel(id: string, upstream: string, row: ClaudeDesktopCatalogMod
 function existingModelMetadata(profile: Record<string, unknown>): Map<string, Record<string, unknown>> {
   const models = profile.inferenceModels;
   if (models === undefined) return new Map();
-  if (!Array.isArray(models)) fail("Existing Harness Gateway profile inferenceModels must be an array");
+  if (!Array.isArray(models)) fail("Existing GateFox profile inferenceModels must be an array");
   const result = new Map<string, Record<string, unknown>>();
   for (const row of models) {
-    if (!row || typeof row !== "object" || Array.isArray(row)) fail("Existing Harness Gateway profile has an invalid model entry");
+    if (!row || typeof row !== "object" || Array.isArray(row)) fail("Existing GateFox profile has an invalid model entry");
     const entry = row as Record<string, unknown>;
     if (nonEmptyString(entry.name)) result.set(entry.name, entry);
   }

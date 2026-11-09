@@ -33,7 +33,8 @@ the native `config.toml`, the router lists chats under both, and the patched SDK
 The executor marker is `GATEFOX_EXECUTOR` since 1.8.0. Executors also get the older
 `HARNESS_GATEWAY_EXECUTOR`, and the SDK reads either, so an SDK of either generation sees
 the same state. `gatefox chats migrate` (see [the rename plan](gatefox-rename.md)) moves
-saved chats from `subscription_gateway` to `gatefox`; 1.8.1 then stops registering the old id.
+saved chats from `subscription_gateway` to `gatefox`. Both ids stay registered, so a chat a
+Mac has not migrated yet, or one another device still records with the old id, keeps opening.
 
 
 ### Account names and saved chats
