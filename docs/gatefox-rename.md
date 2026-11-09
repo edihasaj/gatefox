@@ -81,11 +81,12 @@ markers and the old `Symbol.for` keys, and remove the Compatibility names sectio
 | End-to-end scripts: new chats expect `gatefox`, both markers stripped and checked; direct-SDK fixtures keep `subscription_gateway` as the old-chat coverage | Done (they run with the release package) |
 | Configuration default: fresh installs use `GateFox/gateway.json` (`~/.config/gatefox` on Linux); a Mac with only the `Subscription Gateway` one keeps it until `gatefox migrate` (CLI, app, Claude Desktop adapter, probe script) | Done |
 | Install root: fresh installs use `share/gatefox`; an existing `share/subscription-gateway` keeps updating in place (installer, signed service launcher, app runtime, uninstall, consolidation, desktop agent, scripts). The launcher also accepts the `gatefox` command and a `# Managed by gatefox installer` marker | Done |
-| Moving an existing install root and state folder (`gatefox migrate`), LaunchAgent labels, writing the new ownership markers | To do |
+| Moving an existing install root and state folder (`gatefox migrate`), LaunchAgent labels, writing the new ownership markers | After 1.8.0 (1.8.x): each touches every live service, and the old names keep working |
 | `gatefox` command: a third managed launcher; update journals record it as optional, so a 1.7.x updater's journal still recovers, and the installer skips it under such a journal because that updater refuses unknown receipts | Done |
 | `GateFox.app`: builds and release scripts emit the GateFox app and asset names; an app updated in place at `Harness Gateway.app` renames itself at launch and rebinds the service plist and app-runtime link (see `macos-updates.md`) | Done |
-| `gatefox chats migrate` | To do |
-| Release build with a fresh SDK, rollout one Mac at a time | To do |
+| `gatefox chats migrate` | After 1.8.0 (1.8.x): saved chats keep opening because both ids stay registered |
+| Display names: Claude Desktop profile and sign-in agent are GateFox; a Harness Gateway profile is still selected | Done |
+| Release build with a fresh SDK, rollout one Mac at a time | In progress |
 
 The bundle ID stays `com.edihasaj.harness-gateway.app` unless Edi decides otherwise.
 
