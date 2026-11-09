@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.8.4 — 2026-11-09
+
+- Home Linux CI now runs successfully with portable platform checks, bounded test
+  memory and deterministic asynchronous test waits. Published release versions and
+  changelog entries are connected to the landing page.
 
 - Chat-registry caches invalidate when file permissions or ownership change,
   even when the filesystem reports the same modification and change timestamps.
