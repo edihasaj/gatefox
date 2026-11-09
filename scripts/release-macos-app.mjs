@@ -372,17 +372,33 @@ export function verifyUploadedAssets(run, tag, stage, cwd, prerelease = false) {
   }
 }
 
+/** The release tag: the standard `vVERSION` from 1.8.0, `app-vVERSION` before (the tag 1.7.5 and older updaters read). */
+export function releaseTag(version) {
+  const [major, minor] = version.split('.').map(Number);
+  return major > 1 || major === 1 && minor >= 8 ? `v${version}` : `app-v${version}`;
+}
+
+/** The version's CHANGELOG.md section, without its heading, or a one-line fallback. */
+export function releaseNotes(version, cwd = root) {
+  const text = existsSync(join(cwd, 'CHANGELOG.md')) ? readFileSync(join(cwd, 'CHANGELOG.md'), 'utf8') : '';
+  const start = text.search(new RegExp(`^## ${version.replaceAll('.', '\\.')}(?: |$)`, 'm'));
+  if (start < 0) return `GateFox macOS app ${version}\n`;
+  const body = text.slice(text.indexOf('\n', start) + 1), next = body.search(/^## /m);
+  return `${(next < 0 ? body : body.slice(0, next)).trim()}\n`;
+}
+
 export function publishRelease({ version, head, stage, cwd = root, run = defaultRun, beforePublish = () => {}, prerelease = false }) {
-  const tag = `app-v${version}`;
+  const tag = releaseTag(version);
+  const latest = prerelease ? ['--prerelease', '--latest=false'] : tag.startsWith('v') ? ['--latest'] : [];
   releaseAssets(run, tag, cwd);
   const notes = join(mkdtempSync(join(tmpdir(), 'gatefox-release-')), 'notes.md');
   try {
-    writeFileSync(notes, `GateFox macOS app ${version}\n`, { flag: 'wx', mode: 0o600 });
-    run('gh', ['release', 'create', tag, '--draft', ...(prerelease ? ['--prerelease', '--latest=false'] : []), '--target', head, '--notes-file', notes,
+    writeFileSync(notes, releaseNotes(version, cwd), { flag: 'wx', mode: 0o600 });
+    run('gh', ['release', 'create', tag, '--draft', ...(prerelease ? ['--prerelease', '--latest=false'] : []), '--title', `GateFox ${version}`, '--target', head, '--notes-file', notes,
       stage.backend, stage.app, stage.metadata, stage.sums], { cwd });
     verifyUploadedAssets(run, tag, stage, cwd, prerelease);
     beforePublish();
-    run('gh', ['release', 'edit', tag, '--draft=false', ...(prerelease ? ['--prerelease', '--latest=false'] : [])], { cwd });
+    run('gh', ['release', 'edit', tag, '--draft=false', ...latest], { cwd });
   } finally {
     rmSync(dirname(notes), { recursive: true, force: true });
   }
@@ -453,7 +469,7 @@ export function releaseMacosApp(options, { cwd = root, run = defaultRun, e2e = r
     const freshHead = assertReleaseContext({ cwd, run });
     if (freshHead !== head) throw new Error('Release HEAD changed before publishing');
     assertRemoteProduction(run, cwd, head);
-    assertRemoteTag(run, cwd, `app-v${version}`, head);
+    assertRemoteTag(run, cwd, releaseTag(version), head);
     validateSignedApp({ app: build.app, version, source: head, backendSha256: options.backendSha256 });
     verifyStage(stage, { backendSha256: options.backendSha256, appSha256: stage.metadataValue.appSha256 });
     validatePublishFixtureInputs({ previousApp: options.previousApp, installedRelease: options.installedRelease, run });
@@ -464,7 +480,7 @@ export function releaseMacosApp(options, { cwd = root, run = defaultRun, e2e = r
     publishRelease({ version, head, stage, cwd, run, prerelease: options.prerelease, beforePublish: () => {
       if (assertReleaseContext({ cwd, run }) !== head) throw new Error('Release HEAD changed before final publication');
       assertRemoteProduction(run, cwd, head);
-      assertRemoteTag(run, cwd, `app-v${version}`, head);
+      assertRemoteTag(run, cwd, releaseTag(version), head);
       validateSignedApp({ app: build.app, version, source: head, backendSha256: options.backendSha256 });
       verifyStage(stage, { backendSha256: options.backendSha256, appSha256: stage.metadataValue.appSha256 });
     } });

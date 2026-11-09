@@ -31,10 +31,12 @@ section. The README and the gatefox.dev download button link to it.
 | 1.7.6 | `app-v1.7.6` (by `release-macos-app.mjs --publish`, for 1.7.5 and older updaters) | `Harness-Gateway-1.7.6-macos-arm64.zip` | `harness-gateway-1.7.6-macos-arm64.tar.gz` |
 | 1.8.0 and later | nothing else | `GateFox-VERSION-macos-arm64.zip` | `gatefox-VERSION-macos-arm64.tar.gz` |
 
-Order: create `vVERSION` with the archive and its `SHA256SUMS` (`--latest=false`),
-run the app publisher, upload the app ZIP and `app-update.json` to `vVERSION`,
-replace `SHA256SUMS` with one covering every asset, verify each GitHub digest
-against the local file, then mark it Latest. Publish 1.8.0 only after every Mac
+From 1.8.0 the app publisher creates `vVERSION` itself: it pushes nothing, so push
+the `vVERSION` tag at the release commit first, then run it with `--publish`. It
+uploads the app ZIP, the archive, `app-update.json` and `SHA256SUMS` to a draft,
+verifies every GitHub digest, publishes it as Latest and takes the notes from the
+version's `CHANGELOG.md` section. 1.7.6 to 1.7.8 used `app-vVERSION` from the
+publisher plus a hand-made `vVERSION` with the same files. Publish 1.8.0 only after every Mac
 runs 1.7.6, the first updater that reads `vVERSION` tags and GateFox names; see
 [macOS app updates](macos-updates.md#release-tags-and-names).
 
@@ -64,8 +66,8 @@ then writes immutable release assets under `.state/app-release/VERSION`.
 The signed runtime fixture declares its own JavaScript module type so unrelated
 files in the temporary directory cannot change the synthetic CLI semantics.
 
-Publishing requires `origin/production` to resolve exactly to the current HEAD, creates
-`app-vVERSION` as a draft, uploads the ZIP, backend archive, `app-update.json`,
+Publishing requires `origin/production` and the release tag (`vVERSION` from 1.8.0,
+`app-vVERSION` before) to resolve exactly to the current HEAD, creates the release as a draft, uploads the ZIP, backend archive, `app-update.json`,
 and `SHA256SUMS`, verifies every GitHub-reported digest and size, then publishes
 the draft. An existing release or any failed draft verification is left
 untouched. This command never enables or dispatches GitHub Actions; follow the
