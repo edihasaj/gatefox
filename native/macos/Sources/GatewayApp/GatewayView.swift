@@ -48,11 +48,12 @@ struct GatewayView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 11) {
                 FoxMark(size: 38)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("Harness")
-                        .font(GatewayTheme.body(16, weight: .semibold))
-                    Text("Gateway")
-                        .font(GatewayTheme.display(18))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("GateFox")
+                        .font(GatewayTheme.display(22))
+                    Text("Harness Gateway")
+                        .font(GatewayTheme.body(11, weight: .medium))
+                        .foregroundStyle(GatewayTheme.charcoal.opacity(0.58))
                 }
                 .foregroundStyle(GatewayTheme.charcoal)
             }
@@ -60,7 +61,7 @@ struct GatewayView: View {
             .padding(.top, 24)
             .padding(.bottom, 25)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("GateFox")
+            .accessibilityLabel("GateFox, Harness Gateway")
 
             List(selection: $navigation.selection) {
                 Label("Overview", systemImage: "rectangle.grid.1x2")
@@ -99,9 +100,6 @@ struct GatewayView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("HARNESS GATEWAY")
-                    .font(GatewayTheme.body(10, weight: .semibold))
-                    .tracking(1.1)
                 Text(appVersion)
                     .font(GatewayTheme.body(12))
             }
