@@ -9,6 +9,12 @@ final class GatewayLifecycleDelegate: NSObject, NSApplicationDelegate {
     weak var updates: GatewayUpdatesModel?
     private var terminationPending = false
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        AppRelocation.relocateIfNeeded(homeDirectory: FileManager.default.homeDirectoryForCurrentUser) { relaunched in
+            if relaunched { NSApp.terminate(nil) }
+        }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }

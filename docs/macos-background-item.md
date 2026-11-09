@@ -17,7 +17,7 @@ after 0.8.7 retire that version's separate metadata job without changing the
 signed app association, icon, inference process or current model selection.
 
 ```text
-Harness Gateway.app
+GateFox.app (Harness Gateway.app before 1.8.0)
   ├─ GatewayApp: settings window, exits when the last window closes
   └─ GatewayService: signed launcher
        └─ App-owned signed Node → current installed gateway service
@@ -84,7 +84,7 @@ Developer ID Application identity:
 
 ```sh
 npm run app:build
-npm run app:sign -- --app "/absolute/build/Harness Gateway.app" \
+npm run app:sign -- --app "/absolute/build/GateFox.app" \
   --identity DEVELOPER_ID_SHA1 --keychain /absolute/signing.keychain-db
 ```
 
@@ -148,7 +148,7 @@ Run the gateway build, type check, tests, and `npm run app:test`. The native gat
 also exercises the service launcher's argument handling and signing-derivative
 receipts. Verify a signed copy with `codesign --verify --deep --strict`, then
 validate its notarization ticket and Gatekeeper assessment before distribution.
-Run `node scripts/e2e-macos-runtime.mjs "/absolute/Harness Gateway.app"` against
+Run `node scripts/e2e-macos-runtime.mjs "/absolute/GateFox.app"` against
 the signed app. It uses a private mock installation to verify the actual signed
 launcher, installed command wrapper, and child `node` across two CLI versions,
 without reading provider credentials or requesting OS privacy permissions.

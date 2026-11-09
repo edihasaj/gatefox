@@ -49,7 +49,7 @@ the one-pass distribution command:
 
 ```sh
 node scripts/release-macos-app.mjs \
-  --backend-archive /absolute/harness-gateway-VERSION-macos-arm64.tar.gz \
+  --backend-archive /absolute/gatefox-VERSION-macos-arm64.tar.gz \
   --backend-sha256 LOWERCASE_SHA256 \
   --identity DEVELOPER_ID_SHA1 \
   --keychain /absolute/signing.keychain-db \
@@ -84,7 +84,7 @@ Omit `--publish` only to exercise the local build, signing, and archive gates.
 It leaves the versioned stage in place and deliberately cannot resume it as a
 later publication. For an actual distribution, rerun only after moving that
 failed or inspection-only stage to Trash, then use the one-pass command above.
-`--publish` uses `~/Applications/Harness Gateway.app` and
+`--publish` uses `~/Applications/GateFox.app` (or a `Harness Gateway.app` not yet renamed) and
 `~/.local/share/gatefox/current` (or the pre-1.8.0 `share/subscription-gateway`) by default for the updater fixture;
 pass absolute `--previous-app` and `--installed-release` paths to select the
 intended existing signed app and CLI release.

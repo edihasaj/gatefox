@@ -22,7 +22,7 @@ function tarEntry(name, bytes = Buffer.alloc(0), type = '0', mode = 0o644) {
   return Buffer.concat([header, bytes, Buffer.alloc((512 - bytes.length % 512) % 512)]);
 }
 
-const releaseRoot = `harness-gateway-${version}-macos-arm64`;
+const releaseRoot = `gatefox-${version}-macos-arm64`;
 const executable = path => path === 'install' || path.endsWith('/node') ||
   path.endsWith('gateway-native-relay') || path.endsWith('gateway-codex');
 

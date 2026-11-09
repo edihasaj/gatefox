@@ -7,6 +7,7 @@ import { ClaudeRefusal, legacySpecs, parseLegacyJob, type LegacyKind } from "./s
 import { canonical, planText, type PendingClaudeConsolidation } from "./service-claude-receipt.js";
 import { executableFile, livePlistPath, maximumLegacyPlistBytes, type ClaudeHost } from "./service-claude-transaction.js";
 import { servicePlanPath, serviceLabel, serviceMarker, validateServicePlan, type ServicePlan } from "./service-plan.js";
+import { appBundleNames } from "./app-bundle.js";
 
 const appIdentifier = "com.edihasaj.harness-gateway.app";
 const helperSuffix = "/Contents/MacOS/GatewayService";
@@ -43,7 +44,7 @@ export async function inspectMain(host: ClaudeHost, configPath: string): Promise
     throw refusal("main_service", "The primary gateway LaunchAgent is not associated with the signed app for this configuration");
   }
   const app = program.slice(0, -helperSuffix.length);
-  if (!isAbsolute(app) || resolve(app) !== app || basename(app) !== "Harness Gateway.app") throw refusal("main_app", "The signed app path is not the Harness Gateway app");
+  if (!isAbsolute(app) || resolve(app) !== app || !appBundleNames.includes(basename(app))) throw refusal("main_app", "The signed app path is not the GateFox app");
   if (await answered("main_app", () => host.realpath(app)) !== await answered("main_app", () => canonicalPath(app))) throw refusal("main_app", "The signed app path crosses a link");
   const appNode = join(app, "Contents", "Resources", "backend", "runtime", "bin", "node");
   if (!await executableFile(appNode)) throw refusal("main_app", "The signed app has no regular executable Node runtime");

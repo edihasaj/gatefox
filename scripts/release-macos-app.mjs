@@ -5,6 +5,7 @@ import { constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { installRoot } from './install-root.mjs';
+import { appAsset, appBundle, backendAsset, installedApp } from './release-names.mjs';
 import { fileURLToPath } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
 import { extractProductionBackend } from './macos-app-production.mjs';
@@ -22,7 +23,7 @@ Build, sign, notarize, validate, and optionally publish a production macOS app.
 Options:
   --keychain /absolute/signing.keychain-db  Signing keychain
   --profile asc-notary                      Notary keychain profile (default: asc-notary)
-  --previous-app /absolute/Harness Gateway.app  Signed app to upgrade (publish only)
+  --previous-app /absolute/GateFox.app        Signed app to upgrade (publish only)
   --installed-release /absolute/gateway-release Existing CLI release (publish only)
   --publish                                 Create and publish the GitHub draft release
   --prerelease                              Publish for selected-machine rollout; automatic updaters ignore it
@@ -31,7 +32,7 @@ Options:
 export function parseArgs(argv) {
   const values = {
     profile: 'asc-notary', publish: false, prerelease: false,
-    previousApp: join(homedir(), 'Applications/Harness Gateway.app'),
+    previousApp: installedApp(join(homedir(), 'Applications')),
     installedRelease: join(installRoot(join(homedir(), '.local')), 'current'),
   };
   for (let index = 0; index < argv.length; index += 1) {
@@ -156,7 +157,7 @@ export function finalJson(stdout, name) {
 function appPolicy(version, source, backendSha256) {
   return {
     schemaVersion: 1, version, source, branch: 'production',
-    backendAsset: `harness-gateway-${version}-macos-arm64.tar.gz`, backendSha256,
+    backendAsset: backendAsset(version), backendSha256,
   };
 }
 
@@ -199,9 +200,9 @@ function safeZipPath(name) {
 }
 
 function appleDoublePath(name, directory) {
-  if ((name === '__MACOSX' || name === '__MACOSX/Harness Gateway.app') && directory) return true;
-  if (name === '__MACOSX/._Harness Gateway.app' && !directory) return true;
-  if (!name.startsWith('__MACOSX/Harness Gateway.app/')) return false;
+  if ((name === '__MACOSX' || name === `__MACOSX/${appBundle}`) && directory) return true;
+  if (name === `__MACOSX/._${appBundle}` && !directory) return true;
+  if (!name.startsWith(`__MACOSX/${appBundle}/`)) return false;
   if (directory) return true;
   return basename(name).startsWith('._');
 }
@@ -258,12 +259,12 @@ export function inspectFinalZip(archive) {
     if (local + 30 + localNameLength + localExtraLength + compressed > offset || localName !== name ||
         bytes.readUInt16LE(local + 6) !== flags || bytes.readUInt16LE(local + 8) !== method) throw new Error('Unsafe signed ZIP entry');
     const directory = name.endsWith('/');
-    if (names.has(normalized) || (normalized === 'Harness Gateway.app' && !directory)) throw new Error('Signed ZIP has duplicate entries');
+    if (names.has(normalized) || (normalized === appBundle && !directory)) throw new Error('Signed ZIP has duplicate entries');
     names.set(normalized, directory);
     const creator = madeBy >>> 8;
     const type = (attributes >>> 16) & 0o170000;
     if (ZIP_UNIX.has(creator) && type !== (directory ? ZIP_DIRECTORY : ZIP_FILE)) throw new Error('Signed ZIP contains a link or special file');
-    if ((normalized === 'Harness Gateway.app' && directory) || name.startsWith('Harness Gateway.app/')) appEntries++;
+    if ((normalized === appBundle && directory) || name.startsWith(`${appBundle}/`)) appEntries++;
     else if (!appleDoublePath(normalized, directory)) throw new Error('Signed ZIP has an unexpected top-level entry');
     if (appleDoublePath(normalized, directory) && !directory) {
       appleDouble(bytes, local, compressed, uncompressed, method, localNameLength, localExtraLength);
@@ -283,7 +284,7 @@ export function validateFinalZip({ archive, directory, run = defaultRun }) {
   const extraction = mkdtempSync(join(directory, '.signed-app-'));
   try {
     run('ditto', ['-x', '-k', archive, extraction]);
-    const app = join(extraction, 'Harness Gateway.app');
+    const app = join(extraction, appBundle);
     if (!existsSync(app)) throw new Error('Signed ZIP did not contain the app');
     rejectSymlinks(app);
     return { app, extraction };
@@ -303,18 +304,18 @@ function copyCanonicalBackend(input, target, sha256) {
 }
 
 function writeStage({ directory, version, source, backendArchive, backendSha256, signedArchive }) {
-  const backendAsset = `harness-gateway-${version}-macos-arm64.tar.gz`;
-  const appAsset = `Harness-Gateway-${version}-macos-arm64.zip`;
-  const backend = join(directory, backendAsset);
-  const app = join(directory, appAsset);
+  const backendAssetName = backendAsset(version);
+  const appAssetName = appAsset(version);
+  const backend = join(directory, backendAssetName);
+  const app = join(directory, appAssetName);
   copyCanonicalBackend(backendArchive, backend, backendSha256);
   if (resolve(signedArchive) !== resolve(app)) copyFileSync(signedArchive, app, 0);
   const appSha256 = digestFile(app);
-  const metadata = makeMetadata({ version, source, appAsset, appSha256, backendAsset, backendSha256 });
+  const metadata = makeMetadata({ version, source, appAsset: appAssetName, appSha256, backendAsset: backendAssetName, backendSha256 });
   const metadataPath = join(directory, 'app-update.json');
   writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
   const sums = join(directory, 'SHA256SUMS');
-  writeFileSync(sums, [appAsset, backendAsset, 'app-update.json'].map(name => `${digestFile(join(directory, name))}  ${name}`).join('\n') + '\n',
+  writeFileSync(sums, [appAssetName, backendAssetName, 'app-update.json'].map(name => `${digestFile(join(directory, name))}  ${name}`).join('\n') + '\n',
     { flag: 'wx', mode: 0o600 });
   return { backend, app, metadata: metadataPath, sums, metadataValue: metadata };
 }
@@ -374,9 +375,9 @@ export function verifyUploadedAssets(run, tag, stage, cwd, prerelease = false) {
 export function publishRelease({ version, head, stage, cwd = root, run = defaultRun, beforePublish = () => {}, prerelease = false }) {
   const tag = `app-v${version}`;
   releaseAssets(run, tag, cwd);
-  const notes = join(mkdtempSync(join(tmpdir(), 'harness-gateway-release-')), 'notes.md');
+  const notes = join(mkdtempSync(join(tmpdir(), 'gatefox-release-')), 'notes.md');
   try {
-    writeFileSync(notes, `Harness Gateway macOS app ${version}\n`, { flag: 'wx', mode: 0o600 });
+    writeFileSync(notes, `GateFox macOS app ${version}\n`, { flag: 'wx', mode: 0o600 });
     run('gh', ['release', 'create', tag, '--draft', ...(prerelease ? ['--prerelease', '--latest=false'] : []), '--target', head, '--notes-file', notes,
       stage.backend, stage.app, stage.metadata, stage.sums], { cwd });
     verifyUploadedAssets(run, tag, stage, cwd, prerelease);
@@ -429,7 +430,7 @@ export function releaseMacosApp(options, { cwd = root, run = defaultRun, e2e = r
   if (build.backendVersion !== version || build.signedForDistribution !== false) throw new Error('App builder returned an invalid production build');
   validateSignedApp({ app: build.app, version, source: head, backendSha256: options.backendSha256, signed: false });
 
-  const archive = join(stageDirectory, `Harness-Gateway-${version}-macos-arm64.zip`);
+  const archive = join(stageDirectory, appAsset(version));
   const signArgs = ['scripts/sign-macos-app.mjs', '--app', build.app, '--identity', options.identity,
     ...(options.keychain ? ['--keychain', options.keychain] : []), '--profile', options.profile, '--notarize', '--archive', archive];
   const signed = finalJson(output(run, process.execPath, signArgs, { cwd }), 'App signer');

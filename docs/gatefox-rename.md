@@ -83,7 +83,7 @@ markers and the old `Symbol.for` keys, and remove the Compatibility names sectio
 | Install root: fresh installs use `share/gatefox`; an existing `share/subscription-gateway` keeps updating in place (installer, signed service launcher, app runtime, uninstall, consolidation, desktop agent, scripts). The launcher also accepts the `gatefox` command and a `# Managed by gatefox installer` marker | Done |
 | Moving an existing install root and state folder (`gatefox migrate`), LaunchAgent labels, writing the new ownership markers | To do |
 | `gatefox` command: a third managed launcher; update journals record it as optional, so a 1.7.x updater's journal still recovers, and the installer skips it under such a journal because that updater refuses unknown receipts | Done |
-| `GateFox.app` and the updater move | To do |
+| `GateFox.app`: builds and release scripts emit the GateFox app and asset names; an app updated in place at `Harness Gateway.app` renames itself at launch and rebinds the service plist and app-runtime link (see `macos-updates.md`) | Done |
 | `gatefox chats migrate` | To do |
 | Release build with a fresh SDK, rollout one Mac at a time | To do |
 

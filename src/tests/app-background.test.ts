@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, lstat, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -243,4 +243,16 @@ test("uses real plutil parsing and serialization on Darwin", { skip: process.pla
   await writeFile(fixture.plist, plist, { mode: 0o600 }); await writeFile(join(fixture.app, "Contents/Info.plist"), info, { mode: 0o600 });
   const response = await run(fixture, true, { readSnapshot: async () => fixture.snapshot(), verifySignature: async () => true, decodePlist: undefined, encodePlist: undefined }); assert.equal(response.ok, true);
   assert.ok((await readFile(fixture.plist, "utf8")).includes("<key>KeepAlive</key>"));
+}));
+
+test("an app renamed to GateFox.app takes over a plist naming the Harness Gateway.app beside it, and no other app", () => withFixture(async fixture => {
+  const associated = { Program: fixture.helper, AssociatedBundleIdentifiers: "com.edihasaj.harness-gateway.app" };
+  await fixture.writePlist({ ...fixture.plistValue(), ...associated });
+  const gatefox = join(fixture.root, "GateFox.app"); await rename(fixture.app, gatefox);
+  const renamed = (appPath: string) => handleAppBackground({ configPath: fixture.config, apply: true, appPath }, dependencies(fixture));
+  assert.deepEqual(await renamed(gatefox), { ok: true, result: { status: "associated", changed: true, appliesAt: "next_service_start" } });
+  assert.equal((await decode(await readFile(fixture.plist))).Program, join(gatefox, "Contents/MacOS/GatewayService"));
+  await fixture.writePlist({ ...fixture.plistValue(), ...associated });
+  const elsewhere = join(fixture.root, "elsewhere", "GateFox.app"); await mkdir(join(fixture.root, "elsewhere")); await rename(gatefox, elsewhere);
+  assert.equal((await renamed(elsewhere)).ok, false, "a plist naming an app in another folder is refused");
 }));

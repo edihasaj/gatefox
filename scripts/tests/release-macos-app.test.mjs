@@ -71,7 +71,7 @@ function repo() {
 }
 
 function backendArchive(directory, { version = '0.5.4', source = 'a'.repeat(40), components = ['native', 'gateway-sdk'] } = {}) {
-  const payload = join(directory, 'payload', `harness-gateway-${version}-macos-arm64`);
+  const payload = join(directory, 'payload', `gatefox-${version}-macos-arm64`);
   const files = {
     install: '#!/bin/sh\n',
     'package/package.json': JSON.stringify({ name: '@edihasaj/harness-gateway', version }),
@@ -91,7 +91,7 @@ function backendArchive(directory, { version = '0.5.4', source = 'a'.repeat(40),
   const manifest = Object.keys(files).map(name => `${hash(readFileSync(join(payload, name)))}  ${name}`).join('\n');
   const allFiles = { ...files, 'checksums.txt': `${manifest}\n` };
   write(join(payload, 'checksums.txt'), allFiles['checksums.txt']);
-  const archive = join(directory, `harness-gateway-${version}-macos-arm64.tar.gz`);
+  const archive = join(directory, `gatefox-${version}-macos-arm64.tar.gz`);
   const root = basename(payload);
   const directories = new Set([root]);
   for (const name of Object.keys(allFiles)) {
@@ -108,7 +108,7 @@ function backendArchive(directory, { version = '0.5.4', source = 'a'.repeat(40),
 }
 
 function appFixture(directory, source, backendSha256) {
-  const app = join(directory, 'Harness Gateway.app');
+  const app = join(directory, 'GateFox.app');
   const resources = join(app, 'Contents/Resources');
   mkdirSync(resources, { recursive: true });
   write(join(resources, 'app-build.json'), JSON.stringify({
@@ -117,7 +117,7 @@ function appFixture(directory, source, backendSha256) {
   }));
   write(join(resources, 'update-policy.json'), JSON.stringify({
     schemaVersion: 1, version: '0.5.4', source, branch: 'production',
-    backendAsset: 'harness-gateway-0.5.4-macos-arm64.tar.gz', backendSha256,
+    backendAsset: 'gatefox-0.5.4-macos-arm64.tar.gz', backendSha256,
   }));
   return app;
 }
@@ -418,7 +418,7 @@ test('publishes only after the full draft digest check and preserves failed draf
 
 test('accepts AppleDouble metadata from ditto signed archives', { skip: process.platform !== 'darwin' }, () => {
   const directory = mkdtempSync(join(tmpdir(), 'gateway-app-release-zip-'));
-  const app = join(directory, 'Harness Gateway.app');
+  const app = join(directory, 'GateFox.app');
   const fixture = join(app, 'Contents/Resources/fixture');
   write(fixture, 'fixture');
   run('xattr', ['-w', 'com.edihasaj.fixture', 'root', app]);

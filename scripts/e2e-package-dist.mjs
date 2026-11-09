@@ -1,5 +1,4 @@
 import {dirname, join, resolve} from 'node:path';
-import { installRoot } from './install-root.mjs';
 
 /** The files the shared-execution check loads from a package's dist. */
 const required = ['execution-host.js', 'config.js'];
@@ -40,7 +39,7 @@ export function resolveDistDirectory({package: explicit, gateway, fallback, exis
     const candidates = [
       ...(cli ? [['launcher', resolve(dirname(cli), '..')]] : []),
       ['gateway-path', resolve(command, '../..')],
-      ['install-layout', join(installRoot(resolve(dirname(command), '..')), 'current/package')],
+      ...['gatefox', 'subscription-gateway'].map(name => ['install-layout', resolve(dirname(command), '../share', name, 'current/package')]),
     ];
     for (const [source, packageDirectory] of candidates) if (holds(packageDirectory)) return {directory: join(packageDirectory, 'dist'), source};
   }

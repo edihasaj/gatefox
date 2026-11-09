@@ -4,6 +4,7 @@ import { basename, isAbsolute, join, posix, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { gunzipSync } from 'node:zlib';
 import { digest, verifiedBackend } from './macos-app-backend.mjs';
+import { backendName } from './release-names.mjs';
 
 const fail = reason => new Error(`Production app build refused: ${reason}`);
 const safePath = value => {
@@ -79,7 +80,7 @@ export function extractProductionBackend({ archive, sha256, version, source, des
   let entries;
   try { entries = tarEntries(gunzipSync(compressed, { maxOutputLength: 768 * 1024 * 1024 })); }
   catch (error) { if (error.message.startsWith('Production app build refused:')) throw error; throw fail('backend archive is not a safe gzip tar'); }
-  const root = `harness-gateway-${version}-macos-arm64`;
+  const root = backendName(version);
   if (!entries.get(root)?.directory || [...entries].some(([name]) => name !== root && !name.startsWith(`${root}/`))) {
     throw fail('backend archive has an unexpected release root');
   }
@@ -107,7 +108,7 @@ export function extractProductionBackend({ archive, sha256, version, source, des
 }
 
 export function stageProductionBackend(options) {
-  const stage = mkdtempSync(join(tmpdir(), 'harness-gateway-production-backend-'));
+  const stage = mkdtempSync(join(tmpdir(), 'gatefox-production-backend-'));
   chmodSync(stage, 0o700);
   try { return { stage, backend: extractProductionBackend({ ...options, destination: join(stage, 'backend') }) }; }
   catch (error) { rmSync(stage, { recursive: true, force: true }); throw error; }

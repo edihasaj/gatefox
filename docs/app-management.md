@@ -223,7 +223,7 @@ For rendered first-run verification, start the same fixture with
 configuration, and local server. Launch the built app with:
 
 ```sh
-open -n "/absolute/path/Harness Gateway.app" --args \
+open -n "/absolute/path/GateFox.app" --args \
   --config /absolute/fixture/home/settings/gateway.json \
   --data-home /absolute/fixture/home
 ```

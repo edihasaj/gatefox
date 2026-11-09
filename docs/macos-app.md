@@ -72,7 +72,7 @@ npm run check
 npm test
 npm run app:test
 npm run app:build -- --backend /absolute/path/to/extracted-gateway-release --install-local
-open "$HOME/Applications/Harness Gateway.app"
+open "$HOME/Applications/GateFox.app"
 ```
 
 If `--backend` is omitted, the builder uses the current installed gateway release

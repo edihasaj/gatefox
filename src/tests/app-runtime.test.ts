@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { appendFile, chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { associateAppRuntime, associateAppRuntimeTransaction, renderInstalledLauncher } from "../app-runtime.js";
@@ -205,3 +205,14 @@ test("the installer inline generator exactly matches the runtime association ren
   }
   finally { await rm(output, { force: true }); await rm(compatibility, { force: true }); }
 });
+
+test("an app renamed to GateFox.app moves the registry link from the Harness Gateway.app beside it, and only from there", () => fixture(async f => {
+  assert.equal(await associateAppRuntime(f.options()), true);
+  const gatefox = join(f.root, "GateFox.app"); await rename(f.app, gatefox);
+  assert.equal(await associateAppRuntime({ ...f.options(), appPath: gatefox }), true);
+  assert.equal(await realpath(join(f.install, "app-runtime")), await realpath(join(gatefox, "Contents/Resources/backend/runtime")));
+  assert.equal(run(f.gateway, "x").split("|")[0], "app", "the CLI runs the renamed app's runtime");
+  assert.equal(await associateAppRuntime({ ...f.options(), appPath: gatefox }), false, "the move is idempotent");
+  const elsewhere = join(f.root, "elsewhere", "GateFox.app"); await mkdir(dirname(elsewhere), { recursive: true }); await rename(gatefox, elsewhere);
+  await assert.rejects(associateAppRuntime({ ...f.options(), appPath: elsewhere }), "a link to an app in another folder is never taken over");
+}));
