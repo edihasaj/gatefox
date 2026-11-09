@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `gatefox chats migrate` moves saved gateway chats from the provider id
+  `subscription_gateway` to `gatefox`. Without `--apply` it only reports. With `--apply`
+  it needs ChatGPT and the service stopped, rewrites the provider in each rollout's
+  first line (including the engine's compressed `.zst` rollouts), copies
+  `state_5.sqlite`, then moves the chat rows. `--revert` moves them back. Both ids stay
+  registered.
+
 - The app's rename to GateFox.app leaves `Harness Gateway.app` as a link to it. launchd
   keeps the loaded service's old program path until the next login, and the service plan
   stores the old app's Node path for the Claude components; without the link, a service

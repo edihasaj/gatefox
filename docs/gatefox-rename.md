@@ -57,12 +57,25 @@ Two releases plus one data migration.
 8. Live-takeover keys (`Symbol.for`): 1.8.0 checks both keys, so an in-place takeover
    from 1.7.8 still works.
 
-**Chat migration (in 1.8.0, run per Mac at an idle moment)**
+**Chat migration (1.8.1, run per Mac while ChatGPT and the service are stopped)**
 
-`gatefox chats migrate` rewrites the provider of saved gateway chats from
-`subscription_gateway` to `gatefox` in Codex's SQLite and rollout files, with a backup
-and a dry run first. The gateway already writes these records for the `openai`
-identity option, so the format is known. Native chats are never touched.
+`gatefox chats migrate` (also `gateway chats migrate`) prints what it would change.
+With `--apply` it moves saved chats from `subscription_gateway` to `gatefox`:
+
+1. It refuses while ChatGPT, any Codex app-server or the GateFox service runs, and
+   when `config.toml` has no `[model_providers.gatefox]` row.
+2. For each chat it rewrites only the `model_provider` in the rollout's first
+   (`session_meta`) line; every later byte stays identical. The engine keeps older
+   rollouts compressed as `<recorded path>.zst`; those are rewritten through zstd. A
+   rollout that changes during its rewrite is left alone and reported.
+3. It copies `state_5.sqlite` (`VACUUM INTO state_5.sqlite.before-gatefox-chats-TIME`),
+   then moves the `threads` rows in one transaction.
+
+Rollouts change before the database, so running it again finishes an interrupted run.
+A chat whose rollout no longer exists (its desktop generation was removed) only gets
+its row moved; `paginated` chats keep their history in `thread_history_1.sqlite`.
+`--revert` moves the chats back. Native chats are never touched. Both ids stay
+registered, so a chat opens whichever id it carries.
 
 **1.8.1: remove the old names**
 
@@ -84,7 +97,7 @@ markers and the old `Symbol.for` keys, and remove the Compatibility names sectio
 | Moving an existing install root and state folder (`gatefox migrate`), LaunchAgent labels, writing the new ownership markers | After 1.8.0 (1.8.x): each touches every live service, and the old names keep working |
 | `gatefox` command: a third managed launcher; update journals record it as optional, so a 1.7.x updater's journal still recovers, and the installer skips it under such a journal because that updater refuses unknown receipts | Done |
 | `GateFox.app`: builds and release scripts emit the GateFox app and asset names; an app updated in place at `Harness Gateway.app` renames itself at launch and rebinds the service plist and app-runtime link (see `macos-updates.md`) | Done |
-| `gatefox chats migrate` | After 1.8.0 (1.8.x): saved chats keep opening because both ids stay registered |
+| `gatefox chats migrate`: dry run, `--apply`, `--revert`; rollouts (including `.zst`) then `state_5.sqlite` after a copy | Done (1.8.1) |
 | Display names: Claude Desktop profile and sign-in agent are GateFox; a Harness Gateway profile is still selected | Done |
 | Release build with a fresh SDK, rollout one Mac at a time | In progress |
 
