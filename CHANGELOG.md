@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.7.8 — 2026-11-08
+## 1.8.0 — 2026-11-09
 
 - The app is GateFox.app, published as `GateFox-VERSION-macos-arm64.zip` with
   `gatefox-VERSION-macos-arm64.tar.gz`, under the standard `vVERSION` tag only. A Mac
@@ -39,6 +39,8 @@
 - gatefox.dev has search and sharing metadata on every page: canonical URLs, Open Graph
   and Twitter cards with a share image per page, JSON-LD, `robots.txt`, a sitemap with
   images and a web manifest. The deploy adds the IndexNow key file.
+
+## 1.7.8 — 2026-11-08
 
 - Macs that share the native ChatGPT engine can share the Codex 0.167.0-alpha.3.2 app
   engine again. It passed every stdio and Unix shared-native check, with and without
