@@ -10,8 +10,8 @@ read_when:
 The native app sets up and manages gateway connections. It
 uses the same accounts, model routes, background service, and desktop registration
 as the command line. The fox appears in its window and Dock icon.
-The sidebar shows **GateFox** with **Harness Gateway** beneath it. The window
-title text is hidden. The sidebar footer shows the version and **Submit an issue**,
+The sidebar shows **GateFox** as its only brand, without a legacy-name subtitle.
+The window title text is hidden. The sidebar footer shows the version and **Submit an issue**,
 which opens the [GateFox feedback board](https://zapfeed.io/?board=gatefox) in the
 default browser.
 

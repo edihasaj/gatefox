@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The sidebar brand is only GateFox. The Harness Gateway subtitle and its spoken
+  accessibility label have been removed.
+
 - The macOS app includes a **Submit an issue** link in the sidebar that opens
   the GateFox feedback board in the default browser.
 
