@@ -77,7 +77,7 @@ async function writeCompact(path: string, value: unknown): Promise<void> {
  * can tell a gateway chat from a native one without reading either. It holds ids and times only, never a model name,
  * a prompt, or a tool argument. One file per native home, so a second Codex installation keeps its own list.
  *
- * Reads are cached per instance and keyed by the file's identity (device, inode, size, change and modify times), so a
+ * Reads are cached per instance and keyed by the file's identity (device, inode, size, owner, mode, change and modify times), so a
  * lookup costs two `lstat` calls (the folder, then the file) unless some writer, here or in another process, replaced the
  * file. A file whose content is bad reads as empty and is set aside as `<scope>.json.unreadable` (one copy) by the next
  * record. A regular file of ours whose mode alone drifted from 0600 (say it was copied to 0644 or chmodded to 0400) is not
@@ -120,7 +120,8 @@ export class GatewayChatRegistry {
     try {
       await this.checkDirectory();
       const info = await lstat(this.path, { bigint: true });
-      return [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].join(":");
+      // chmod/chown can share a timestamp on coarse filesystems; permissions must invalidate the cache themselves.
+      return [info.dev, info.ino, info.size, info.uid, info.mode, info.mtimeNs, info.ctimeNs].join(":");
     } catch (error) {
       if (code(error) === "ENOENT") return absent;
       throw error;
