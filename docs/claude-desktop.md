@@ -48,6 +48,35 @@ authenticated loopback SSH forwards avoid distributing provider credentials.
 Only the gateway client token and non-secret model ownership metadata belong on
 the other clients.
 
+### Repairing a Claude sign-in failure
+
+Check the adapter's configured `upstream` and the inference host's private
+gateway configuration before reconnecting. A successful request to the shared
+gateway does not verify Claude Desktop's separate backend. Likewise,
+`claude auth status` over SSH can report no login when the macOS service can
+read it; verify an inference request through the app's actual adapter.
+
+Native Desktop model IDs use the configured primary provider, which older
+deployments call `claude`. If that provider is intended to use a named Claude
+account, give it the same explicit `authDirectory` as that account. Renewing
+`claude-primary` cannot repair a legacy `claude` route that still reads the
+default login store. Verify the existing account identities before correcting
+the path, and preserve every model alias. The native review configuration's
+`authDirectory` must also select the intended review account.
+
+Reconnect on the inference host, using its private configuration and the
+provider ID that owns the failing route:
+
+```sh
+gateway login PROVIDER --config /absolute/claude-gateway.json
+```
+
+The private inference process loads its configuration at startup. After a path
+correction, restart its owned component only when idle, within the existing
+app-owned service. Verify both a streamed Messages reply through the client's
+adapter and a native client tool round trip. Changing the client's token or
+recreating its profile does not renew the upstream subscription login.
+
 Qwen remains the configured local or tailnet API provider. Use the existing
 endpoint and credential; selecting it does not turn it into a Claude model.
 
