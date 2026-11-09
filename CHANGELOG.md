@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.8.5 — 2026-11-09
 
 - Provider token authentication uses a lightweight CLI path instead of importing the
   entire provider/service stack. New auth rows permit a bounded 15-second cold start,
