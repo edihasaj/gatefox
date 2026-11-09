@@ -2,6 +2,18 @@ import { ProviderError } from "./provider.js";
 
 export type ClaudeCredentialReason = "login_unavailable" | "session_expired" | "credential_revoked" | "upstream_rejected" | "unknown";
 
+/**
+ * Live-session authentication failures the session itself proved happened before any model output, tool
+ * result delivery or queued steering. Only these may skip the crash hold and take the bounded automatic
+ * recovery. The mark lives here, not on the wire error: a session from an older release never sets it,
+ * so an adopted session defaults to the conservative behavior.
+ */
+const replaySafeAuthentication = new WeakSet<ProviderError>();
+export const nativeAuthenticationFailure = (error: unknown): error is ProviderError =>
+  error instanceof ProviderError && error.upstream?.code === "authentication_failed";
+export function markReplaySafeAuthentication(error: ProviderError): void { replaySafeAuthentication.add(error); }
+export const isReplaySafeAuthentication = (error: unknown): boolean => error instanceof ProviderError && replaySafeAuthentication.has(error);
+
 const maxDiagnosticCharacters = 16 * 1024;
 const maxDiagnosticParts = 8;
 const loginUnavailable = /\b(?:not logged in|authentication required|login expired)\b/i;

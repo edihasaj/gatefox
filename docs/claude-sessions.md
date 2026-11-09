@@ -282,6 +282,19 @@ unclassified logins also remain final, as do billing and subscription limits.
 A second failure preserves its original error. Recovery never resumes a stopped
 goal, answers an approval, or replays an executed command.
 
+A native authentication failure before any inference output, tool-result delivery
+or queued steering closes the live session without a crash hold. A later caller
+request can therefore try the saved login again, including after the bounded
+upstream-401 recovery succeeds. The failed request remains final when it is not
+eligible for that existing recovery. Authentication failures after output or a
+tool handoff retain the crash hold because the turn may have advanced. The cache
+guard still checks any replacement history. When the CLI exits with an unread
+authentication frame, the first queued terminal frame supplies the failure and
+the same safety boundary applies. An earlier successful result or another failure
+cannot be replaced by a later authentication diagnostic. Sessions adopted from an
+older release remain conservative; an existing crash hold is not retroactively
+cleared.
+
 On October 21, 2026, five fresh one-shot requests failed with
 `authentication_failed` between 10:33 and 10:36 Europe/Belgrade, each before any
 inference event. Two original chats later continued without a recorded login
