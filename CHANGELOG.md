@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.8.3 — 2026-11-09
+
+- The app shows GateFox once in the sidebar, with Harness Gateway beneath it.
+  The window title text is hidden and the footer shows only the version.
+
 ## 1.8.2 — 2026-11-09
 
 - A cancelled Claude turn whose interrupt times out no longer blocks the chat for
