@@ -35,6 +35,8 @@ export interface FixtureReply {
 export interface FixtureScenario { replies: FixtureReply[]; exitAtSpawn?: boolean; /** A live CLI exits when its first user message arrives, before any output. */ exitAtFirstUser?: boolean; perTurnEffort?: boolean; /** Never starts the MCP server, so no relay hello arrives. */ noMcp?: boolean;
   /** Reject or delay the empty settings acknowledgment used to order queued steering. */
   rejectSteering?: boolean; delaySteeringMs?: number; crashSteering?: boolean;
+  /** Acknowledge interruption without finishing the turn, to exercise the cancellation watchdog. */
+  ignoreInterrupt?: boolean;
   /** Report cache tokens from what this CLI was actually sent, the way Claude bills a growing prefix; see `cacheModel`. */
   cache?: boolean }
 export interface FixtureEntry {
@@ -242,7 +244,7 @@ async function fixtureMain(): Promise<void> {
       if (barrier && scenario.crashSteering) { mcp?.kill(); process.exit(9); }
       const respond = () => out({ type: "control_response", response: { subtype: barrier && scenario.rejectSteering ? "error" : "success", request_id: message.request_id, response: {} } });
       if (barrier && scenario.delaySteeringMs) setTimeout(respond, scenario.delaySteeringMs); else respond();
-      if (subtype === "interrupt") active?.interrupt();
+      if (subtype === "interrupt" && !scenario.ignoreInterrupt) active?.interrupt();
       if (subtype === "end_session") { log({ exit: "end_session" }); mcp?.kill(); process.exit(0); }
     } else if (message.type === "user") {
       const content = message.message.content as Json[];

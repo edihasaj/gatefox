@@ -322,8 +322,8 @@ export class ClaudeSession {
     }
     this.write(controlLine("interrupt").line); this.state = "interrupting";
     for (const message of rest) this.detached(message, eventType(message));
-    // The CLI ends an interrupted turn with a result within milliseconds; one that does not is closed.
-    this.interruptTimer = setTimeout(() => { if (this.state === "interrupting") void this.close("crashed", "interrupt_timeout", true); }, 2000);
+    // A watchdog-enforced cancellation deliberately ends the CLI; it is not a crash that holds the chat.
+    this.interruptTimer = setTimeout(() => { if (this.state === "interrupting") void this.close("closed", "interrupt_timeout", true); }, 2000);
     this.interruptTimer.unref();
   }
 

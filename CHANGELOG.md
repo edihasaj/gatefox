@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A cancelled Claude turn whose interrupt times out no longer blocks the chat for
+  an hour. Gateway deliberately closes that CLI and permits a new session on the
+  next caller request, subject to the cache guard. Genuine crashes still keep
+  their replay holds, and the cancelled request is never replayed automatically.
+
 - The package is `@edihasaj/gatefox`. The installer and app builder still accept a backend
   packaged as `@edihasaj/harness-gateway` or `@edihasaj/subscription-gateway`. The Claude
   Desktop help and errors, the Grok config marker (an old marker is replaced, never
