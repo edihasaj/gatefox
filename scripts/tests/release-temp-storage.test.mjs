@@ -38,6 +38,19 @@ test('keeps only the latest successful default asset outside the checkout', () =
   }
 });
 
+test('a GateFox archive replaces an earlier latest output, including a GateFox one', () => {
+  const testCase = fixture();
+  try {
+    release({ cwd: testCase.cwd, name: 'harness-gateway-1.7.8-macos-arm64.tar.gz', content: 'old' });
+    release({ cwd: testCase.cwd, name: 'gatefox-1.8.0-macos-arm64.tar.gz', content: 'first' });
+    release({ cwd: testCase.cwd, name: 'gatefox-1.8.0-macos-arm64.tar.gz', content: 'rebuilt' });
+    assert.deepEqual(readdirSync(join(testCase.namespace, 'latest')).sort(), ['SHA256SUMS', 'gatefox-1.8.0-macos-arm64.tar.gz']);
+  } finally {
+    rmSync(testCase.namespace, { recursive: true, force: true });
+    testCase.cleanup();
+  }
+});
+
 test('failed work removes its stage and preserves the previous successful asset', () => {
   const testCase = fixture();
   try {

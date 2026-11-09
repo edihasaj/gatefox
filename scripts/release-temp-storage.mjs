@@ -77,7 +77,7 @@ function assertLatest(root) {
   if (!existsSync(root)) return;
   safeDirectory(root, `Refusing unsafe latest release output: ${root}`);
   const names = readdirSync(root);
-  const archives = names.filter(name => /^harness-gateway-[\w.-]+-macos-arm64\.tar\.gz$/.test(name));
+  const archives = names.filter(name => /^(?:gatefox|harness-gateway)-[\w.-]+-macos-arm64\.tar\.gz$/.test(name));
   if (archives.length !== 1 || names.length !== 2 || !names.includes('SHA256SUMS')) {
     throw new Error(`Refusing unexpected latest release output: ${root}`);
   }
@@ -105,7 +105,7 @@ function createLock(path) {
 function prepareExplicitOutput(path) {
   ensureDirectory(path, `Refusing unsafe --output-dir: ${path}`);
   for (const name of readdirSync(path)) {
-    if (name === 'SHA256SUMS' || /^harness-gateway-[\w.-]+-macos-arm64\.tar\.gz$/.test(name)) {
+    if (name === 'SHA256SUMS' || /^(?:gatefox|harness-gateway)-[\w.-]+-macos-arm64\.tar\.gz$/.test(name)) {
       safeFile(join(path, name), `Refusing unsafe --output-dir entry: ${join(path, name)}`);
     }
   }

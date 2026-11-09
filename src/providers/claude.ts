@@ -18,6 +18,7 @@ import { claudeCliArgs, claudeEnv, claudeMcpCatalog, claudeSystemPrompt, userLin
 import { ClaudeMessageStream, resultWindows, type ClaudeStreamEnd, type ClaudeTokens } from "./claude-stream.js";
 import { choiceBlock, leadingInstructions, markCustomCalls, renderConversation, renderItems, renderSelected, type ClaudeConversation, type ClaudeImages, type ReplayFormat } from "./claude-render.js";
 import { compactionCheckpoint, retireScope, refusalHoldRelease } from "./claude-session-registry.js";
+import { isReplaySafeAuthentication } from "./claude-auth.js";
 import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveModule, type ClaudeLiveOutcome } from "./claude-live-contract.js";
 import { telemetry } from "../telemetry.js";
 import { claudeReplayBudget, ClaudeReplayBlocked, type ClaudeReplayBudget } from "./claude-replay-budget.js";
@@ -168,7 +169,7 @@ export class ClaudeSubscription implements Provider {
         } return; }
         catch (error) {
           if (providerRefusal(error)) releaseHold();
-          if (!authVisible && await beginRecovery(error)) {
+          if (!authVisible && isReplaySafeAuthentication(error) && await beginRecovery(error)) {
             // A failed live session synchronously removes itself from the registry; the
             // cancellable backoff also gives its killed CLI time to exit before this spawn.
           } else {

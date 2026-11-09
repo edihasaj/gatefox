@@ -23,6 +23,8 @@ export interface FixtureReply {
   /** Emits native reasoning or text, then an authentication failure. Test diagnostics only. */
   authenticationAfterThinking?: string;
   authenticationAfterText?: string;
+  /** A live CLI exits right after printing its authentication failure, before the gateway's reader drains it. */
+  exitAfterAuthentication?: boolean;
   /** Emits one native non-authentication assistant failure before any stream event. */
   failureCode?: string;
   /** Ends the turn with Claude's native private-reasoning refusal. */
@@ -144,6 +146,7 @@ async function fixtureMain(): Promise<void> {
     if (reply.fail) process.exit(4);
     if (typeof reply.authenticationFailed === "string") {
       out({ type: "assistant", error: "authentication_failed", message: { content: [{ type: "text", text: reply.authenticationFailed }] } });
+      if (live && reply.exitAfterAuthentication) process.exit(0);
       if (!live) process.exit(0);
       return;
     }
@@ -178,7 +181,10 @@ async function fixtureMain(): Promise<void> {
       out({ type: "assistant", error: "invalid_request", message: { content: [{ type: "text", text: "API Error: test refusal\n\nDetails: `[reasoning_extraction]`" }] } });
       process.exit(0);
     }
-    const authentication = (diagnostic: string) => out({ type: "assistant", error: "authentication_failed", message: { content: [{ type: "text", text: diagnostic }] } });
+    const authentication = (diagnostic: string) => {
+      out({ type: "assistant", error: "authentication_failed", message: { content: [{ type: "text", text: diagnostic }] } });
+      if (live && reply.exitAfterAuthentication) process.exit(0);
+    };
     if (typeof reply.authenticationAfterThinking === "string") {
       thinking(reply.thinking ?? "private reasoning"); authentication(reply.authenticationAfterThinking); if (!live) process.exit(0); return;
     }

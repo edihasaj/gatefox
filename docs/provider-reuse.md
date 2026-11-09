@@ -43,7 +43,11 @@ cannot safely continue. Corrected history can use the same session. Copilot clos
 an uncertain effort switch instead of inferring with an unconfirmed setting or
 replaying it. Claude forced-tool mismatches are final; Gateway does not retry with
 a smaller catalog. A known pre-inference authentication rejection retains its
-separate bounded recovery behavior.
+separate bounded recovery behavior. Claude live sessions must affirm that no
+native output or tool-result handoff occurred before that retry is admitted.
+Such a native authentication rejection closes without a crash hold, allowing
+the next caller request to try again. Failures after output or tool handoff
+retain the hold; a repaired login does not authorize replaying uncertain work.
 
 Both live CLI routes preserve public reasoning as typed summaries. The live
 ledger skips those summaries while retaining their rendered positions; converting

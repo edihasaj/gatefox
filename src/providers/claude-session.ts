@@ -7,6 +7,8 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { ChatToolSelection, InferenceEvent, OpenAITool } from "../protocol/types.js";
 import { ProviderError, providerRefusal } from "./provider.js";
+import { isNativeOutput, queuedAuthentication, replaySafeStart } from "./claude-native-output.js";
+import { markReplaySafeAuthentication, nativeAuthenticationFailure } from "./claude-auth.js";
 import { claudeRequestRejection } from "./claude-request-rejection.js";
 import { controlLine, controlResult, userLine, type ClaudeMcpTool } from "./claude-control.js";
 import type { ClaudeMessageStream, ClaudeStreamEnd, ClaudeTokens } from "./claude-stream.js";
@@ -56,6 +58,8 @@ interface Attached {
   /** Once queued, a transport failure must never fall back to replay, even after acknowledgment. */
   steered?: boolean;
   turn: SessionTurn; queue: Array<Record<string, unknown>>; wake?: () => void; error?: Error; onAbort: () => void;
+  /** Any native model output (visible, hidden reasoning or tool use) has been read for this request. */
+  output?: boolean;
   /** The text this request emitted: Codex replays it, and it can differ from the native text (paragraph breaks). */
   text: string;
 }
@@ -339,8 +343,12 @@ export class ClaudeSession {
     if (this.attached === attached) {
       // A refusal judges one request and says nothing about the CLI, so it must not hold the thread as a crash does.
       const refused = providerRefusal(error);
+      // A native authentication failure before any output, tool-result delivery or steering changed nothing
+      // in the CLI's history, so it must not hold the thread as a crash does: the next request retries the login.
+      const authentication = !refused && nativeAuthenticationFailure(error) && replaySafeStart(attached);
       this.detach(attached); attached.turn.onEnd(refused ? "refused" : "failed", attached.turn.stream.observedTokens);
       if (refused) void this.close("closed", "refused", true);
+      else if (authentication) { markReplaySafeAuthentication(error as ProviderError); void this.close("closed", "authentication_failed", true); }
       else void this.close("crashed", error instanceof ProviderError ? error.upstream?.code ?? error.code : "failed", true);
     }
     return error;
@@ -378,6 +386,7 @@ export class ClaudeSession {
     }
     const attached = this.attached;
     if (!attached) { this.detached(message, event?.type); return; }
+    if (isNativeOutput(message, event?.type)) attached.output = true;
     attached.queue.push(message);
     if (attached.queue.length > 256) this.child.stdout.pause();
     attached.wake?.();
@@ -439,9 +448,13 @@ export class ClaudeSession {
     // The reader may be behind the process: a refusal already queued is still the turn's outcome.
     const refusal = attached && !attached.error ? attached.queue.map(claudeRequestRejection).find(Boolean) : undefined;
     if (refusal) { outcome = "closed"; reason = "refused"; }
+    // Likewise a CLI that printed an authentication failure and exited. It is kept as the turn's error either way;
+    // it skips the crash hold only when nothing before it changed the CLI's history.
+    const login = outcome === "crashed" && attached && !attached.error && !refusal ? queuedAuthentication(attached.queue) : undefined;
+    if (login && replaySafeStart(attached!)) { outcome = "closed"; reason = "authentication_failed"; markReplaySafeAuthentication(login); }
     if (attached) {
       this.detach(attached); attached.turn.onEnd(refusal ? "refused" : "failed", attached.turn.stream.observedTokens);
-      attached.error ??= refusal ?? (attached.steered
+      attached.error ??= refusal ?? login ?? (attached.steered
         ? steeringEnded()
         : new ProviderError("cli_failed", "Claude CLI session ended; run gateway doctor", 502, { code: reason, event: "claude.session" }));
       attached.wake?.();
