@@ -2,6 +2,11 @@
 
 ## 1.8.0 — 2026-11-09
 
+- A Claude chat whose login fails before any reply, tool result or queued message no
+  longer stays blocked behind a crash hold. The next request tries the saved login again.
+  A failure after the turn produced output keeps the hold, because the turn may have
+  advanced. See `docs/claude-sessions.md`.
+
 - The app is GateFox.app, published as `GateFox-VERSION-macos-arm64.zip` with
   `gatefox-VERSION-macos-arm64.tar.gz`, under the standard `vVERSION` tag only. A Mac
   updated from 1.7.x first gets the new app at its old `Harness Gateway.app` path; at its
