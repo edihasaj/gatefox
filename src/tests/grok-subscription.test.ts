@@ -257,3 +257,12 @@ test("the catalog server lists caller tools and never answers tools/call", async
     assert.equal(replies[1].result.tools[0].name, "t");
   } finally { child.kill(); await rm(directory, { recursive: true, force: true }); }
 });
+
+test("a config written with the Harness Gateway marker ends up with exactly one GateFox marker", () => {
+  const legacy = "[ui]\ntheme = \"dark\"\n\n# Managed by Harness Gateway: inference backend only. Sections below are rewritten.\n[models]\n";
+  const merged = mergeGrokConfig(legacy);
+  assert.equal(merged.split("\n").filter(line => line.startsWith("# Managed by")).length, 1);
+  assert.match(merged, /# Managed by GateFox:/);
+  assert.match(merged, /theme = "dark"/);
+  assert.equal(mergeGrokConfig(merged), merged, "merging again changes nothing");
+});

@@ -42,10 +42,10 @@ export function verifiedBackend(directory) {
   }
   const pkg = JSON.parse(readFileSync(join(root, 'package/package.json'), 'utf8'));
   const release = JSON.parse(readFileSync(join(root, 'package/release.json'), 'utf8'));
-  if (!['@edihasaj/harness-gateway', '@edihasaj/subscription-gateway'].includes(pkg.name) ||
+  if (!['@edihasaj/gatefox', '@edihasaj/harness-gateway', '@edihasaj/subscription-gateway'].includes(pkg.name) ||
       !/^\d+\.\d+\.[0-9]$/.test(pkg.version) || release.version !== pkg.version ||
       !/^[a-f0-9]{40}$/.test(release.source ?? '') || !/^\d+\.\d+\.\d+$/.test(release.node ?? '')) {
-    throw new Error('Not a supported Harness Gateway release');
+    throw new Error('Not a supported GateFox release');
   }
   for (const component of ['native', 'gateway-sdk']) {
     if ([...entries.keys()].some(path => path.startsWith(`package/${component}/`))) {

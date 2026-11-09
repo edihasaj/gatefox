@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The package is `@edihasaj/gatefox`. The installer and app builder still accept a backend
+  packaged as `@edihasaj/harness-gateway` or `@edihasaj/subscription-gateway`. The Claude
+  Desktop help and errors, the Grok config marker (an old marker is replaced, never
+  duplicated), the native app's type and Swift package, and the README now say GateFox.
+  The README links the 1.8.0 GateFox download.
+
 - `gatefox chats migrate` moves saved gateway chats from the provider id
   `subscription_gateway` to `gatefox`. Without `--apply` it only reports. With `--apply`
   it needs ChatGPT and the service stopped, rewrites the provider in each rollout's

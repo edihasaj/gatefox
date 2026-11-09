@@ -40,21 +40,21 @@ desktop app, and the official CLI for each subscription you connect (for example
 Claude Code for a Claude subscription).
 
 **Option A: the app.** Download
-[**Harness-Gateway-1.7.8-macos-arm64.zip**](https://github.com/edihasaj/gatefox/releases/download/v1.7.8/Harness-Gateway-1.7.8-macos-arm64.zip)
+[**GateFox-1.8.0-macos-arm64.zip**](https://github.com/edihasaj/gatefox/releases/download/v1.8.0/GateFox-1.8.0-macos-arm64.zip)
 (notarized, Apple silicon) or pick a version from
 [all releases](https://github.com/edihasaj/gatefox/releases). Unzip it, move the
 app to Applications and open it. The setup wizard connects your accounts, picks
-models and starts the background service. From 1.8.0 the app is `GateFox.app`.
+models and starts the background service.
 
 **Option B: the command line.**
 
 ```sh
-VERSION=1.7.8
+VERSION=1.8.0
 gh release download "v$VERSION" -R edihasaj/gatefox \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
-tar -xzf "harness-gateway-$VERSION-macos-arm64.tar.gz"
-"./harness-gateway-$VERSION-macos-arm64/install"
+tar -xzf "gatefox-$VERSION-macos-arm64.tar.gz"
+"./gatefox-$VERSION-macos-arm64/install"
 
 gateway init                       # private config, listens on 127.0.0.1 only
 gateway login claude               # sign in to each account you want
@@ -78,9 +78,9 @@ only a client token and an SSH tunnel; no account credentials are copied.
 
 ```sh
 # on the extra Mac, after installing the gateway
-umask 077; mkdir -p ~/.local/state/harness-gateway-client
-ssh you@main-mac 'gateway token' > ~/.local/state/harness-gateway-client/client-token
-gateway setup --client --port 3459 --token-file ~/.local/state/harness-gateway-client/client-token
+umask 077; mkdir -p ~/.local/state/gatefox-client
+ssh you@main-mac 'gateway token' > ~/.local/state/gatefox-client/client-token
+gateway setup --client --port 3459 --token-file ~/.local/state/gatefox-client/client-token
 gateway tunnel install --tunnel-id main --host you@main-mac --port 3459 --remote-port 3457
 gateway desktop register && gateway doctor
 ```
@@ -120,26 +120,21 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as desc
 
 ## Compatibility names
 
-GateFox was called Harness Gateway, and before that Subscription Gateway. Names that
-existing installations and saved chats depend on keep an older spelling: the Codex provider ID
-`subscription_gateway` (stored in gateway chats saved before 1.8.0, which records new chats as `gatefox`; both ids are registered in every gateway executor;
-a Mac that opts in to `"chatIdentity": "openai"` stores its new chats as `openai`, see
-[harness identity](docs/harness-identity.md)), the LaunchAgent labels
-`com.edihasaj.subscription-gateway*`, the install root `~/.local/share/subscription-gateway`
-(fresh installations since 1.8.0 use `~/.local/share/gatefox`), the state folder
-`~/Library/Application Support/Subscription Gateway` (fresh installations use `GateFox`), and the
-ownership markers in service and execution-host receipts. Changing any of them
-needs a migration on every Mac. The installed command is `harness-gateway`; since 1.8.0 the
-installer also writes `gatefox` with the same contents (an update run by a 1.7.x app adds it
-on the next install), and
-`gateway` remains as a second launcher with the same contents, so existing scripts
-and old LaunchAgents keep working. macOS names a background item after the program a
-LaunchAgent runs, so the plists the gateway writes name `harness-gateway`, and System
-Settings, Login Items shows "harness-gateway" under "Allow in the Background". With
-the unified service that is the gateway's one background item: since 0.4.8 the
-service's daemon sets `CODEX_CLI_PATH` itself at its start, and the separate
-`harness-gateway-login-env` item that 0.4.7 added is removed at the first 0.4.8
-service start. Only a standalone `gateway desktop register`, with no unified
-service, keeps that login environment agent. When a service is rewritten by 0.4.7 macOS posts one "Background Items
-Added" notification for harness-gateway, and the old "gateway" entry disappears from
-the list. See [services](docs/services.md).
+GateFox was called Harness Gateway, and before that Subscription Gateway. The installer
+writes three launchers with the same contents: `gatefox`, `gateway` and `harness-gateway`,
+so existing scripts keep working. Examples here use `gateway`.
+
+Macs installed before 1.8.0 keep a few names that their running services depend on:
+
+| Name | Where | Fresh installation |
+| --- | --- | --- |
+| `~/.local/share/subscription-gateway` | install root | `~/.local/share/gatefox` |
+| `~/Library/Application Support/Subscription Gateway` | config and state | `…/GateFox` |
+| `com.edihasaj.subscription-gateway*` | LaunchAgent labels | unchanged |
+| `subscription_gateway` | provider id of chats saved before 1.8.0 | `gatefox` |
+
+`gatefox chats migrate --apply` moves saved chats to `gatefox`; both ids stay registered,
+so either opens (see [harness identity](docs/harness-identity.md)). The gateway's one
+background item is the signed GateFox app, so System Settings shows GateFox under
+"Allow in the Background". See [services](docs/services.md) and
+[the rename plan](docs/gatefox-rename.md).

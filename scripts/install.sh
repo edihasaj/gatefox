@@ -178,7 +178,7 @@ printf 'subscription-gateway\n' > "$root/.gateway-installation"
 if [ -z "$transaction_nonce" ] && [ "$prefix" = "$HOME/.local" ] && [ -n "$legacy_command" ] && [ "$legacy_command" != "$launcher" ] && [ "$legacy_command" != "$compat" ] && [ -L "$legacy_command" ]; then
   if ./runtime/bin/node - "$legacy_command" <<'JS'
 const fs=require('fs'),path=require('path');
-try { const target=fs.realpathSync(process.argv[2]);const p=JSON.parse(fs.readFileSync(path.resolve(path.dirname(target),'../package.json'),'utf8'));process.exit(path.basename(target)==='cli.js'&&['@edihasaj/harness-gateway','@edihasaj/subscription-gateway'].includes(p.name)?0:1); } catch { process.exit(1); }
+try { const target=fs.realpathSync(process.argv[2]);const p=JSON.parse(fs.readFileSync(path.resolve(path.dirname(target),'../package.json'),'utf8'));process.exit(path.basename(target)==='cli.js'&&['@edihasaj/gatefox','@edihasaj/harness-gateway','@edihasaj/subscription-gateway'].includes(p.name)?0:1); } catch { process.exit(1); }
 JS
   then
     mkdir -p "$HOME/.Trash"
