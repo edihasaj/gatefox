@@ -9,12 +9,13 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png">
   <link rel="stylesheet" href="styles.css">
   <script src="app.js" defer></script>
+  <script src="releases.js" type="module" defer></script>
 </head>
 <body>
   <a class="skip" href="#guide">Skip to guide</a>
   <aside class="sidebar" aria-label="Guide navigation">
     <a class="brand" href="#overview"><img src="assets/logo.png" width="56" height="56" alt="GateFox fox"><span>GateFox</span></a>
-    <div class="edition">GUIDE <span>v1.7.5</span></div>
+    <div class="edition">GUIDE <span data-release-version>Latest release</span></div>
     <label class="search-label" for="search">Find in this guide</label>
     <input id="search" type="search" placeholder="Models, tunnel, service…" autocomplete="off">
     <nav>
@@ -27,6 +28,7 @@
       <a href="#service">07 <span>Keep it running</span></a>
       <a href="#troubleshooting">08 <span>Fix a problem</span></a>
       <a class="page-link" href="reference.html">→ <span>All docs</span></a>
+      <a class="page-link" href="changelog.html">→ <span>Changelog</span></a>
       <a class="page-link first" href="roadmap.html">→ <span>Roadmap · help wanted</span></a>
     </nav>
     <p class="sidebar-note">Your coding app.<br>Your accounts.<br>One model list.</p>
@@ -40,6 +42,24 @@
       <h1>All your models.<br>One picker.</h1>
       <p class="lead">Use Claude, ChatGPT, Copilot and local models from the coding app you already use, on your Mac and from your phone.</p>
       <a class="primary" href="#setup">Set up this Mac <span aria-hidden="true">↓</span></a>
+      <!-- release-summary -->
+      <aside class="release-summary" data-release-panel>
+        <div class="release-meta">
+          <span class="release-channel">Latest release</span>
+          <a class="release-version" data-release-version href="https://github.com/edihasaj/gatefox/releases/latest">the latest release</a>
+          <time data-release-date>—</time>
+        </div>
+        <div class="release-preview" data-release-summary>
+          <ul data-release-notes>
+            <li>The notarized Mac app, one background service, and every model in your picker.</li>
+          </ul>
+        </div>
+        <div class="release-links">
+          <a data-release-changelog href="changelog.html">What changed →</a>
+          <a data-release-link href="https://github.com/edihasaj/gatefox/releases/latest">GitHub release ↗</a>
+        </div>
+      </aside>
+      <!-- /release-summary -->
       <div class="route" aria-label="Your app talks to the gateway on this Mac, which talks to your accounts">
         <span>Codex · Claude Code</span><b aria-hidden="true">→</b><span>Gateway on this Mac</span><b aria-hidden="true">→</b><span>Your accounts</span>
       </div>
@@ -64,16 +84,22 @@
 
       <h3>The easy way: the app</h3>
       <p><a class="primary download" data-download href="https://github.com/edihasaj/gatefox/releases/latest">Download for Mac <span data-download-version>(Apple silicon)</span></a></p>
+      <p class="release-strip" data-release-strip>
+        <span class="release-channel">Latest</span>
+        <a class="release-strip-version" data-release-version href="https://github.com/edihasaj/gatefox/releases/latest">the latest release</a>
+        <time class="release-strip-date" data-release-date>—</time>
+        <a class="release-strip-link" data-release-changelog href="changelog.html">What changed</a>
+      </p>
       <p>Unzip it, move the fox to Applications and open it. The setup wizard walks through all three steps: choose a provider, sign in, pick models, then <strong>Set up once</strong> starts the background service and adds the models to Codex. The app is notarized and includes its own runtime. Every version is on <a href="https://github.com/edihasaj/gatefox/releases">GitHub Releases</a>. See <a href="macos-app.html">the macOS app</a>.</p>
 
       <h3>The command-line way</h3>
       <p>Run these in a new, empty download folder. The installer needs no administrator access and installs under your user folder.</p>
-      <pre><code>VERSION=1.7.8
+      <pre><code data-release-cli>VERSION=1.8.3
 gh release download "v$VERSION" -R edihasaj/gatefox \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
-shasum -a 256 -c SHA256SUMS
-tar -xzf "harness-gateway-$VERSION-macos-arm64.tar.gz"
-"./harness-gateway-$VERSION-macos-arm64/install"
+shasum -a 256 -c SHA256SUMS --ignore-missing
+tar -xzf "gatefox-$VERSION-macos-arm64.tar.gz"
+"./gatefox-$VERSION-macos-arm64/install"
 gateway --version</code></pre>
       <p>Then connect accounts and start it. <code>gateway init</code> writes a private configuration that listens on <code>127.0.0.1</code> only, so nothing is reachable from other machines.</p>
       <pre><code>gateway init                     # 1. private config for this Mac

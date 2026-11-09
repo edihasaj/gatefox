@@ -9,6 +9,8 @@ import { copyFileSync, cpSync, mkdirSync, readFileSync, readdirSync, rmSync, wri
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Marked } from 'marked';
+import { applyReleaseData, releaseAnchor, releaseHistoryHtml } from './site-release-pages.mjs';
+import { parseSnapshot } from './site-releases.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const docs = join(root, 'docs');
@@ -16,11 +18,11 @@ export const site = 'https://gatefox.dev';
 export const repository = 'https://github.com/edihasaj/gatefox';
 const groups = [
   ['Start and daily use', ['cli', 'macos-app', 'app-management', 'macos-permissions', 'speed-controls', 'activity', 'background-commands']],
-  ['Clients', ['messages', 'claude-desktop', 'app-server', 'api-mode', 'client-tool-reachability', 'node-repl', 'harness-identity', 'app-server-compaction', 'app-server-forks', 'claude-native-trial', 'codex-unread-trial']],
-  ['Accounts, providers and models', ['api-providers', 'claude-sessions', 'copilot-sessions', 'grok-sessions', 'auto-latest-models', 'managed-routing', 'availability', 'upstream-capacity', 'cache-safety', 'provider-reuse', 'provider-updates', 'responses']],
-  ['More than one Mac', ['remote', 'native-remote', 'travel-recovery']],
-  ['Keep it running', ['services', 'health', 'diagnostics', 'engine-exits', 'reboot-recovery', 'service-install-recovery', 'macos-background-item', 'macos-updates', 'mcp-credentials', 'desktop-update-compatibility', 'desktop-legacy-force-cli', 'native-launcher-verification']],
-  ['Architecture and project', ['architecture', 'verification', 'RELEASING', 'rollout', 'component-origins', 'ci', 'ci-cost-policy', 'availability-agent-tests', 'brand', 'docs-site', 'roadmap', 'gatefox-rename']],
+  ['Clients', ['messages', 'claude-desktop', 'app-server', 'app-server-guide-native-relay', 'app-server-guide-login-environment', 'app-server-guide-model-catalog', 'app-server-guide-chat-lifecycle', 'api-mode', 'client-tool-reachability', 'node-repl', 'harness-identity', 'app-server-compaction', 'app-server-forks', 'claude-native-trial', 'codex-unread-trial']],
+  ['Accounts, providers and models', ['api-providers', 'claude-sessions', 'copilot-sessions', 'grok-sessions', 'auto-latest-models', 'managed-routing', 'availability', 'upstream-capacity', 'cache-safety', 'provider-reuse', 'provider-updates', 'responses', 'responses-guide-protocol', 'responses-guide-tools', 'responses-guide-providers']],
+  ['More than one Mac', ['remote', 'native-remote', 'native-remote-setup', 'native-remote-troubleshooting', 'travel-recovery']],
+  ['Keep it running', ['services', 'services-consolidation', 'services-shared-executors', 'services-releases', 'health', 'diagnostics', 'diagnostics-guide-provider-failures', 'diagnostics-guide-runtime-events', 'diagnostics-guide-usage-and-versions', 'engine-exits', 'reboot-recovery', 'service-install-recovery', 'macos-background-item', 'macos-updates', 'mcp-credentials', 'desktop-update-compatibility', 'desktop-legacy-force-cli', 'native-launcher-verification']],
+  ['Architecture and project', ['architecture', 'verification', 'verification-transport', 'verification-desktop', 'verification-subscriptions', 'verification-release-history', 'RELEASING', 'release-validation', 'rollout', 'component-origins', 'ci', 'ci-cost-policy', 'availability-agent-tests', 'brand', 'docs-site', 'roadmap', 'gatefox-rename']],
 ];
 
 const escape = text => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -121,6 +123,7 @@ ${seoTags(seo)}
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png">
   <link rel="stylesheet" href="styles.css">
   <script src="app.js" defer></script>
+  <script src="releases.js" type="module"></script>
 </head>
 <body>`;
 const brand = `<a class="brand" href="index.html"><img src="assets/logo.png" width="56" height="56" alt="GateFox fox"><span>GateFox</span></a>`;
@@ -210,7 +213,9 @@ ${nav}
       <div class="eyebrow">DOCS</div>
       <h1 id="${slug(escape(page.title))}">${inline(page.title)}</h1>
       <p class="lead">${inline(page.summary)}</p>
+      <p class="doc-meta">About ${Math.max(1, Math.ceil(page.body.split(/\s+/).length / 220))} min read${toc.length ? ` · ${toc.length} sections` : ''}</p>
     </header>
+    ${toc.length ? `<details class="page-toc"><summary>On this page</summary><nav aria-label="On this page">${nav}</nav></details>` : ''}
     <article class="prose">
 ${body}    </article>
 ${footer(page.title, 'Part of the GateFox docs.')}
@@ -243,10 +248,44 @@ export const guideSeo = {
 };
 
 /** The guide is hand-written; its head gets the same tags as every generated page. */
-export function guideHtml(source) {
+export function guideHtml(source, releaseData = readReleaseData()) {
   const start = source.indexOf('  <meta name="description"'), end = source.indexOf('  <link rel="icon"');
   if (start < 0 || end < start) throw new Error('docs/index.html head is missing its description or icon links');
-  return source.slice(0, start) + seoTags(guideSeo) + '\n' + source.slice(end);
+  const latest = releaseData.latest;
+  const seo = { ...guideSeo, jsonld: { ...softwareJsonLd, ...(latest ? { softwareVersion: latest.version, downloadUrl: latest.appDownloadUrl, datePublished: latest.publishedAt } : {}) } };
+  return applyReleaseData(source.slice(0, start) + seoTags(seo) + '\n' + source.slice(end), releaseData);
+}
+
+/** A checked-in published snapshot keeps local builds deterministic and works without browser JavaScript. */
+export function readReleaseData() {
+  const data = parseSnapshot(readFileSync(join(docs, 'releases.json'), 'utf8'));
+  if (!data?.latest) throw new Error('The published release snapshot is invalid');
+  return data;
+}
+
+export function renderChangelog(data) {
+  const latest = data.latest;
+  const description = 'Published GateFox app releases, release notes and versioned macOS downloads.';
+  const nav = data.releases.map(release => `      <a href="#${releaseAnchor(release.version)}"><span>${escape(release.version)}</span></a>`).join('\n');
+  return `${head({ name: 'changelog', title: 'Changelog', description, type: 'website' })}
+  <a class="skip" href="#guide">Skip to release notes</a>
+  <aside class="sidebar" aria-label="Release navigation">
+    ${brand}
+    <div class="edition">RELEASES <span data-release-version>${escape(latest?.version ?? '')}</span></div>
+    <nav><a class="page-link first" href="index.html">← <span>Back to the guide</span></a><a class="page-link" href="reference.html">→ <span>All docs</span></a>
+      <div data-release-nav>${nav}</div>
+    </nav>
+    <a class="source" href="${repository}/blob/main/CHANGELOG.md">Full source changelog ↗</a>
+  </aside>
+  <main id="guide" class="doc">
+    <header class="doc-head" id="top"><div class="eyebrow">PUBLISHED APP RELEASES</div><h1>Changelog.</h1><p class="lead">What changed, when it shipped, and the download for each version.</p><p><a href="${repository}/releases">All GitHub releases ↗</a></p></header>
+    <div class="release-history" data-release-history>
+${releaseHistoryHtml(data.releases)}
+    </div>
+${footer('Changelog', 'Stable, published app releases. Development notes stay on GitHub.')}
+  </main>
+</body>
+</html>\n`;
 }
 
 export function sitemap(pages, lastmod) {
@@ -262,20 +301,24 @@ ${[entry('index', 'GateFox'), entry('reference', 'All docs'), ...pages.map(page 
 `;
 }
 
-export function build(out) {
+export function build(out, { releaseData = readReleaseData() } = {}) {
   const pages = readPages(); const names = new Set(pages.map(page => page.name));
+  const releasePage = { name: 'changelog', title: 'Changelog', summary: 'Published app releases, release notes and macOS downloads.', readWhen: ['Checking the latest published version or what changed'] };
   rmSync(out, { recursive: true, force: true }); mkdirSync(join(out, 'assets'), { recursive: true });
-  for (const file of ['styles.css', 'app.js']) copyFileSync(join(docs, file), join(out, file));
-  writeFileSync(join(out, 'index.html'), guideHtml(readFileSync(join(docs, 'index.html'), 'utf8')));
+  for (const file of ['styles.css', 'app.js', 'releases.js']) copyFileSync(join(docs, file), join(out, file));
+  copyFileSync(join(root, 'scripts/site-releases.mjs'), join(out, 'release-data.js'));
+  writeFileSync(join(out, 'releases.json'), JSON.stringify(releaseData, null, 2) + '\n');
+  writeFileSync(join(out, 'index.html'), guideHtml(readFileSync(join(docs, 'index.html'), 'utf8'), releaseData));
+  writeFileSync(join(out, 'changelog.html'), renderChangelog(releaseData));
   cpSync(join(docs, 'assets'), join(out, 'assets'), { recursive: true });
-  writeFileSync(join(out, 'reference.html'), renderReference(pages));
+  writeFileSync(join(out, 'reference.html'), renderReference([...pages, releasePage]));
   for (const page of pages) writeFileSync(join(out, `${page.name}.html`), renderPage(page, names));
   writeFileSync(join(out, '404.html'), notFound());
   writeFileSync(join(out, 'robots.txt'), `User-agent: *\nAllow: /\n\nSitemap: ${site}/sitemap.xml\n`);
-  writeFileSync(join(out, 'sitemap.xml'), sitemap(pages, new Date().toISOString().slice(0, 10)));
+  writeFileSync(join(out, 'sitemap.xml'), sitemap([...pages, { name: 'changelog', title: 'Changelog' }], new Date().toISOString().slice(0, 10)));
   writeFileSync(join(out, 'site.webmanifest'), JSON.stringify({ name: 'GateFox', short_name: 'GateFox', start_url: '/', display: 'standalone',
     background_color: '#f6f3eb', theme_color: '#ba3c19', icons: [{ src: '/assets/logo.png', sizes: '256x256', type: 'image/png' }] }, null, 2) + '\n');
-  return { out, pages: pages.length };
+  return { out, pages: pages.length + 1, latestRelease: releaseData.latest?.version };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {

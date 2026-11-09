@@ -15,8 +15,22 @@ matter. A page missing from every group appears under "More", so none is dropped
 Links between docs become site pages; links to other repository files go to
 GitHub.
 
+The landing page shows the latest complete, published app release, its date,
+versioned download and release notes. `changelog.html` lists published app releases
+and links to the full source changelog. Drafts, prereleases and incomplete assets
+never become download candidates. Versions in `package.json` and **Unreleased**
+notes do not imply that an app shipped.
+
+Local builds read the committed `docs/releases.json` snapshot. Publishing refreshes
+it in the generated site from GitHub Releases, without modifying source files.
+`releases.js` checks for newer published releases in the browser; a failed or
+rate-limited GitHub request keeps the working static snapshot. The download,
+version, date, changelog preview and command-line instructions use the same release.
+Release notes render without executing embedded HTML or unsafe links.
+
 ```sh
 npm run docs:serve      # build and preview at http://127.0.0.1:8765
+npm run docs:review     # check every generated internal link, naming and long references
 npm run docs:deploy -- --remote https://github.com/edihasaj/gatefox.git          # dry run
 npm run docs:deploy -- --remote https://github.com/edihasaj/gatefox.git --push   # publish
 ```
@@ -29,6 +43,18 @@ is unchanged; GitHub serves a branch-based Pages site of a public repository at
 no cost.
 
 ## Search and sharing
+
+Every site update includes a naming and navigation review. `docs:review` checks
+all generated pages, local assets and section links before publication. It
+rejects stale product headings and reports legacy-name mentions and references
+over 500 lines for human review. Compatibility paths, provider identifiers and
+historical release names remain literal; visible current branding is GateFox.
+The publish command runs the same checks and refuses broken destinations.
+
+Long operational pages are split by task, with short overview pages retaining
+their original section anchors. Every document shows an estimated reading time;
+mobile readers also get an expandable **On this page** menu. Keep those original
+anchors when moving content so existing links continue to work.
 
 Every page gets a title, description, canonical URL, `robots` with
 `max-image-preview:large`, Open Graph and Twitter tags with its own 1200x630 image,
