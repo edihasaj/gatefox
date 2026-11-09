@@ -40,7 +40,7 @@ desktop app, and the official CLI for each subscription you connect (for example
 Claude Code for a Claude subscription).
 
 **Option A: the app.** Download
-[**GateFox-1.8.0-macos-arm64.zip**](https://github.com/edihasaj/gatefox/releases/download/v1.8.0/GateFox-1.8.0-macos-arm64.zip)
+[**GateFox-1.8.1-macos-arm64.zip**](https://github.com/edihasaj/gatefox/releases/download/v1.8.1/GateFox-1.8.1-macos-arm64.zip)
 (notarized, Apple silicon) or pick a version from
 [all releases](https://github.com/edihasaj/gatefox/releases). Unzip it, move the
 app to Applications and open it. The setup wizard connects your accounts, picks
@@ -49,7 +49,7 @@ models and starts the background service.
 **Option B: the command line.**
 
 ```sh
-VERSION=1.8.0
+VERSION=1.8.1
 gh release download "v$VERSION" -R edihasaj/gatefox \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
