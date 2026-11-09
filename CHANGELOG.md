@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- The app is GateFox.app, published as `GateFox-VERSION-macos-arm64.zip` with
+  `gatefox-VERSION-macos-arm64.tar.gz`, under the standard `vVERSION` tag only. A Mac
+  updated from 1.7.x first gets the new app at its old `Harness Gateway.app` path; at its
+  next launch the app renames itself to `GateFox.app` beside it, relaunches, and moves
+  the service and the command-line runtime to the new path. Permissions stay, because
+  the bundle identifier and signature are unchanged. The rename waits while an update is
+  unfinished. See `docs/macos-updates.md`.
+
+- The installer also writes a `gatefox` command, with the same contents as
+  `harness-gateway` and `gateway`, which keep working. An update run by a 1.7.x app adds
+  it at the next install, because that updater refuses receipts it does not know.
+
+- Fresh installations use `~/.local/share/gatefox` and
+  `~/Library/Application Support/GateFox` (`~/.config/gatefox` on Linux). A Mac installed
+  earlier keeps its `subscription-gateway` folders; nothing moves. The signed service
+  launcher, the updater, uninstall and the app accept both.
+
+- The Claude Desktop profile and the ChatGPT sign-in agent are named GateFox. A profile
+  created as Harness Gateway is still selected.
+
 - After a service restart, a desktop, relay session or SSH listener no longer takes the
   native ChatGPT engine away from the gateway host. The new host's claim could lose to the
   old host that was still exiting; the next client then started its own private engine, and
