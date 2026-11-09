@@ -57,7 +57,7 @@ const childEnv = {
 };
 process.env.HOME = home; process.env.CODEX_HOME = native;
 process.env.GATEWAY_TELEMETRY = "off"; process.env.GATEWAY_ERROR_REPORTS = "off";
-for (const key of ["OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL", "HARNESS_GATEWAY_EXECUTOR"]) delete process.env[key];
+for (const key of ["OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL", "HARNESS_GATEWAY_EXECUTOR", "GATEFOX_EXECUTOR"]) delete process.env[key];
 
 const candidate = name => import(pathToFileURL(join(code, "dist", `${name}.js`)).href);
 const old = name => import(pathToFileURL(join(oldPackage, "dist", `${name}.js`)).href);

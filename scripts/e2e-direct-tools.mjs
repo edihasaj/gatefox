@@ -55,7 +55,7 @@ const hosted = runtime.codeModeHost === true;
 assert.equal(executableRunsCodeMode(runtime.executable), hosted, "A Code Mode host must sit beside the executable exactly when the verified receipt names one");
 
 const proof = `DIRECT_${randomUUID()}`;
-const expectedProvider = values.openai ? "openai" : "subscription_gateway";
+const expectedProvider = values.openai ? "openai" : "gatefox";
 const aliases = [
   { alias: "fixture/direct-code", upstream: "gpt-6.1-sol", file: "code-mode.txt", commit: "fix: direct code tool proof", task: `CHILD_${randomUUID()}` },
   { alias: "fixture/direct-unset", upstream: "gpt-6-luna", file: "unset-mode.txt", commit: "fix: direct unset tool proof", task: `CHILD_${randomUUID()}` },

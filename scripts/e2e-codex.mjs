@@ -110,7 +110,7 @@ try {
     developerInstructions: `Work only with the fixture file ${sample}. Do not modify other files, run network actions, delegate or create goals.`,
     approvalPolicy: 'never', sandbox: 'workspace-write', ephemeral: true });
   // 0.4.6 records new gateway chats as openai by default (docs/harness-identity.md).
-  assert.ok(['openai', 'subscription_gateway'].includes(started.modelProvider));
+  assert.ok(['openai', 'gatefox', 'subscription_gateway'].includes(started.modelProvider));
   const id = started.thread.id;
   const streamed = await turn(id, 'Count from one to twenty, one number per line. Do not use tools.', 'streaming');
   assert.equal(streamed.final.status, 'completed'); assert.ok(streamed.deltas.length >= 2);

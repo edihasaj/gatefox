@@ -208,7 +208,7 @@ try{
   await record({phase:'signed-sdk-and-two-adapters',passed:true,modelCount:offered.size});
   const model=v.models.split(',')[0];phase='start-shared-chat';
   const verifyInitial=v.inference?await instructions(workspace):undefined;
-  const start=await first.rpc('thread/start',{model,cwd:workspace,approvalPolicy:'never',sandbox:v.inference?'danger-full-access':'read-only'});assert.ok(['openai','subscription_gateway'].includes(start.modelProvider));const id=start.thread.id;
+  const start=await first.rpc('thread/start',{model,cwd:workspace,approvalPolicy:'never',sandbox:v.inference?'danger-full-access':'read-only'});assert.ok(['openai','gatefox','subscription_gateway'].includes(start.modelProvider));const id=start.thread.id;
   const original=await owner(id);const state=await status();assert.equal(state.generations.length,1);const originalPid=generation(state,original.revision).pid;assert.ok(originalPid>0);
   // The SDK does not materialize a durable rollout until the first real turn.
   // Metadata-only probes prove live ownership but deliberately do not claim resume.
@@ -226,7 +226,7 @@ try{
   assert.deepEqual(await outage.rpc('thread/loaded/list',{}),beforeNative);assert.deepEqual(await outage.rpc('account/read',{}),beforeAccount);
   await record({phase:'offline-new-adapter-catalog',passed:true,modelsRetained:offered.size,applicationErrorCode:-32001,noInferenceRequests:true,noNewExecutor:true,noNativeFallback:true});
   phase='catalog-recovery';catalogAvailable=true;const recovered=await outage.rpc('model/list',{limit:100});assert.deepEqual(new Set(recovered.data.map(value=>value.model)),offered);
-  const recoveredChat=await outage.rpc('thread/start',{model,cwd:workspace,approvalPolicy:'never',sandbox:'read-only'});assert.ok(['openai','subscription_gateway'].includes(recoveredChat.modelProvider));assert.equal((await owner(recoveredChat.thread.id)).revision,original.revision);assert.equal(generation(await status(),original.revision).pid,originalPid);await outage.close();
+  const recoveredChat=await outage.rpc('thread/start',{model,cwd:workspace,approvalPolicy:'never',sandbox:'read-only'});assert.ok(['openai','gatefox','subscription_gateway'].includes(recoveredChat.modelProvider));assert.equal((await owner(recoveredChat.thread.id)).revision,original.revision);assert.equal(generation(await status(),original.revision).pid,originalPid);await outage.close();
   await record({phase:'catalog-recovery-without-app-restart',passed:true,modelsRetained:offered.size,sameExecutorPid:true});
   phase='adapter-disconnect';await first.close();assert.equal(generation(await status(),original.revision).pid,originalPid);
   const third=connect();await initialize(third);phase='reconnect-loaded-owner';

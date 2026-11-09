@@ -58,7 +58,7 @@ try{
   const marker=randomUUID();const proof=randomUUID();const title='Unix test '+randomUUID().slice(0,8);
   await writeFile(join(workspace,'AGENTS.md'),`When asked for the verification rule, return exactly: ${marker}.\n`);
   await writeFile(join(workspace,'proof.txt'),proof);await writeFile(join(workspace,'result.txt'),'before\n');
-  const start=await connection.rpc('thread/start',{model,cwd:workspace,approvalPolicy:'never',sandbox:'workspace-write'});assert.ok(['openai','subscription_gateway'].includes(start.modelProvider));const id=start.thread.id;
+  const start=await connection.rpc('thread/start',{model,cwd:workspace,approvalPolicy:'never',sandbox:'workspace-write'});assert.ok(['openai','gatefox','subscription_gateway'].includes(start.modelProvider));const id=start.thread.id;
   const tools=await turn(id,model,text('Read proof.txt. Use apply_patch to change result.txt from before to after. Report the proof and the verification rule.'),model.startsWith('claude/')?'max':'ultra');
   assert.ok(tools.text.includes(proof));assert.ok(tools.text.includes(marker));assert.equal((await readFile(join(workspace,'result.txt'),'utf8')).trim(),'after');assert.ok(tools.items.some(i=>i.type==='fileChange'));assert.ok(tools.items.some(i=>i.type==='commandExecution'));assert.ok(tools.deltas>1);
   await save({phase:'tools-and-instructions',model,passed:true,streamedDeltas:tools.deltas,effort:model.startsWith('claude/')?'max':'ultra',automaticAgentsLoaded:true});

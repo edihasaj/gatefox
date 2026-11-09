@@ -1,6 +1,6 @@
 // End-to-end check of the chat identity (docs/harness-identity.md) with the real pinned gateway SDK and a mock upstream.
-// By default a new gateway chat is recorded as `subscription_gateway`, is listed through the router, and keeps that id when
-// resumed. With the `openai` opt-in a new gateway chat is recorded as `openai` in its rollout and SQLite row, is in the registry
+// By default a new gateway chat is recorded as `gatefox` (1.8.0; `subscription_gateway` before), is listed through the router,
+// and keeps that id when resumed. With the `openai` opt-in a new gateway chat is recorded as `openai` in its rollout and SQLite row, is in the registry
 // when its start returns, routes to the gateway on resume from a new connection (and again after its registry entry is lost),
 // compacts locally on the selected model, makes no request to the ChatGPT backend with the gateway token, and is listed by a
 // default-provider thread/list. No paid inference: the only upstream is the mock below.
@@ -61,7 +61,9 @@ const upstream = createServer(async (req, res) => {
       res.end('data: ' + JSON.stringify({ type: 'response.completed', response: { status: 'completed', usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30 } } }) + '\n\n'); return;
     }
     const printed = typeof output.output === 'string' ? output.output : JSON.stringify(output.output);
-    shellMarker = /HARNESS_GATEWAY_EXECUTOR=(\S*)/.exec(printed)?.[1] ?? null; row.shellOutput = true;
+    // Both spellings must be 0 in a child shell: GATEFOX_EXECUTOR and the older HARNESS_GATEWAY_EXECUTOR.
+    const markers = ['GATEFOX_EXECUTOR', 'HARNESS_GATEWAY_EXECUTOR'].map(name => new RegExp(name + '=(\\S*)').exec(printed)?.[1] ?? null);
+    shellMarker = markers.every(value => value === markers[0]) ? markers[0] : markers.join(','); row.shellOutput = true;
   }
   const answer = mode === 'seed-high' || row.containsProof || row.compaction ? proof : 'NO_PRIOR_PROOF';
   const usage = mode === 'seed-high' ? 40000 : 20;
@@ -135,10 +137,10 @@ try {
   await writeFile(join(home, 'config.toml'), nativeConfig, { mode: 0o600 });
 
   phase = 'legacy-chat'; first = await adapter();
-  const legacy = await start(first, 'fixture/large'); assert.equal(legacy.modelProvider, 'subscription_gateway');
+  const legacy = await start(first, 'fixture/large'); assert.equal(legacy.modelProvider, 'gatefox');
   assert.ok((await turn(first, legacy.thread.id, 'fixture/large', 'Start the legacy fixture chat.')).text.includes('OK'));
   await first.close(); first = undefined;
-  await save({ phase, passed: true, chatIdentity: 'default', recordedProvider: 'subscription_gateway' });
+  await save({ phase, passed: true, chatIdentity: 'default', recordedProvider: 'gatefox' });
 
   await writeConfig({ chatIdentity: 'openai' });
   phase = 'new-chat'; first = await adapter(); mode = 'seed-high';
@@ -150,11 +152,11 @@ try {
   assert.equal(await rolloutProvider(read.thread.path), 'openai'); assert.equal(await savedProvider(id), 'openai');
   const executor = processes().find(row => row.command.includes('model_provider="openai"'));
   assert.ok(executor, 'A gateway executor runs with the native identity');
-  for (const setting of ['analytics.enabled=false', 'model_providers.subscription_gateway.supports_websockets=false', 'model_providers.subscription_gateway.request_max_retries=2',
-    'model_providers.subscription_gateway.stream_idle_timeout_ms=90000', `openai_base_url="http://127.0.0.1:${port}/v1"`]) assert.ok(executor.command.includes(setting), setting);
-  assert.match(environmentOf(executor.pid), /HARNESS_GATEWAY_EXECUTOR=1/);
+  for (const setting of ['analytics.enabled=false', `openai_base_url="http://127.0.0.1:${port}/v1"`, ...['gatefox', 'subscription_gateway'].flatMap(id => [
+    `model_providers.${id}.supports_websockets=false`, `model_providers.${id}.request_max_retries=2`, `model_providers.${id}.stream_idle_timeout_ms=90000`])]) assert.ok(executor.command.includes(setting), setting);
+  assert.match(environmentOf(executor.pid), /GATEFOX_EXECUTOR=1/); assert.match(environmentOf(executor.pid), /HARNESS_GATEWAY_EXECUTOR=1/);
   const native = processes().filter(row => !row.command.includes('model_provider='));
-  assert.ok(native.length >= 1 && native.every(row => !/HARNESS_GATEWAY_EXECUTOR/.test(environmentOf(row.pid))), 'Native engines are never marked');
+  assert.ok(native.length >= 1 && native.every(row => !/(GATEFOX|HARNESS_GATEWAY)_EXECUTOR/.test(environmentOf(row.pid))), 'Native engines are never marked');
   await save({ phase, passed: true, threadProvider: 'openai', rolloutProvider: 'openai', sqliteProvider: 'openai', registryOrigin: 'start',
     executorAnalyticsOff: true, executorMarked: true, nativeUnmarked: true, websocketOff: true, idleTimeoutMs: 90000, requestRetries: 2 });
 
@@ -205,11 +207,11 @@ try {
 
   phase = 'legacy-resume'; const legacyAt = requests.length;
   const legacyResumed = await second.rpc('thread/resume', { threadId: legacy.thread.id, model: 'fixture/large', cwd: work, approvalPolicy: 'never', sandbox: 'read-only' });
-  assert.equal(legacyResumed.modelProvider, 'subscription_gateway');
+  assert.equal(legacyResumed.modelProvider, 'gatefox');
   await turn(second, legacy.thread.id, 'fixture/large', 'Continue the legacy chat.'); assert.ok(requests.slice(legacyAt).every(row => row.model === 'mock-large'));
   const legacyRead = await second.rpc('thread/read', { threadId: legacy.thread.id, includeTurns: false });
-  assert.equal(await savedProvider(legacy.thread.id), 'subscription_gateway'); assert.equal(await rolloutProvider(legacyRead.thread.path), 'subscription_gateway');
-  await save({ phase, passed: true, sqliteProvider: 'subscription_gateway', rolloutProvider: 'subscription_gateway' });
+  assert.equal(await savedProvider(legacy.thread.id), 'gatefox'); assert.equal(await rolloutProvider(legacyRead.thread.path), 'gatefox');
+  await save({ phase, passed: true, sqliteProvider: 'gatefox', rolloutProvider: 'gatefox' });
 
   phase = 'list-through-router';
   const listed = (await second.rpc('thread/list', { limit: 100 })).data.map(thread => thread.id);

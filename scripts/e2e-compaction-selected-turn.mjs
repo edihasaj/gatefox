@@ -110,7 +110,7 @@ export async function selectedTurnScenarios(c) {
 
   await open(transport); phase('native-passthrough');
   assert.equal((await rpc('config/read', { includeLayers: false })).config.model, 'native-fixture');
-  const native = await start('native-fixture'); assert.notEqual(native.modelProvider, 'subscription_gateway');
+  const native = await start('native-fixture'); assert.ok(!['gatefox', 'subscription_gateway'].includes(native.modelProvider));
   assert.equal(requests.filter(r => r.phase === `${label}-native-passthrough`).length, 0);
   await save({ phase: `${label}-native-passthrough`, passed: true, nativeProviderPreserved: true, nativeInferenceRequests: 0 });
 
