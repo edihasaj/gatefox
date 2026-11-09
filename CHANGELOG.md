@@ -1,17 +1,17 @@
 # Changelog
 
-## 1.8.1 — 2026-11-09
+## Unreleased
 
 - `gatefox chats migrate --apply` no longer refuses because of an unrelated inference-only
   `gateway serve`; only ChatGPT, Codex app-servers, the shims and native relay that start
   them, and the service daemon block it.
 
-## Unreleased
-
 - A cancelled Claude turn whose interrupt times out no longer blocks the chat for
   an hour. Gateway deliberately closes that CLI and permits a new session on the
   next caller request, subject to the cache guard. Genuine crashes still keep
   their replay holds, and the cancelled request is never replayed automatically.
+
+## 1.8.1 — 2026-11-09
 
 - The package is `@edihasaj/gatefox`. The installer and app builder still accept a backend
   packaged as `@edihasaj/harness-gateway` or `@edihasaj/subscription-gateway`. The Claude
