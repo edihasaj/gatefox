@@ -417,7 +417,14 @@ final class GatewayModel: ObservableObject {
         let managedPath: String?
         if case let .managed(path) = managed { managedPath = path } else { managedPath = nil }
         if let chosen = defaults.string(forKey: chosenConfigKey), !chosen.isEmpty { return (chosen, managedPath) }
-        return (managedPath ?? homeDirectory.appending(path: "Library/Application Support/Subscription Gateway/gateway.json").path, managedPath)
+        return (managedPath ?? defaultConfigPath(homeDirectory: homeDirectory, exists: { FileManager.default.fileExists(atPath: $0) }), managedPath)
+    }
+
+    /// GateFox's configuration for a fresh installation; a Mac set up before 1.8.0 keeps its Subscription Gateway one until it migrates.
+    static func defaultConfigPath(homeDirectory: URL, exists: (String) -> Bool) -> String {
+        let gatefox = homeDirectory.appending(path: "Library/Application Support/GateFox/gateway.json").path
+        let legacy = homeDirectory.appending(path: "Library/Application Support/Subscription Gateway/gateway.json").path
+        return exists(legacy) && !exists(gatefox) ? legacy : gatefox
     }
 
     private enum ManagedConfiguration { case missing, managed(String), unsafe }

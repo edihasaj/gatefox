@@ -79,6 +79,7 @@ markers and the old `Symbol.for` keys, and remove the Compatibility names sectio
 | Clients wait for the host to claim the native home after a restart (the Studio `native_owner_pending` race) | Done |
 | Docs for the two ids (`harness-identity.md`, `app-server.md`, `RELEASING.md`, troubleshooting) | Done |
 | End-to-end scripts: new chats expect `gatefox`, both markers stripped and checked; direct-SDK fixtures keep `subscription_gateway` as the old-chat coverage | Done (they run with the release package) |
+| Configuration default: fresh installs use `GateFox/gateway.json` (`~/.config/gatefox` on Linux); a Mac with only the `Subscription Gateway` one keeps it until `gatefox migrate` (CLI, app, Claude Desktop adapter, probe script) | Done |
 | Install root and state folder move, LaunchAgent labels, ownership markers | To do |
 | `gatefox` command, `GateFox.app` and the updater move | To do |
 | `gatefox chats migrate` | To do |

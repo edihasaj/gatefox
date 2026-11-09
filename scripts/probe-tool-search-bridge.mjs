@@ -17,7 +17,7 @@ const { values: options } = parseArgs({ options: { config: { type: 'string' }, a
   output: { type: 'string' }, 'dry-run': { type: 'boolean', default: false } } });
 const dry = options['dry-run'];
 const dist = name => new URL(`../dist/${name}`, import.meta.url);
-const [{ ResponsesAPI }, { accessToken }] = await Promise.all([import(dist('providers/responses-api.js')), import(dist('auth/chatgpt.js'))]);
+const [{ ResponsesAPI }, { accessToken }, { userConfigPath }] = await Promise.all([import(dist('providers/responses-api.js')), import(dist('auth/chatgpt.js')), import(dist('paths.js'))]);
 
 // The exact tool shape native Codex sends (codex-rs/core/src/tools/handlers/tool_search_spec.rs at the pinned revision).
 const searchTool = { type: 'tool_search', execution: 'client',
@@ -53,7 +53,7 @@ try {
       return new Response(sse([item]), { headers: { 'Content-Type': 'text/event-stream' } });
     };
   } else {
-    const configPath = resolve(options.config || join(homedir(), 'Library/Application Support/Subscription Gateway/gateway.json'));
+    const configPath = resolve(options.config || userConfigPath(homedir(), 'darwin'));
     const config = JSON.parse(await readFile(configPath, 'utf8'));
     const source = (config.providers || []).find(entry => entry.type === 'codex-subscription' && entry.models && Object.hasOwn(entry.models, options.alias));
     if (!source?.credentialFile) throw Error(`No codex-subscription provider serves ${options.alias}`);
