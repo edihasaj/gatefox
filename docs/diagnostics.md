@@ -31,6 +31,13 @@ final refusal behavior as other invalid tool output. No tool is dispatched by
 this classification. Names, namespaces, arguments and response content remain
 private, and no automatic inference retry is added.
 
+When a model answers with a declared tool's alias or a differently cased wire name
+instead of the exact wire name, the call is restored and the gateway keeps an
+in-process count under one of the fixed labels `alias`, `namespaced_alias`,
+`functions_prefix` or `wire_case` (`toolIdentityFallbackCounts()` in
+`src/providers/tool-identity.ts`). The counts hold no tool names, namespaces or
+arguments, and reset when the service restarts.
+
 ## Chat Completions malformed tool calls
 
 `malformed_tool_call` records a sampled Chat Completions model returning a tool call

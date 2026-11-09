@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Worker turns on OpenRouter DeepSeek (and Grok) no longer fail with "the returned tool
+  name does not match a declared transport tool" when the model answers with the readable
+  tool name it was shown, such as `exec_command`, `functions.exec_command` or
+  `files.patch`, instead of the opaque wire name. The name is accepted only when it
+  selects exactly one declared tool; ambiguous or undeclared names are still refused
+  and no tool outside the request's catalog can run.
+
 - A Claude chat whose login fails before any reply, tool result or queued message no
   longer stays blocked behind a crash hold. The next request tries the saved login again.
   A failure after the turn produced output keeps the hold, because the turn may have

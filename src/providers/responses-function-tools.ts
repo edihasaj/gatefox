@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { declaredResponsesTools, normalizeResponsesToolChoice, normalizeResponsesTools } from "../protocol/request.js";
 import type { ResponseToolIdentity, ResponsesRequest, ResponsesTool } from "../protocol/types.js";
 import { ProviderError } from "./provider.js";
-import { toolIdentityFailure } from "./tool-identity.js";
+import { recordToolIdentityFallback, toolIdentityFailure, type ToolIdentityFallback } from "./tool-identity.js";
 
 type Item = Record<string, unknown>;
 type StrictFlag = { present: boolean; value?: unknown };
@@ -18,6 +18,25 @@ const record = (value: unknown): Item | undefined => value !== null && typeof va
 const identityKey = (identity: ResponseToolIdentity): string => JSON.stringify([identity.type, identity.namespace || "", identity.name]);
 const invalidRequest = () => new ProviderError("invalid_request", "Responses request contains an invalid caller tool", 400);
 
+const functionsPrefix = "functions.";
+
+/**
+ * Some models return the caller-visible alias (`exec_command`, `functions.exec_command`, `namespace.name`) or a differently
+ * cased wire name instead of the opaque wire name. Accept such a name only when it selects exactly one declared tool, so an
+ * undeclared or ambiguous name still fails. There is deliberately no fuzzy or edit-distance matching.
+ */
+function fallbackBinding(name: string, bindings: Map<string, Binding>): { binding: Binding; kind: ToolIdentityFallback } | undefined {
+  const unique = (matches: Binding[]): Binding | undefined => matches.length === 1 ? matches[0] : undefined;
+  const all = [...bindings.values()];
+  // `functions.<alias>` and a literal alias that starts with `functions.` can both match one name; that is ambiguous.
+  const aliasMatches = all.filter(binding => binding.alias === name || (name.startsWith(functionsPrefix) && binding.alias === name.slice(functionsPrefix.length)));
+  const alias = unique(aliasMatches);
+  if (alias) return { binding: alias, kind: alias.alias !== name ? "functions_prefix" : alias.identity.namespace ? "namespaced_alias" : "alias" };
+  if (aliasMatches.length) return;
+  const lower = name.toLowerCase();
+  const cased = unique(all.filter(binding => binding.wireName.toLowerCase() === lower));
+  return cased ? { binding: cased, kind: "wire_case" } : undefined;
+}
 
 /** A custom tool has exactly one caller-visible string; extra fields would be discarded. */
 export function validCustomFunctionEnvelope(identity: ResponseToolIdentity, arguments_: string): boolean {
@@ -127,13 +146,21 @@ export function responsesFunctionTools(body: ResponsesRequest, prefix: "grok" | 
     return transformed === undefined ? [] : [transformed];
   }) as ResponsesRequest["input"] : body.input;
   const bridged: ResponsesRequest = { ...body, tools: wireTools, ...(input !== body.input ? { input } : {}), ...(toolChoice !== body.tool_choice ? { tool_choice: toolChoice } : {}) };
+  // A call is restored when it is added and again when it is done; count each call once.
+  const counted = new Set<string>();
   return {
     body: bridged,
     restoreItem(item): Item {
       if (item.type !== "function_call") return item;
       if (typeof item.name !== "string" || !item.name) throw toolIdentityFailure("missing_tool_name");
       if (item.namespace !== undefined) throw toolIdentityFailure("unexpected_tool_namespace");
-      const binding = bindings.get(item.name); if (!binding) throw toolIdentityFailure("unknown_wire_tool");
+      let binding = bindings.get(item.name);
+      if (!binding) {
+        const matched = fallbackBinding(item.name, bindings); if (!matched) throw toolIdentityFailure("unknown_wire_tool");
+        binding = matched.binding;
+        const key = typeof item.call_id === "string" ? item.call_id : typeof item.id === "string" ? item.id : undefined;
+        if (key === undefined || !counted.has(key)) { if (key !== undefined) counted.add(key); recordToolIdentityFallback(matched.kind); }
+      }
       return { ...item, name: binding.identity.name, ...(binding.identity.namespace ? { namespace: binding.identity.namespace } : {}) };
     },
   };
