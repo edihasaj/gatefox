@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.8.6 — 2026-11-09
 
 - Fixed a rolling-update regression introduced in 1.8.5: changing the gateway auth
   command spelling and deadline made retained native writers reject new desktop and
