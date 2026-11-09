@@ -72,19 +72,3 @@ const observer = new IntersectionObserver(entries => {
   });
 }, { rootMargin: '-10% 0px -55% 0px' });
 tracked.forEach(section => observer.observe(section));
-
-// Point the download button at the newest release's exact, versioned app ZIP.
-// Without network access it keeps linking to the Releases page.
-const download = document.querySelector('[data-download]');
-if (download) {
-  fetch('https://api.github.com/repos/edihasaj/gatefox/releases/latest', { headers: { Accept: 'application/vnd.github+json' } })
-    .then(response => response.ok ? response.json() : Promise.reject(new Error(String(response.status))))
-    .then(release => {
-      const app = (release.assets || []).find(asset => /^(GateFox|Harness-Gateway)-\d+\.\d+\.\d+-macos-arm64\.zip$/.test(asset.name));
-      if (!app || !/^https:\/\/github\.com\//.test(app.browser_download_url)) return;
-      download.href = app.browser_download_url;
-      const version = download.querySelector('[data-download-version]');
-      if (version) version.textContent = `${String(release.tag_name).replace(/^v/, '')} · Apple silicon`;
-    })
-    .catch(() => {});
-}

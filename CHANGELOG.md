@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Chat-registry caches invalidate when file permissions or ownership change,
+  even when the filesystem reports the same modification and change timestamps.
+
+- `gatefox chats migrate --apply` is blocked only by processes on the same Codex home: an
+  engine with another `CODEX_HOME` (such as Mission Runtime's `~/.codex-primary`), a test
+  run, or an inference-only `gateway serve` no longer stops it. A process without
+  `CODEX_HOME` counts as `~/.codex`.
+
 ## 1.8.3 — 2026-11-09
 
 - The app shows GateFox once in the sidebar, with Harness Gateway beneath it.

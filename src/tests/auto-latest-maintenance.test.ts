@@ -211,6 +211,7 @@ test("a pass that never returns stops the maintenance claim even though the hear
     assert.equal(f.state.signals[0]?.aborted, true, "the pass bound aborts the pass's own signal");
     await f.world.advance(200_000);
     assert.equal(f.state.calls, 1, "nothing is started on top of the stuck pass");
+    await until(async () => f.world.t - ((await f.beatFile()).updatedAt as number) <= 30_000, "the latest heartbeat write");
     const beat = await f.beatFile();
     assert.ok(f.world.t - (beat.updatedAt as number) <= 30_000, "the heartbeat itself is still fresh");
     assert.deepEqual(await f.status(), { scheduled: false, reason: "service_stale" });

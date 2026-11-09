@@ -176,7 +176,54 @@ nav a.page-link{margin-top:0;padding-top:4px;border-top:0}
 .prose blockquote{font-family:inherit;font-size:16px;line-height:1.7}
 .prose img{max-width:100%;height:auto;border:1px solid var(--line);border-radius:6px}
 .prose hr{border:0;border-top:1px solid var(--line);margin:40px 0}
+.doc-meta{font-size:12px;color:var(--muted);margin:12px 0 0}
+.page-toc{display:none}
+@media(max-width:850px){.page-toc{display:block}.page-toc nav{display:block;max-height:240px;overflow:auto}.page-toc nav a{white-space:normal}}
 nav a.page-link.first{margin-top:0;padding-top:0;border-top:0;margin-bottom:10px}
 
 /* Code blocks inside lists keep the dark terminal look (the inline-code rule must not reach them). */
 pre code,li pre code,td pre code{padding:0;background:transparent;border-radius:0}
+
+/* Latest release: hero panel, download strip, changelog entries.
+   Built from the same paper/moss/vermilion tokens as the rest of the guide. */
+.release-summary{position:relative;max-width:520px;margin:26px 0 4px;padding:14px 18px 13px;border:1px solid var(--line);border-left:3px solid var(--orange);border-radius:8px;background:#f1f0e6}
+.release-meta{display:flex;align-items:baseline;flex-wrap:wrap;gap:10px}
+.release-channel{font-family:"SFMono-Regular",Consolas,monospace;font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--moss)}
+.release-version{font-family:Baskerville,"Palatino Linotype",Palatino,serif;font-size:26px;line-height:1.1;letter-spacing:-.02em;color:var(--ink);text-decoration:none}
+.release-version:hover{color:var(--orange);text-decoration:underline}
+.release-summary time,.release-strip time{font-family:"SFMono-Regular",Consolas,monospace;font-size:11px;color:var(--muted)}
+.release-preview{margin:8px 0 0;font-size:14px;line-height:1.6;color:var(--ink)}
+.release-preview p{margin:6px 0;max-width:480px;font-size:14px}
+.release-preview p:first-child{margin-top:0}
+.release-preview ul,.release-preview ol{margin:6px 0;padding-left:18px;max-width:480px}
+.release-preview li{margin:4px 0;padding-left:2px;font-size:14px}
+.release-preview code{padding:1px 4px;background:#e6e9dd;border-radius:3px}
+.release-links{display:flex;flex-wrap:wrap;gap:18px;margin-top:10px;padding-top:9px;border-top:1px solid var(--line)}
+.release-links a{font-size:13px;font-weight:600;text-decoration:none}
+.release-links a:hover{text-decoration:underline}
+.release-links a[data-release-link]{color:var(--muted);font-weight:400}
+
+.release-strip{display:flex;align-items:baseline;flex-wrap:wrap;gap:12px;margin:10px 0 0;font-size:13px}
+.release-strip-version{font-family:Baskerville,"Palatino Linotype",Palatino,serif;font-size:19px;line-height:1.2;color:var(--ink);text-decoration:none}
+.release-strip-version:hover{color:var(--orange);text-decoration:underline}
+.release-strip-link{font-weight:600;text-decoration:none}
+.release-strip-link:hover{text-decoration:underline}
+
+/* Changelog (changelog.html, rendered by the docs builder from CHANGELOG.md). */
+.release-latest{display:inline-block;margin-left:8px;padding:2px 8px;border-radius:20px;background:var(--orange);color:#fff;font-family:"SFMono-Regular",Consolas,monospace;font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;vertical-align:middle}
+.release-entry{padding:26px 0 22px;border-bottom:1px solid var(--line);scroll-margin-top:40px}
+.release-entry:first-of-type{padding-top:8px}
+.release-entry-header{display:flex;align-items:baseline;flex-wrap:wrap;gap:12px;margin-bottom:10px}
+.release-entry-header h2{margin:0;font-size:30px}
+.release-entry-header time,.release-entry-header .release-tag{font-family:"SFMono-Regular",Consolas,monospace;font-size:11px;color:var(--muted)}
+.release-entry-header .release-tag{padding:1px 7px;border:1px solid var(--line);border-radius:20px;background:#f1f0e6}
+.release-notes{max-width:740px}
+.release-notes ul{padding-left:20px;margin:10px 0}
+.release-notes li{margin:7px 0;padding-left:2px;font-size:15px}
+.release-notes h3{margin:22px 0 4px}
+.release-notes code{padding:1px 4px;background:#e6e9dd;border-radius:3px}
+.release-notes p{font-size:15px}
+@media(max-width:850px){.release-summary{margin-right:0}
+.release-version{font-size:22px}
+.release-entry-header h2{font-size:26px}
+}

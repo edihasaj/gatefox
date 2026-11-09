@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -52,7 +52,13 @@ async function fixture() {
     maintenance: async () => { calls.push("maintenance"); }, sdk: async () => ({ codex, sdkSha256: "a".repeat(64) }),
     validateSdk: async () => { calls.push("verified-sdk"); assert.equal(JSON.parse(await readFile(servicePlanPath(state), "utf8")).sharedNativeExecutor, undefined); },
     ready: async current => { assert.equal(current.sharedNativeExecutor, true); assert.equal(current.sharedExecutors, false); return true; },
-    restart: async () => { calls.push("restart"); pid = 102; await writePrivateJson(join(relayHome, "status.json"), { status: "connected", environmentId: "existing-fixture-machine" }); },
+    restart: async () => {
+      calls.push("restart"); pid = 102;
+      const path = join(relayHome, "status.json");
+      await writePrivateJson(path, { status: "connected", environmentId: "existing-fixture-machine" });
+      // This synthetic restart controls its fresh receipt time rather than depending on filesystem clock resolution.
+      const fresh = new Date(Date.now() + 1000); await utimes(path, fresh, fresh);
+    },
     health: async () => true, rollbackTiming: { readyMs: 20, pollMs: 1, restartAttempts: 2, retryMs: 1 },
     archive: async () => { calls.push("archive"); }, install: async () => { calls.push("install"); },
   };

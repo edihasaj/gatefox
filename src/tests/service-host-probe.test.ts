@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { chmod, mkdir, readFile, readlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, readFile, readlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocketServer } from "ws";
@@ -57,6 +57,8 @@ test("a probe passes a healthy host and names each failure with a fixed reason",
     assert.equal(await probeExecutionHost({ home: healthy.home, pid: process.pid, codex: healthy.codex }, {}), "sdk_changed", "a missing engine has changed");
     assert.equal(await probeExecutionHost({ home: healthy.home, pid: process.pid + 1 }), "receipt_mismatch", "the receipt names another process");
     // The socket is replaced by another one at the same path: the receipt no longer describes it.
+    // Keep the old identity allocated while creating a deliberately different replacement socket.
+    await link(healthy.socketPath, join(healthy.home, "retained-old-host-socket"));
     await healthy.close(); await unlink(healthy.socketPath).catch(() => {}); // A closed listener removes its own path.
     const other = createServer(); other.listen(healthy.socketPath); await once(other, "listening"); await chmod(healthy.socketPath, 0o600);
     try { assert.equal(await probeExecutionHost({ home: healthy.home, pid: process.pid }), "socket_mismatch"); }

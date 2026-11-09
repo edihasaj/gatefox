@@ -1,5 +1,5 @@
 ---
-summary: 'Daily signed macOS app updates from the private GitHub release.'
+summary: 'Daily signed macOS app updates from standard GateFox GitHub releases.'
 read_when:
   - Changing the macOS app updater or app release assets
   - Investigating an unavailable, deferred, or rolled-back app update
@@ -54,7 +54,7 @@ instead. If the relaunch fails, the app moves back and keeps running. The servic
 keeps running throughout; the new `Program` applies at its next start.
 
 ```text
-private GitHub draft → signed ZIP + signed policy → daily check
+GitHub draft → signed ZIP + signed policy → daily check
                                                ↓
                                     checksum and receipt validation
                                                ↓

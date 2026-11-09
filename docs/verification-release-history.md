@@ -1,0 +1,275 @@
+---
+summary: "Version-specific release verification records and the limits of that evidence."
+read_when:
+  - Reading historical historical release evidence or choosing a matching verification script
+---
+
+# Historical release evidence
+
+These are version-specific evidence records and procedures, not a claim that every later build was tested. For current installed readiness, run `gateway rollout --verify --json`. Return to the [verification overview](verification.md).
+
+## Current release evidence
+
+The v0.2.23 gateway removes generated agent roles, worker defaults, role CLI
+commands, task prompt text, and the injected title tool. All 528 source tests
+pass. Client agent settings and user-authored role files survive unchanged even
+when an obsolete gateway policy exists. Native naming and caller tools remain
+ordinary client operations. The real signed SDK passes eight Responses cases
+with 13 mock requests and no paid inference. A caller base-instruction marker
+reaches the upstream in the same developer message bytes on every request.
+The SDK requires a string instruction-template field in custom model metadata;
+the gateway supplies an empty string. Missing or null templates are rejected
+before inference. Existing executors retain loaded settings until normal
+retirement; their role files must remain available until they finish.
+
+The v0.2.22 installed fixture passes eight cases using the original signed SDK
+and 13 mock upstream requests. Genuine interrupted responses preserve incomplete
+message status and continue under the original acknowledged user-turn ID.
+A completed caller tool executes once, and its result reaches the continuation
+once. Unfinished tools never dispatch. Minimal completed responses with an ID
+and no status are accepted. Clean pre-output EOF retries once; text or completed
+tool output prevents replay and retains a failed terminal. The SDK can execute
+an already completed caller tool before a later stream failure; the fixture
+records that execution rather than claiming that failure undoes it.
+Isolated configuration remains unchanged, authentication is not copied, and all
+owned SDK processes and RPC timers stop. All 528 source tests pass. There are no paid inference calls.
+These checks establish translation and safe recovery, not the upstream cause
+of the reported live EOF or successful activation in an older running daemon.
+
+The v0.2.21 work reproduces the separate-process ownership gap with
+the original signed SDK: a second process reads an active native chat as
+interrupted and cannot Stop its real owner. A shared native owner passes 18 mock
+checks through stdio and Unix. Both clients read the actual running turn; Stop,
+owner-client disconnect, reconnect steering, history, warm approval replay, and
+follow-up complete through that same owner. Gateway sharing remains independently
+selectable. Its installed combined-owner fixture passes 20 checks, including
+another client reading and stopping the actual active gateway turn. All 508
+source tests pass. No paid requests, copied authentication, or native configuration
+edits occur in those isolated fixtures.
+
+Gateway administration also passes real signed SDK checks. Metadata probes use
+transient non-originating clients, leave frontend identity intact, never answer
+its approval, and permit SDK idle unload after unsubscribe. These tests establish
+backend ownership; they do not establish the reported viewer state or rendered
+cloud behavior.
+
+The separate gateway-only SDK passes four real upstream compaction regressions
+and 44 installed stdio, Unix, and shared checks. Selected-model compaction,
+model switches, provider failure/retry, Stop, active steering, goal budgets,
+follow-up, and saved-history resume retain the original user turn's ACK ID.
+Actual extracted desktop handlers retain association in both ACK arrival orders.
+The installed SDK also passes all 41 Fast checks with Standard defaults. Installer
+verification includes repeated installation under a prefix containing spaces and
+quotes. These use mock upstreams and do not establish rendered desktop or cloud
+transport behavior. Older running apps and services require guarded activation.
+
+The v0.2.20 silent-stop work passes 446 Node tests. Eight native-exit regressions
+verify that real buffered completions drain before exit classification, genuine
+unfinished executor exits emit errors before shutdown, and intentional close
+remains bounded. The signed SDK continuation fixture verifies actual `end_turn`
+values, assistant phases, nested final output, and exactly-once tool dispatch.
+It uses a mock upstream, unchanged isolated native configuration, and no copied
+authentication or paid inference.
+
+The immutable v0.2.20 preflight installer passed repeated installation and all
+four continuation scenarios with the signed SDK. Its existing Fast fixture also
+passes all 41 checks. Native relay tests pass 15 cases in the release profile,
+including continuous-output fairness, reconnect ownership, bounded teardown,
+stderr privacy, and failed diagnostic writes. Installation and tests do not
+activate the new code in older running components.
+
+The supplied native MacBook 2 example continued producing reasoning events
+without renderable summaries during a five-minute quiet period. Its original
+turn later interrupted, another completed, and a new turn started. The reported
+idle-looking viewer has not been captured on that exact chat, so its cause is
+unverified. Native execution bypasses the gateway's Responses translator; the
+continuation fix is not attributed to that native incident.
+
+An isolated replay of the installed desktop's actual observer handlers also
+shows that an inserted manual compaction turn can bind a pending user bubble to
+the compaction ID instead of the later user-turn ID. Backend compaction success
+therefore does not establish desktop association or full UI parity. The verified
+v0.2.21 gateway-only SDK avoids that preceding manual turn; older packages retain
+the legacy limitation. Rendered desktop checks remain separate from the fixtures.
+
+The v0.2.19 legacy compaction work reproduces the pinned SDK's previous-model downshift
+failure, then verifies recovery with the selected gateway model. Its source gate
+passes 425 tests. The immutable installer passed repeated installation, including
+a prefix containing spaces and quotes, and 38 signed SDK compaction checks across
+stdio and Unix/WebSocket. The checks cover short and long switches, reasoning
+effort, real completion ordering, two interruptions, selected-provider failure,
+persisted failed-state recovery after reconnect, proof replay, and safe shared
+ownership refusals. They use 67 mock requests and zero paid inference; fixture
+process groups and provider timers finish at zero.
+
+The same installer passed all 41 existing signed SDK Fast checks with 36 mock
+requests. These fixtures preserve native configuration and copy no authentication.
+They do not establish rendered controls, live subscription compaction, or the
+built-in cloud transport. Recovery requires an idle per-connection executor with
+no active goal. Shared execution requires explicit compaction because the SDK
+has no atomic idle admission operation. Installation preserves running apps and
+older loaded adapters; existing connections need activation before using the fix.
+
+The v0.2.18 speed work retains the secondary account's declared Fast capabilities
+for seven of its eight models; Daybreak offers none. All eight aliases retain
+their routes and Standard defaults. The four selected Copilot models expose no
+selected-model speed tier. Direct Copilot Fast requests fail before CLI startup.
+
+The real secondary registration completed priority inference through the public
+Responses resource, but the provider reported `service_tier: "default"`. A raw
+`fast` request was rejected, so the Codex adapter normalizes that alias to
+`priority`. The normalized adapter request also completed as Standard. These
+results prove authentication, forwarding, and truthful completion metadata;
+they do not prove accelerated inference for this subscription route.
+
+The signed SDK fixture verifies local stdio and Unix WebSocket speed controls
+against a mock upstream. It covers saved defaults, explicit Standard, temporary
+turn tiers, forks, loaded versus cold resume, and another client choosing Standard.
+The native Fast flag remains false while private gateway executors can request
+priority. No subscription inference, primary configuration, authentication copy,
+rendered desktop control, or built-in cloud transport is involved in that fixture.
+The source gate passes 355 tests, including delayed notifications, timestamp
+ties, stale snapshots, revision ABA, and request-start ordering fences.
+The final immutable v0.2.18 installer passed repeated installation and all 41
+signed SDK checks across both transports, with 36 mock upstream requests and
+zero paid inference. All fixture processes were stopped afterward.
+
+Release installation preserves open apps and services. The running primary
+inference host and older connected-machine adapters need coordinated activation
+before these new speed fields reach their existing desktop connections.
+
+The October 12 retired-feature audit found none of the three obsolete settings
+in the primary Mac, MacBook Pro 2, or Studio native configuration, including
+profiles. MacBook Pro 2's five gateway engine snapshots and Studio's one snapshot
+were also clean. No configuration edits were required. Historical warning records
+remain historical; Guardian feedback telemetry is not deprecated configuration.
+
+v0.2.17 closes two remaining argument paths: metadata SDK preflight and shared
+execution requests from older adapters. Its gate passed 264 tests. A signed SDK
+metadata proof supplied all three retired CLI flags with native `hooks=false`
+and `hooks=true`. Neither SDK spawn received a retired key, neither emitted a
+matching warning, and both returned their original hooks value. The proof used
+only initialization, configuration reads, and model listing; no inference or
+copied authentication. Native and isolated configuration bytes were unchanged.
+
+The v0.2.16 installed preflight passed 260 tests and a real launchd cleanup
+fixture. Staging one future startup entry preserved the old PIDs. Manual
+promotion and promotion with an old relay still loaded were refused. The actual
+primary launchd process then promoted the plan after the fixture jobs unloaded.
+Responsibilities and native configuration, installation, enrollment metadata,
+and signed app identity were unchanged. All fixture jobs were removed afterward;
+no provider inference or native authentication was used.
+
+The October 12 login audit found five gateway-owned startup files on the primary
+Mac (desktop setup, inference, and three required tunnels), two on Studio
+(desktop setup and native relay), and one unified job on MacBook Pro 2. The two
+primary-Mac Login Items named `gateway` corresponded to desktop setup and
+inference. Next-login consolidation preserves both duties in one registration.
+macOS's cached background-item history is distinct from scheduled startup files.
+
+The audited catalog contains 36 models: 11 native models and 25 added routes.
+The added routes comprise 12 Claude models, eight Codex 2 models, four Copilot
+models, and one local Qwen model. Qwen advertises text input only. Discovery and
+catalog presence do not establish inference access for every model.
+The four Copilot routes are GPT-6.1-Sol, GPT-5.6-Terra, Sonnet 5, and Opus 5.5.
+
+The October 12 audit found MacBook Pro 2's running desktop adapter and native
+relay on v0.2.8 under one supervised gateway service, with the v0.2.14 command
+installed. Shared executors had not been activated. The running relay retained
+the machine's original environment and installation IDs. The primary Mac's
+inference process was upgraded to v0.2.14 during the stream-failure investigation.
+
+The real Claude CLI then reported a rejected `five_hour` window with reset
+`2026-10-12T17:10:00Z`, followed by `assistant.error: rate_limit` and an erroneous
+result with `subtype: success`. This established a subscription limit for that
+failure, rather than a tool or transport failure. v0.2.15 preserves those native
+discriminants and reports the window and provider reset time. Its installed
+preflight passed 244 tests and a signed SDK fixture: precise quota failure,
+reset timestamp in the SDK error, and successful continuation in the same chat
+after simulated provider recovery. No real provider requests or copied native
+authentication were used in that fixture. Tests also cover persisted observations,
+authenticated remote reads, expired data, and preservation of the primary usage
+response. Rendering the added Claude usage row remains a separate desktop check.
+
+Studio's v0.2.11 relay is connected using its original environment and installation
+IDs. Its fresh app-server catalog includes Claude, Codex 2, Copilot, and Qwen.
+Its rendered original-connection picker and inference remain unverified. The
+primary Mac still needs native relay activation and checks through its original
+connection. Do not remove a working SSH connection before its
+native replacement passes those checks.
+
+### MacBook Pro 2 stream failures
+
+The primary daemon logged repeated Codex 2 GPT-6.1-Sol failures after roughly
+three to six seconds, well before its ten-minute deadline. The archived 257-item
+conversation replayed successfully against the secondary account with and without
+internal metadata and synthetic item IDs. Those results do not identify the cause
+of the live failures; the older log discarded upstream failure metadata.
+
+The v0.2.12 candidate queues up to 32 waiting requests behind the configured
+provider concurrency and retains safe upstream stream-failure diagnostics. Tests
+verify a 30-request burst, FIFO admission, waiting cancellation and deadlines,
+bounded capacity, and one transient server-error retry before any output. Partial
+responses and quota failures are never retried. These backend checks do not prove
+that every existing connected chat is stable.
+
+A replay with the archived desktop tool catalog reproduced upstream
+`server_is_overloaded` in about four seconds. Later full-catalog replays completed,
+so that catalog is not a deterministic failure trigger. The installed v0.2.12
+daemon passed a 30-request mock burst with four running providers and 26 waiting
+requests. Its signed SDK recovered from a mock transient error with one retry.
+Live MacBook Pro 2 tests through the existing forward to that daemon passed
+Codex 2 reads, edits, follow-ups, reasoning, interruption, and recovery. Shared
+production health contained unrelated chats, so its global active count cannot
+prove cleanup of one particular request.
+
+The v0.2.13 candidate loads Claude's private virtual MCP catalog before inference
+and records fixed categories for rejected calls. Its isolated live Claude Opus 5.5
+test passed streaming, the hidden AGENTS.md marker, file reads and edits,
+follow-ups, reasoning progress, interruption, zero active requests after cleanup,
+and recovery through the signed SDK. The cause of the earlier live Claude call
+rejections remains unconfirmed; the new categories preserve evidence for another
+occurrence. These results do not replace rendered desktop or prolonged stability
+checks through the original connection.
+
+After v0.2.13 activation, Edi's affected connected chat still failed. Its safe
+diagnostic classified the Claude call as `unknown_tool`, rather than duplicate
+IDs or malformed input. Small live file loops therefore did not reproduce that
+remaining failure. The v0.2.14 candidate replaces per-request numbered MCP names
+with stable caller identities, translates replayed call/result names, and accepts
+only exact or unambiguous current-catalog aliases. It canonicalizes Codex's plain
+tools and explicit `functions` namespace using the pinned SDK's default namespace.
+Foreign tools and stale numeric bindings remain invalid.
+
+Tests cover reordered and filtered catalogs, namespace defaults, ambiguous local
+names, and preservation of arguments, call IDs, results, and input messages. A
+live Claude test retained a real caller result across reordered catalogs and
+different forced tool choices without executing any caller action. The exact
+rejected name from the original failure was not logged, so the affected native
+chat still needs its own confirmation after activation.
+
+The primary Mac's native `config.toml` still matches the digest recorded before
+activation. Gateway preferences are stored separately. Native Codex and user
+actions can change settings on the other Macs, including project trust; their
+current files do not establish byte-for-byte identity with earlier snapshots.
+The isolated backend tests below check that the adapter leaves their native
+configuration unchanged during each run.
+
+The remaining desktop checks are:
+
+| Check | Evidence | Gap |
+| --- | --- | --- |
+| Model selection and refresh | The native connection returns the combined catalog. Backend config and catalog defaults agree. | Confirm Refresh preserves the selected gateway model and effort in the primary Mac's UI. |
+| Claude files and images | User-driven Claude checks wrote the release-check seed and `CLAUDE_NATIVE_OK` on MacBook Pro 2 and read a code supplied only in an attached image. | Repeat follow-up and saved-chat recovery through the original connection. |
+| Codex 2 follow-up | Backend and Unix proxy checks passed file edits and retained image history. | The native release-check proof has no Codex 2 completion marker. |
+| Stop and recovery | Backend checks passed interruption and recovery. The native relay logged interruption requests. | Establish which provider handled each interrupted cloud turn and verify its recovery. |
+| Qwen | The real backend tool loop passed and the model appears in the combined catalog. | Verify text, file tools, follow-up, and interruption through the original connection. |
+| Reasoning controls | v0.2.8 persists all six display efforts. MacBook Pro 2's local rendered Claude menu showed Max. The user also confirmed that all levels now appear on the primary Mac. | Capture the primary Mac's menu and verify refresh persistence when using the connected computer. |
+| Auto-review reviewer | A fake-gateway run of the pinned SDK sent the reviewer request as `codex-auto-review` (low effort, strict JSON schema), and the route and catalog tests cover routing and advertisement. The route is on by default for every Auto-review approval. The subscription endpoint accepting that slug was not called live: the stored login had expired, and refreshing it would rotate the installed credential. | Run a browser action in a Claude chat and confirm that Auto-review items appear and the action completes ([node_repl](node-repl.md)). |
+
+Shared execution ownership and outage recovery passed the v0.2.10 backend gate.
+The signed SDK checks below prove gateway ownership across several adapter clients
+in an isolated development fixture. The v0.2.10 CLI is installed on the test Mac;
+its GitHub release remains a draft and its adapter changes are not activated.
+Native executors still have separate ownership in each adapter, and
+the installed release's cloud connections have not passed the corresponding checks.

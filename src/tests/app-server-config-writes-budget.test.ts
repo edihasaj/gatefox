@@ -141,10 +141,11 @@ async function routerOver(tree: Awaited<ReturnType<typeof gatewayTree>>) {
   return { router, calls };
 }
 
-test("20k distinct paths in the deepest tree never cost more than the budget in reads", async t => {
+test("20k distinct paths in a deep tree never cost more than the budget in reads", async t => {
   const tree = await gatewayTree();
   const f = await routerOver(tree);
-  const { folder: deep, levels } = await deepestFolder(tree.root, platformPathBytes);
+  // Full platform path depth is exercised below. Keep the 20k-way fanout within a portable heap.
+  const { folder: deep, levels } = await deepestFolder(tree.root, Math.min(platformPathBytes, 1024));
   assert.ok(levels >= 100, `the platform opens a deep tree (${levels} levels)`);
   // Folders that exist below the deep one give leaves different deepest ancestors, the case a memo helps least.
   const existing = 300;

@@ -246,7 +246,8 @@ test("deadline covers failure-frame and nonstream JSON delivery until the owned 
     let reachedTerminal = false; let stopped = false;
     const gateway = await setup({ async *infer(): AsyncGenerator<InferenceEvent> {
       try {
-        yield { type: "text", text: "x".repeat((mode === "failure-sse" ? 1 : 2) * 1024 * 1024) };
+        // Linux loopback can buffer more than 2 MiB even while the incoming body is paused.
+        yield { type: "text", text: "x".repeat((mode === "failure-sse" ? 1 : 16) * 1024 * 1024) };
         reachedTerminal = true;
         // Fill the final frame beyond loopback TCP buffering, after the first
         // delta has drained; the diagnostic must still omit the error body.

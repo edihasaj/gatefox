@@ -34,12 +34,28 @@ interface Database { prepare(sql: string): Statement; exec(sql: string): void; c
 const marker = (provider: string) => `"model_provider":${JSON.stringify(provider)}`;
 const maxFirstLine = 4 * 1024 * 1024;
 
-/** ChatGPT, every Codex app-server and the GateFox service read or write the chat store. */
-async function defaultBusy(): Promise<string[]> {
-  const { stdout } = await promisify(execFile)("/bin/ps", ["-axo", "pid=,command="], { maxBuffer: 16 * 1024 * 1024 });
-  return stdout.split("\n").map(line => line.trim()).filter(line =>
-    /ChatGPT\.app\/Contents\/MacOS\/ChatGPT( |$)|\bapp-server\b|dist\/cli\.js (daemon|serve|codex-shim)\b/.test(line))
-    .map(line => line.slice(0, 160));
+/** ChatGPT, every Codex app-server, the shims and relay that start them, and the service daemon touch the chat store; an inference-only `serve` never does. */
+export const holdsChatStore = (command: string): boolean =>
+  /ChatGPT\.app\/Contents\/MacOS\/ChatGPT( |$)|\bapp-server\b|gateway-native-relay\b|dist\/cli\.js (daemon|codex-shim)\b/.test(command);
+/**
+ * Whether a process that could hold a chat store holds this one. A process with its own `CODEX_HOME` (Mission Runtime's
+ * other homes, isolated test runs) uses that home; one without uses `~/.codex`. Test runners only name app-server files.
+ */
+export function holdsThisChatStore(command: string, env: string, codexHome: string, home = homedir()): boolean {
+  if (!holdsChatStore(command) || / --test(?:[ =-]|$)/.test(command)) return false;
+  const configured = / CODEX_HOME=(\S+)/.exec(` ${env}`)?.[1];
+  return resolve(configured ?? join(home, ".codex")) === resolve(codexHome);
+}
+async function defaultBusy(codexHome: string): Promise<string[]> {
+  const run = promisify(execFile), { stdout } = await run("/bin/ps", ["-axo", "pid=,command="], { maxBuffer: 16 * 1024 * 1024 });
+  const busy: string[] = [];
+  for (const line of stdout.split("\n").map(value => value.trim()).filter(holdsChatStore)) {
+    const pid = line.split(" ")[0]!;
+    // `ps eww` appends the environment; a process that exited meanwhile holds nothing.
+    const env = await run("/bin/ps", ["eww", "-o", "command=", "-p", pid], { maxBuffer: 16 * 1024 * 1024 }).then(result => result.stdout.trim(), () => undefined);
+    if (env !== undefined && holdsThisChatStore(line, env.slice(line.length - pid.length - 1), codexHome)) busy.push(line.slice(0, 160));
+  }
+  return busy;
 }
 
 async function openDatabase(path: string, readOnly: boolean): Promise<Database> {
@@ -139,7 +155,7 @@ export async function migrateChats(options: ChatMigrateOptions = {}): Promise<Ch
   if (options.apply) {
     const config = await readFile(join(codexHome, "config.toml"), "utf8").catch(() => "");
     if (!config.split("\n").some(line => line.trim() === `[model_providers.${to}]`)) throw new Error(`config.toml has no [model_providers.${to}] row; run gateway desktop register first`);
-    const busy = await (options.busy ?? defaultBusy)();
+    const busy = await (options.busy ?? (() => defaultBusy(codexHome)))();
     if (busy.length) throw new Error(`Quit ChatGPT and stop the GateFox service first; still running:\n${busy.join("\n")}`);
   }
   const database = await openDatabase(join(codexHome, "state_5.sqlite"), !options.apply);

@@ -15,6 +15,8 @@ gateway serves. Each harness stores something about who served a chat. That stor
 identity decides which clients list the chat and which engine resumes it. This page
 is the contract for each harness, and the checklist for a new one.
 
+<a id="codex-subscription_gateway-by-default-openai-as-an-opt-in"></a>
+
 ## Codex: `gatefox` by default, `openai` as an opt-in
 
 ### Two ids for the gateway (1.8.0)
