@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The app's rename to GateFox.app leaves `Harness Gateway.app` as a link to it. launchd
+  keeps the loaded service's old program path until the next login, and the service plan
+  stores the old app's Node path for the Claude components; without the link, a service
+  restart failed with exit 78 and the Claude adapter could not start until the next login.
+
 - A Claude chat whose login fails before any reply, tool result or queued message no
   longer stays blocked behind a crash hold. The next request tries the saved login again.
   A failure after the turn produced output keeps the hold, because the turn may have

@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 
 /// Renames an app that an older updater left at `Harness Gateway.app` to `GateFox.app` beside it, then relaunches it
-/// from there. At the next launch the app rebinds the service plist and the app-runtime link to the new path; the
+/// from there, leaving `Harness Gateway.app` as a link to it. At the next launch the app rebinds the service plist and the app-runtime link to the new path; the
 /// backend accepts the old sibling path, and only it, as their previous owner. Skipped while an update is unfinished,
 /// because its journal records the old path.
 enum AppRelocation {
@@ -43,11 +43,17 @@ enum AppRelocation {
             pendingUpdate: recordsPendingUpdate
         ) else { return relaunched(false) }
         do { try fileManager.moveItem(at: source, to: target) } catch { return relaunched(false) }
+        // launchd keeps the loaded job's old program path until the next login, and the service plan stores the old
+        // app's Node path for supervised components, so the old name stays as a link to the renamed app.
+        try? fileManager.createSymbolicLink(atPath: source.path, withDestinationPath: currentName)
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
         NSWorkspace.shared.openApplication(at: target, configuration: configuration) { application, _ in
             Task { @MainActor in
-                if application == nil { try? FileManager.default.moveItem(at: target, to: source) }
+                if application == nil {
+                    try? FileManager.default.removeItem(at: source)
+                    try? FileManager.default.moveItem(at: target, to: source)
+                }
                 relaunched(application != nil)
             }
         }
