@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Claude Desktop configuration can opt into native `behavesAs` model metadata
+  with `--native-model-metadata`. Secondary reasoning models keep stable opaque
+  IDs, while older saved-chat routes remain accepted and explicit effort caps
+  survive migration. The existing mapping remains the default.
+
 ## 1.8.6 — 2026-11-09
 
 - Fixed a rolling-update regression introduced in 1.8.5: changing the gateway auth

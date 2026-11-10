@@ -1,11 +1,13 @@
 // Synthetic main-chunk stubs plus a read-only check of the installed app's real chunk (patched in memory, parsed in /tmp).
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { readAsarFile } from "../claude-native-trial/asar.mjs";
 import { buildNativeCatalog, CatalogError, patchNativeThinkingMain } from "../claude-native-trial/catalog.mjs";
+import { supportedClaudeTrial } from "../claude-native-trial/prepare.mjs";
 
 const ANCHOR = "function hw(e,t,n){return Q6t(u7t(e,t,n),f7t(t,n))}";
 
@@ -216,9 +218,13 @@ test("only the hw anchor changes: the helper is inserted after the directive, no
 });
 
 const REAL_ASAR = "/Applications/Claude.app/Contents/Resources/app.asar";
-const REAL_CHUNK = ".vite/build/index.chunk-BkhOOUzl.js";
-test("real Claude main chunk (read-only): anchors match once, the patched chunk parses, a repatch is refused", { skip: !existsSync(REAL_ASAR) }, () => {
-  const source = readAsarFile(readFileSync(REAL_ASAR), REAL_CHUNK).toString("utf8");
+test("real Claude main chunk (read-only): anchors match once, the patched chunk parses, a repatch is refused", { skip: !existsSync(REAL_ASAR) }, t => {
+  const archive = readFileSync(REAL_ASAR);
+  if (createHash("sha256").update(archive).digest("hex") !== supportedClaudeTrial.asarSha256) {
+    t.skip(`requires the pinned Claude Desktop ${supportedClaudeTrial.version} archive`);
+    return;
+  }
+  const source = readAsarFile(archive, supportedClaudeTrial.thinkingMain).toString("utf8");
   const count = (text, needle) => text.split(needle).length - 1;
   assert.equal(count(source, ANCHOR), 1);
   const out = patchNativeThinkingMain(source, { models: [route(1), route(2, { supported_reasoning_levels: ["low", "high"] })] });

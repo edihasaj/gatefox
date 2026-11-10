@@ -179,6 +179,9 @@ never prompts, tool arguments, headers, or credentials.
 
 ## One row per model, native thinking controls
 
+Recent clients can opt into [native model metadata](claude-desktop-native-metadata.md)
+for their effort controls. The existing model-ID mapping remains the default.
+
 An isolated, version-pinned [native-picker experiment](claude-native-trial.md)
 is available for developer testing. It is not part of the normal adapter or a
 deployment, and its native control transport still requires GUI verification.

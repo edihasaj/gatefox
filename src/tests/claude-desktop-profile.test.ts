@@ -7,6 +7,7 @@ import {
   type ClaudeDesktopCatalog,
   type ClaudeDesktopAdapterModel,
   type ClaudeDesktopGatewaySource,
+  type ClaudeDesktopProfileOptions,
 } from "../claude-desktop-profile.js";
 
 const source: ClaudeDesktopGatewaySource = {
@@ -178,7 +179,7 @@ test("primary Claude native rows keep an accurate maxEffort bounded by an existi
   assert.equal(above.find(row => row.name === "claude-fable-5-1")!.maxEffort, "high");
 });
 
-function bulkBuild(tiered: number, plain: number, savedTail = false) {
+function bulkBuild(tiered: number, plain: number, savedTail = false, buildOptions: ClaudeDesktopProfileOptions = options) {
   const codex: Record<string, string> = {};
   const rows: Array<Record<string, unknown>> = [{ slug: "claude/claude-fable-5-1", display_name: "Claude Fable 5.1" }];
   const add = (name: string, extra: Record<string, unknown>) => {
@@ -196,8 +197,9 @@ function bulkBuild(tiered: number, plain: number, savedTail = false) {
       { id: "codex", type: "codex-subscription", models: codex },
     ],
   };
-  return buildClaudeDesktopProfile(bulk, { models: rows as never }, {}, options);
+  return buildClaudeDesktopProfile(bulk, { models: rows as never }, {}, buildOptions);
 }
+const nativeBuild = (tiered: number, plain: number) => bulkBuild(tiered, plain, false, { ...options, nativeModelMetadata: true });
 
 test("counts only visible picker rows against the 200 limit", () => {
   // Hidden variants do not count: 18 tiered models plus 2 others stay 20 visible rows however many aliases they add.
@@ -286,3 +288,85 @@ test("secondary routes with reasoning levels show the native slider and keep the
 });
 
 const variantEfforts = ["low", "medium", "high", "xhigh", "max"] as const;
+
+// One reasoning route, one effort-less route, and the primary row: the three kinds of row metadata can touch.
+const sliderSource: ClaudeDesktopGatewaySource = {
+  port: 3457, stateDirectory: "/private/gateway",
+  providers: [
+    { id: "claude", type: "claude-subscription", models: { "claude/claude-fable-5-1": "claude-fable-5-1" } },
+    { id: "codex", type: "codex-subscription", models: { "codex/full": "full", "codex/none": "none" } },
+  ],
+};
+const sliderCatalog: ClaudeDesktopCatalog = { models: [
+  { slug: "claude/claude-fable-5-1", display_name: "Claude Fable 5.1" },
+  { slug: "codex/full", display_name: "GPT Full", supported_reasoning_levels: ["max", "none", "medium", "low"] },
+  { slug: "codex/none", display_name: "GPT Plain" },
+] };
+const nativeOptions = { ...options, nativeModelMetadata: true };
+const fullRoute = opaqueRouteId("codex/full");
+const fullBridge = bridgeRouteName("codex/full");
+const plainRoute = opaqueRouteId("codex/none");
+const rowsOf = (built: ReturnType<typeof buildClaudeDesktopProfile>) => built.profile.inferenceModels as Array<Record<string, unknown>>;
+const secondary = (built: ReturnType<typeof buildClaudeDesktopProfile>) => rowsOf(built)[1]!;
+
+test("opt-in native metadata keeps the opaque row ID and names the recognized base", () => {
+  const built = buildClaudeDesktopProfile(sliderSource, sliderCatalog, {}, nativeOptions);
+  assert.deepEqual(rowsOf(built).map(row => row.name), ["claude-fable-5-1", fullRoute, plainRoute]);
+  // Only the reasoning route carries metadata: accurate cap, no Claude family tier.
+  assert.deepEqual(secondary(built), { name: fullRoute, labelOverride: "GPT Full", maxEffort: "max", behavesAs: "claude-opus-5" });
+  assert.deepEqual(rowsOf(built)[2], { name: plainRoute, labelOverride: "GPT Plain" });
+  assert.deepEqual(rowsOf(built)[0], { name: "claude-fable-5-1", labelOverride: "Claude Fable 5.1" });
+  assert.equal(JSON.stringify([rowsOf(built)[0], rowsOf(built)[2]]).includes("behavesAs"), false);
+  // One visible row per model, and both IDs of the reasoning route name the same route and controls.
+  const route = { upstream: "codex/full", displayName: "GPT Full", supportedEfforts: ["low", "medium", "max"], preserveOptionalToolArguments: true };
+  assert.deepEqual(byId(built.adapterConfig.models, fullRoute), { id: fullRoute, ...route });
+  assert.deepEqual(byId(built.adapterConfig.models, fullBridge), { id: fullBridge, ...route });
+  assert.equal(new Set(built.adapterConfig.models.map(row => row.id)).size, built.adapterConfig.models.length);
+  // Deterministic: a rebuild from a copy matches.
+  assert.deepEqual(buildClaudeDesktopProfile(structuredClone(sliderSource), structuredClone(sliderCatalog), {}, nativeOptions), built);
+});
+
+test("the default candidate is unchanged, and native metadata never leaks into it", () => {
+  const before = buildClaudeDesktopProfile(sliderSource, sliderCatalog, {}, options);
+  assert.deepEqual(buildClaudeDesktopProfile(sliderSource, sliderCatalog, {}, { ...options, nativeModelMetadata: false }), before);
+  assert.deepEqual(rowsOf(before).map(row => row.name), ["claude-fable-5-1", fullBridge, plainRoute]);
+  assert.equal(JSON.stringify(before).includes("behavesAs"), false);
+  assert.equal(JSON.stringify(before.adapterConfig).includes(fullRoute), true, "the pre-bridge ID stays a hidden adapter row");
+});
+
+test("a user cap survives native migration in both directions", () => {
+  const native = (inferenceModels: Array<Record<string, unknown>>) => secondary(buildClaudeDesktopProfile(sliderSource, sliderCatalog, { inferenceModels }, nativeOptions));
+  const legacy = (inferenceModels: Array<Record<string, unknown>>) => secondary(buildClaudeDesktopProfile(sliderSource, sliderCatalog, { inferenceModels }, options));
+  // legacy -> native inherits the cap set on the bridge row.
+  assert.deepEqual(native([{ name: fullBridge, maxEffort: "medium" }]), { name: fullRoute, labelOverride: "GPT Full", maxEffort: "medium", behavesAs: "claude-opus-5" });
+  // native -> native keeps the marked row's cap, which only ever comes down.
+  assert.equal(native([{ name: fullRoute, maxEffort: "low", behavesAs: "claude-opus-5" }]).maxEffort, "low");
+  assert.equal(native([{ name: fullRoute, maxEffort: "max", behavesAs: "claude-opus-5" }]).maxEffort, "max");
+  // native -> legacy keeps that same cap, read from the marked opaque row.
+  assert.deepEqual(legacy([{ name: fullRoute, maxEffort: "low", behavesAs: "claude-opus-5" }]), { name: fullBridge, labelOverride: "GPT Full", maxEffort: "low" });
+  // An unmarked opaque row's "high" was automatic, so it caps nothing either way.
+  assert.equal(native([{ name: fullRoute, maxEffort: "high" }]).maxEffort, "max");
+  assert.equal(legacy([{ name: fullRoute, maxEffort: "high" }]).maxEffort, "max");
+  // A legacy build that sees both rows keeps reading the bridge row's cap.
+  assert.equal(legacy([{ name: fullBridge, maxEffort: "low" }, { name: fullRoute, maxEffort: "max", behavesAs: "claude-opus-5" }]).maxEffort, "low");
+  // A marker on an effort-less route's row earns it no metadata.
+  const plain = rowsOf(buildClaudeDesktopProfile(sliderSource, sliderCatalog, { inferenceModels: [{ name: plainRoute, maxEffort: "low", behavesAs: "claude-opus-5" }] }, nativeOptions))[2]!;
+  assert.deepEqual(plain, { name: plainRoute, labelOverride: "GPT Plain" });
+});
+
+test("native metadata keeps the visible-row and hidden-alias limits", () => {
+  const small = nativeBuild(18, 1);
+  assert.equal(rowsOf(small).length, 20);
+  assert.equal(small.adapterConfig.models.length, 20 + 18 * 10 + 18);
+  assert.equal(new Set(small.adapterConfig.models.map(row => row.id)).size, small.adapterConfig.models.length);
+  assert.deepEqual(rowsOf(small).map(row => row.name), small.adapterConfig.models.slice(0, 20).map(row => row.id));
+  const marked = rowsOf(small).filter(row => row.behavesAs !== undefined);
+  assert.equal(marked.length, 18);
+  assert.ok(marked.every(row => /^claude-hg-route-\d+$/.test(String(row.name)) && row.behavesAs === "claude-opus-5"));
+  const exact = nativeBuild(0, 199);
+  assert.equal(rowsOf(exact).length, 200);
+  assert.equal(exact.adapterConfig.models.length, 200);
+  assert.deepEqual(nativeBuild(0, 199).adapterConfig, exact.adapterConfig);
+  assert.throws(() => nativeBuild(0, 200), /at most 200 model rows.*needs 201/);
+  assert.throws(() => nativeBuild(101, 0), /1010 hidden.*limit of 1000/);
+});
