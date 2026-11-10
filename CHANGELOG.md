@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.8.8 — 2026-11-10
 
 - Chat Completions servers (local Qwen through vLLM) now report every context overflow
   as `context_length_exceeded`, including vLLM's "max_tokens must be at least 1, got 0"
