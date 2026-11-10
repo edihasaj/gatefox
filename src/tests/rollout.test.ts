@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { componentLiveness, rolloutCommand, runRollout, type RolloutDeps } from "../rollout.js";
+import { processStartMs } from "../boot-identity.js";
 import type { GatewayConfig } from "../config.js";
 import type { ServicePlan } from "../service-plan.js";
 import type { VersionsResult } from "../versions.js";
@@ -248,7 +249,12 @@ test("system tunnel liveness binds the service PID and start to its actual execu
   try {
     assert.ok(child.pid);
     const component = { id: "tunnel-fixture", kind: "tunnel" as const, command: "/bin/sleep", args: [], log: "/tmp/rollout-test.log" };
-    const startedAt = new Date().toISOString();
+    // Anchor the receipt to the same whole-second start `ps` will answer with, the way a real receipt
+    // comes from `spawnStamp`. A `Date.now()` here plus `ps`' second truncation and its wall-clock
+    // conversion (which a time-stepping VM can move) sat inside only 1500 ms of slop and flaked on
+    // HomeCI. The deliberate wrong-start probe below still keeps the slop under test.
+    const observed = await processStartMs(child.pid!);
+    const startedAt = new Date(observed ?? Date.now()).toISOString();
     const live = await componentLiveness(component, child.pid!, startedAt);
     assert.equal(live, true);
     assert.equal(await componentLiveness({ ...component, command: process.execPath }, child.pid!, startedAt), false, "another executable cannot attest this process");

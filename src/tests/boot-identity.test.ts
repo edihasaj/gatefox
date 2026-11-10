@@ -137,8 +137,11 @@ test("the operating system's start of a fresh child agrees with the time it was 
   try {
     const started = await processStartMs(child.pid!);
     if (started === undefined) { t.skip("ps did not answer in time"); return; }
-    // `ps` reports whole seconds, so the start can read up to a second before the spawn.
-    assert.ok(started >= before - 1500 && started <= Date.now() + 1000, `started ${started - before} ms from the spawn`);
+    // This is a smoke test that `ps` answers with a sane start for a fresh child whatever the zone is:
+    // `ps` truncates to whole seconds and Linux converts through the wall clock, which a time-syncing
+    // VM can step, so seconds-scale disagreement here is the documented precision of that path, not a
+    // bug. Exact parsing is pinned deterministically by the `parsePsStart` unit cases.
+    assert.ok(Math.abs(started - before) <= 5_000 && started <= Date.now() + 5_000, `started ${started - before} ms from the spawn`);
   } finally {
     if (zone === undefined) delete process.env.TZ; else process.env.TZ = zone;
     const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
