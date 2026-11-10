@@ -18,6 +18,12 @@ Tailnet connection failures retain allowlisted network codes and the fixed
 `connect` stage, so temporary DNS and dial timeouts can be distinguished from
 certificate failures without recording addresses or exception prose.
 
+`chat_overflow_guard` reports `outcome: refused` with the provider ID when a Chat
+Completions conversation hit 25 consecutive context overflows within ten minutes and
+Gateway refused its next request locally with a non-retryable `invalid_request`. The
+count lives in memory per provider and conversation, resets on any completed request,
+and expires after ten quiet minutes. See [cache safety](cache-safety.md#chat-overflow-trimming).
+
 `context_cache_guard` reports `outcome: blocked` (or `observed` for a `selfHosted` provider, which continues), `mode: seed|oneshot|continued|provider`, a hashed
 `threadKey` and a numeric `rewrites` count. It appears in recent problems when
 the shared guard stops another large uncached request before inference.

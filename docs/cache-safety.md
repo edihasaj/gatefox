@@ -146,6 +146,18 @@ Direct Claude/Codex subscriptions or other clients that bypass Gateway are
 outside this enforcement boundary. No native application or external runtime
 is patched by this feature.
 
+## Chat overflow trimming
+
+vLLM rejects an oversized prompt with a plain 400. Gateway maps every such rejection,
+including "max_tokens must be at least 1, got 0" for a prompt that fills the window, to
+`context_length_exceeded`, so the client compacts or trims. A worker forked with far more
+history than the window allows can still trim one item per request for a long time; on
+10 November 2026 three forked Qwen workers sent about 4,000 refused requests in 89
+minutes. After 25 consecutive overflows for one conversation within ten minutes,
+Gateway refuses the next request locally with a non-retryable `invalid_request` that asks
+for a fresh worker with a compact handoff (`fork_turns="none"`). No provider call occurs.
+A completed request resets the count; it never changes caller history.
+
 ## Recovery verification
 
 Run `node scripts/e2e-cache-recovery.mjs --package INSTALLED_PACKAGE --code CHECKOUT

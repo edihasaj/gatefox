@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Chat Completions servers (local Qwen through vLLM) now report every context overflow
+  as `context_length_exceeded`, including vLLM's "max_tokens must be at least 1, got 0"
+  for a prompt that fills the window exactly and overflow wording without the usual token
+  counts. Codex then compacts instead of ending the turn with an upstream error.
+- A conversation that keeps overflowing a Chat Completions provider stops reaching it
+  after 25 consecutive refusals within ten minutes. The client gets one non-retryable
+  error that asks for a fresh worker with a compact handoff, instead of trimming one
+  history item per request for an hour. Any completed request resets the count.
+
 ## 1.8.7 — 2026-11-10
 
 - Large chats get one additional request to recover from two measured cache misses.

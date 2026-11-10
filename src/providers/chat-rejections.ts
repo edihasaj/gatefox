@@ -1,3 +1,5 @@
+import { chatContextMessage, chatNoOutputRoom } from "./context-errors.js";
+
 /**
  * A fixed class for an HTTP 400 from a Chat Completions server (vLLM and OpenAI-compatible routers). The gateway never logs
  * the server's message, which left every Qwen rejection as a bare "Chat API returned HTTP 400" and made each new cause slow
@@ -17,7 +19,7 @@ export function chatRejection(body: unknown): { reason: ChatRejectionReason; par
   const param = typeof error.param === "string" && params.has(error.param) ? error.param : undefined;
   const withParam = (reason: ChatRejectionReason) => ({ reason, ...(param ? { param } : {}) });
   if (/tool_choice/i.test(message) && /tools.*must be set|requires.*tools|without.*tools/i.test(message)) return withParam("tool_choice_without_tools");
-  if (error.code === "context_length_exceeded" || /maximum context length|context window|prompt is too long/i.test(message)) return withParam("context_length");
+  if (error.code === "context_length_exceeded" || chatContextMessage(message, error.code) || chatNoOutputRoom(message)) return withParam("context_length");
   if (param === "max_tokens" || param === "max_completion_tokens" || /max_(?:completion_)?tokens/i.test(message)) return withParam("output_tokens");
   if (param === "reasoning_effort" || param === "chat_template_kwargs" || /reasoning/i.test(message)) return withParam("reasoning_effort");
   if (param === "tools" || /\b(?:tool|function)s?\b.*\b(?:schema|parameters|name)\b/i.test(message)) return withParam("tool_schema");

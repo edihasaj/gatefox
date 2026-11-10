@@ -2,7 +2,8 @@ import { apiCredential, type ProviderConfig } from "../config.js";
 import { responsesToChatRequest } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, Usage, OpenAIChatMessage } from "../protocol/types.js";
-import { ProviderError, type InferenceContext, type Provider } from "./provider.js";
+import { ProviderError, providerConversationId, type InferenceContext, type Provider } from "./provider.js";
+import { ChatOverflowGuard, overflowExhausted } from "./chat-overflow-guard.js";
 import { apiRoutingHeaders } from "./api-routing.js";
 import { generationOptions } from "./generation-options.js";
 import { tailnetFetch, type TailnetSeams } from "../tailnet.js";
@@ -15,6 +16,9 @@ import { telemetry } from "../telemetry.js";
 import { largeUncachedUsage } from "../cache-guarded-inference.js";
 import { canonicalTools } from "./tool-catalog.js";
 import { connectChatProvider } from "./chat-connect.js";
+
+/** Shared across provider instances so a configuration reload cannot reset a running trim loop's count. */
+const overflowGuard = new ChatOverflowGuard();
 
 const recoveryDeadlineMs = 90_000;
 const recoveryEofMs = 5_000;
@@ -140,6 +144,22 @@ export class ChatCompletionsAPI implements Provider {
   /** `seams` exist for tests of a `tailnet: true` provider; production never passes them. */
   constructor(private readonly config: ProviderConfig, seams?: TailnetSeams, private readonly recovery?: ChatCompletionRecoveryPolicy) { if (config.tailnet) this.tailnet = tailnetFetch(config.id, seams); }
   async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
+    const conversation = providerConversationId(context);
+    const key = conversation === undefined ? undefined : JSON.stringify([this.config.id, conversation]);
+    if (overflowGuard.exhausted(key)) {
+      telemetry("chat_overflow_guard", { provider: /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(this.config.id) ? this.config.id : "other", outcome: "refused" });
+      throw overflowExhausted();
+    }
+    try {
+      yield* this.inferOnce(request, signal, context);
+      overflowGuard.success(key);
+    } catch (error) {
+      if (error instanceof ProviderError && error.code === "context_length_exceeded") overflowGuard.overflow(key);
+      throw error;
+    }
+  }
+
+  private async *inferOnce(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext): AsyncGenerator<InferenceEvent> {
     const options = generationOptions(request, 2);
     const credential = await apiCredential(this.config);
     if (!credential) throw new ProviderError("authentication", "Chat API credential is missing", 401);

@@ -16,6 +16,19 @@ function promptTokens(value: unknown): { used: number; maximum: number } | undef
 }
 const contextCode = (value: unknown) => value === "context_length_exceeded";
 
+/**
+ * Chat server overflow wording. Shared with the rejection classifier so a 400 recorded as `context_length` always reaches the
+ * client as `context_length_exceeded`; on 9–10 November 2026 48 Qwen overflows were recorded as context_length but surfaced as
+ * a plain upstream_error, which ended the turn instead of starting compaction. Wording counts only when the server sent no
+ * string error code of its own (vLLM sends a numeric 400); an explicit different code keeps its meaning.
+ */
+export const chatContextMessage = (message: string, code?: unknown) => typeof code !== "string" && /maximum context length|context window|prompt is too long/i.test(message);
+/**
+ * vLLM's answer when the prompt fills the whole window: the default output budget becomes zero. The gateway never forwards
+ * a zero max_tokens (it rejects max_output_tokens below 1), so this wording always means the input has no room left.
+ */
+export const chatNoOutputRoom = (message: string) => /max_(?:completion_)?tokens must be at least 1, got 0\b/i.test(message);
+
 /** Anthropic documents this exact invalid_request_error as input context overflow. */
 export function anthropicContextFailure(value: unknown): ProviderError | undefined {
   const error = object(object(value).error);
@@ -52,9 +65,10 @@ export async function boundedJson(response: Response): Promise<unknown> {
 export function chatContextFailure(value: unknown): ProviderError | undefined {
   const error = object(object(value).error);
   if (contextCode(error.code)) return contextWindowFailure();
-  const message = typeof error.message === "string" ? error.message : "";
+  const message = typeof error.message === "string" ? error.message.slice(0, 4096) : "";
+  if (chatNoOutputRoom(message)) return contextWindowFailure();
   const maximum = /maximum context length is (\d+) tokens/i.exec(message);
-  if (!maximum) return;
+  if (!maximum) return chatContextMessage(message, error.code) ? contextWindowFailure() : undefined;
   const used = /prompt contains (?:at least )?(\d+) input tokens|messages resulted in (\d+) tokens/i.exec(message);
   const counts = used ? { used: Number(used[1] ?? used[2]), maximum: Number(maximum[1]) } : undefined;
   return contextWindowFailure(counts && Number.isSafeInteger(counts.used) && Number.isSafeInteger(counts.maximum) ? counts : undefined);
