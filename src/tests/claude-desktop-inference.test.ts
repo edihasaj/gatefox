@@ -137,13 +137,14 @@ for (const scenario of ["cold", "unknown", "failed"] as const) test(`native auxi
     return { ...nativeMessage(model), usage: inputUsage };
   });
   try {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    const limit = scenario === "unknown" ? 2 : 3;
+    for (let attempt = 0; attempt <= limit; attempt++) {
       const response = await fetch(`${f.url}/v1/messages`, { method: "POST", headers: headers(f.token), body: JSON.stringify(stageOne()) });
       const value = await response.json() as { error?: { message?: string } };
-      assert.equal(response.status, attempt === 2 ? 400 : scenario === "failed" ? 502 : 200);
-      if (attempt === 2) assert.match(value.error!.message!, scenario === "unknown" ? /did not report cache reuse/ : /cache reuse failed/);
+      assert.equal(response.status, attempt === limit ? 400 : scenario === "failed" ? 502 : 200);
+      if (attempt === limit) assert.match(value.error!.message!, scenario === "unknown" ? /did not report cache reuse/ : /cache reuse failed/);
     }
-    assert.equal(calls, 2);
+    assert.equal(calls, limit);
     assert.equal(f.backendRequests.length, 0);
   } finally { await f.stop(); }
 });

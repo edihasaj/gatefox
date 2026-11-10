@@ -9,8 +9,8 @@ import { ResponsesWriter } from "../protocol/responses.js";
 import type { ResponsesInputItem } from "../protocol/types.js";
 import { cacheGuardedInference } from "../cache-guarded-inference.js";
 
-test("large cache misses stop before the third CLI and client compaction can recover", { timeout: 30000 }, async () => {
-  const fixture = await installClaudeFixture({ cache: true, replies: [{ text: "one" }, { text: "two" }, { text: "compact" }, { text: "recovered" }] });
+test("large cache misses stop before the fourth CLI and client compaction can recover", { timeout: 30000 }, async () => {
+  const fixture = await installClaudeFixture({ cache: true, replies: [{ text: "one" }, { text: "two" }, { text: "three" }, { text: "compact" }, { text: "recovered" }] });
   configureTelemetry(fixture.directory, "test");
   const provider = new ClaudeSubscription({ id: `replay-guard-${process.pid}`, type: "claude-subscription", models: { fixture: "fixture" }, claudeSessions: { mode: "replay" } });
   const turn = async (text: string, requestKind?: "compaction") => {
@@ -18,13 +18,13 @@ test("large cache misses stop before the third CLI and client compaction can rec
   };
   const starts = async () => (await fixture.capture()).filter(entry => entry.start).length;
   try {
-    await turn("a".repeat(400000)); await turn("b".repeat(400000));
-    assert.equal(await starts(), 2);
-    await assert.rejects(turn("c".repeat(400000)), { code: "invalid_request", status: 400 });
-    assert.equal(await starts(), 2, "the rejected request spent no inference and spawned no CLI");
+    await turn("a".repeat(400000)); await turn("b".repeat(400000)); await turn("c".repeat(400000));
+    assert.equal(await starts(), 3);
+    await assert.rejects(turn("d".repeat(400000)), { code: "invalid_request", status: 400 });
+    assert.equal(await starts(), 3, "the rejected request spent no inference and spawned no CLI");
     await turn("c".repeat(400000), "compaction");
     await turn("Short client-compacted history");
-    assert.equal(await starts(), 4, "compaction remains possible and its smaller history clears the guard");
+    assert.equal(await starts(), 5, "compaction remains possible and its smaller history clears the guard");
   } finally {
     await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await flushTelemetry(); await fixture.restore();
   }
@@ -32,7 +32,7 @@ test("large cache misses stop before the third CLI and client compaction can rec
 
 test("repeated cold live reseeds stop without falling back to a paid one-shot", { timeout: 30000 }, async () => {
   const fixture = await installClaudeFixture({ cache: true, replies: [
-    { calls: [{ tool: "read", input: {} }] }, { calls: [{ tool: "read", input: {} }] },
+    { calls: [{ tool: "read", input: {} }] }, { calls: [{ tool: "read", input: {} }] }, { calls: [{ tool: "read", input: {} }] },
   ] });
   configureTelemetry(fixture.directory, "test");
   const provider = new ClaudeSubscription({ id: `seed-guard-${process.pid}`, type: "claude-subscription", models: { fixture: "fixture" }, claudeSessions: { mode: "live", warmup: 0 } });
@@ -47,11 +47,12 @@ test("repeated cold live reseeds stop without falling back to a paid one-shot", 
   try {
     const first: ResponsesInputItem[] = [{ type: "message", role: "user", content: "a".repeat(400000) }];
     const a = await turn(first, "before"); const second = append(first, a); const b = await turn(second, "after");
+    const third = append(second, b); const c = await turn(third, "another");
     const [kept] = claudeLive({ max: 6, parkMinutes: 60 }).sessions();
     assert.ok(kept);
     const pending = [...kept.pending];
-    await assert.rejects(turn(append(second, b), "another"), { code: "invalid_request", status: 400 });
-    assert.deepEqual((await fixture.capture()).flatMap(entry => entry.start ? [entry.start] : []), ["live", "live"]);
+    await assert.rejects(turn(append(third, c), "fourth"), { code: "invalid_request", status: 400 });
+    assert.deepEqual((await fixture.capture()).flatMap(entry => entry.start ? [entry.start] : []), ["live", "live", "live"]);
     assert.equal(claudeLive({ max: 6, parkMinutes: 60 }).sessions()[0], kept, "the cache guard refuses before discarding the live session");
     assert.equal(kept.state, "awaiting_outputs");
     assert.deepEqual(kept.pending, pending, "pending relay calls remain available");
@@ -69,11 +70,13 @@ for (const mode of ["replay", "live"] as const) test(`measured cache writes from
   };
   try {
     await assert.rejects(turn("a".repeat(400000)), { code: "invalid_tool_call" });
-    // Replay pays for a second CLI before the stop; a live thread whose session died is refused at once, without any second CLI.
-    if (mode === "replay") await assert.rejects(turn("b".repeat(400000)), { code: "invalid_tool_call" });
-    else await assert.rejects(turn("b".repeat(400000)), (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
-    await assert.rejects(turn("c".repeat(400000)), { code: "invalid_request", status: 400 });
-    assert.equal((await fixture.capture()).filter(entry => entry.start).length, mode === "replay" ? 2 : 1, "a charged failure cannot bypass the stop");
+    // Replay has a bounded third attempt; a live thread whose session died cannot silently replay.
+    if (mode === "replay") {
+      await assert.rejects(turn("b".repeat(400000)), { code: "invalid_tool_call" });
+      await assert.rejects(turn("c".repeat(400000)), { code: "invalid_tool_call" });
+    } else await assert.rejects(turn("b".repeat(400000)), (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
+    await assert.rejects(turn("d".repeat(400000)), { code: "invalid_request", status: 400 });
+    assert.equal((await fixture.capture()).filter(entry => entry.start).length, mode === "replay" ? 3 : 1, "a charged failure cannot bypass the stop");
   } finally {
     await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await flushTelemetry(); await fixture.restore();
   }
@@ -96,13 +99,13 @@ test("compacted conversation recovery is independent of large fixed instructions
 });
 
 for (const mode of ["replay", "live"] as const) test(`cancelled charged requests cannot bypass the ${mode} cache guard`, { timeout: 30000 }, async () => {
-  const fixture = await installClaudeFixture({ cache: true, replies: [{ text: "visible", slow: true }, { text: "visible", slow: true }] });
+  const fixture = await installClaudeFixture({ cache: true, replies: [{ text: "visible", slow: true }, { text: "visible", slow: true }, { text: "visible", slow: true }] });
   configureTelemetry(fixture.directory, "test");
   const provider = new ClaudeSubscription({ id: `cancel-guard-${mode}-${process.pid}`, type: "claude-subscription", models: { fixture: "fixture" }, claudeSessions: { mode, warmup: 0 } });
   const turn = async (text: string) => {
     const controller = new AbortController();
     // Explicit client window changes permit replacement histories; cancellation
-    // accounting must still stop the third charged seed and retain the second CLI.
+    // accounting must still stop the fourth charged seed and retain the third CLI.
     for await (const event of provider.infer({ model: "fixture", input: text }, controller.signal, { threadId: "cancelled", windowId: text[0] })) {
       if (event.type === "text") controller.abort();
     }
@@ -110,8 +113,9 @@ for (const mode of ["replay", "live"] as const) test(`cancelled charged requests
   try {
     await assert.rejects(turn("a".repeat(400000)), { code: "cancelled" });
     await assert.rejects(turn("b".repeat(400000)), { code: "cancelled" });
-    await assert.rejects(turn("c".repeat(400000)), { code: "invalid_request", status: 400 });
-    assert.equal((await fixture.capture()).filter(entry => entry.start).length, 2, "interrupt accounting is recorded once and remains enforced");
+    await assert.rejects(turn("c".repeat(400000)), { code: "cancelled" });
+    await assert.rejects(turn("d".repeat(400000)), { code: "invalid_request", status: 400 });
+    assert.equal((await fixture.capture()).filter(entry => entry.start).length, 3, "interrupt accounting is recorded once and remains enforced");
   } finally {
     await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await flushTelemetry(); await fixture.restore();
   }
@@ -132,8 +136,9 @@ for (const cancelled of [false, true]) test(`charged Claude compaction ${cancell
   try {
     await assert.rejects(turn("a".repeat(400000)), { code: cancelled ? "cancelled" : "invalid_tool_call" });
     await assert.rejects(turn("b".repeat(400000)), { code: cancelled ? "cancelled" : "invalid_tool_call" });
-    await assert.rejects(turn("c".repeat(400000)), { code: "invalid_request", status: 400 });
-    assert.equal((await fixture.capture()).filter(entry => entry.start).length, 2);
+    await assert.rejects(turn("c".repeat(400000)), { code: cancelled ? "cancelled" : "invalid_tool_call" });
+    await assert.rejects(turn("d".repeat(400000)), { code: "invalid_request", status: 400 });
+    assert.equal((await fixture.capture()).filter(entry => entry.start).length, 3);
   } finally {
     await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await flushTelemetry(); await fixture.restore();
   }

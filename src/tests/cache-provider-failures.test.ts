@@ -8,10 +8,10 @@ import type { Provider } from "../providers/provider.js";
 import { cacheGuardedInference } from "../cache-guarded-inference.js";
 
 const cases = [
-  { name: "Responses charged throttles do not retry internally", kind: "responses", code: "rate_limit_exceeded", events: [
+  { name: "Responses charged throttles do not retry internally", kind: "responses", limit: 3, code: "rate_limit_exceeded", events: [
     { type: "response.failed", response: { error: { code: "rate_limit_exceeded" }, usage: { input_tokens: 200000, output_tokens: 0, total_tokens: 200000, input_tokens_details: { cached_tokens: 10000 } } } },
   ] },
-  { name: "Chat Completions usage survives a rejected model identity", kind: "chat", code: "model_route", events: [
+  { name: "Chat Completions usage survives a rejected model identity", kind: "chat", limit: 3, code: "model_route", events: [
     { model: "wrong-model", choices: [], usage: { prompt_tokens: 200000, completion_tokens: 0, total_tokens: 200000, prompt_tokens_details: { cached_tokens: 10000 } } },
   ] },
   { name: "Anthropic reported large input remains unknown when cache fields are absent", kind: "anthropic", code: "inference_failed", events: [
@@ -47,11 +47,12 @@ for (const scenario of cases) test(scenario.name, async () => {
       { threadId: "thread" }, scenario.name)) {}
   };
   try {
+    const limit = scenario.limit ?? 2;
     if (scenario.code) {
-      await assert.rejects(turn(), { code: scenario.code }); await assert.rejects(turn(), { code: scenario.code });
-    } else { await turn(); await turn(); }
+      for (let i = 0; i < limit; i++) await assert.rejects(turn(), { code: scenario.code });
+    } else { for (let i = 0; i < limit; i++) await turn(); }
     await assert.rejects(turn(), { code: "invalid_request", status: 400 });
-    assert.equal(calls, 2, "only two actual upstream attempts can consume input");
+    assert.equal(calls, limit, "only the bounded number of actual upstream attempts can consume input");
   } finally {
     if (previous === undefined) delete process.env[key]; else process.env[key] = previous;
     upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve()));

@@ -27,21 +27,32 @@ worker turns this way between 1 and 3 November 2026. Gateway requires a loopback
 tailnet inference provider for this setting but never infers it, because a local
 address can be a proxy to a metered upstream. Leave it off for anything that forwards.
 
-During active work, two consecutive requests that each have at least 65,536 uncached input tokens
-and more uncached than cached tokens stop the next request before provider
-execution. A read covering at least 75% of the preceding cached prefix is treated
+During active work, a request with at least 65,536 uncached input tokens
+and more uncached than cached tokens counts as a large cache miss. After two
+consecutive measured misses, Gateway allows one more caller request to establish
+reuse. If that request is also cold, the fourth request stops before provider
+execution. This tolerates a temporary provider cache loss without an unlimited
+resend loop. Cache expiry or routing changes can happen upstream during active
+work; a cache miss does not establish that the person caused it.
+A read covering at least 75% of the preceding cached prefix is treated
 as reuse, so genuinely large new tool results do not cause a false rewrite alarm.
-Two large inputs whose cache usage is unreported also stop, with a distinct
-explanation: unknown cache usage is never presented as a measured zero.
+A miss streak containing unreported cache usage or a provider refusal keeps the
+two-miss limit. Unknown cache usage has a distinct explanation and is never
+presented as a measured zero.
 
-Five minutes without request activity starts a fresh warm-up period. An idle
+Before a safety stop, five minutes without request activity starts a fresh warm-up period. An idle
 chat can legitimately lose its provider cache or live session, so a cold seed
 after that gap does not combine with an old miss to block its first continuation.
-Request attempts (including blocked retries) and completions refresh activity.
+Admitted request attempts and completions refresh activity.
 A per-conversation in-flight count prevents overlapping long requests from
 expiring each other's history; it is released even on error or cancellation.
-A long-running inference is therefore not mistaken for idle time, and continuous
-retry loops cannot age their own block away. Actual cache reads still clear the
+A long-running inference is therefore not mistaken for idle time.
+Once the miss limit is reached, a fixed five-minute cooldown starts. Blocked
+retries do not move its deadline. After it expires, Gateway allows one recovery
+probe on the next caller request. Another large miss starts another cooldown;
+expiry does not grant a full three-request warm-up. There is no background
+inference or automatic replay. A probe that fails without reporting usage also
+uses its one admission and starts another cooldown. Actual cache reads still clear the
 consecutive-miss count. Intermittent misses separated by successful reuse do not
 constitute continuous uncached processing under this policy.
 
@@ -54,13 +65,15 @@ counted as two misses, and Gateway stopped a request that would have continued t
 rebuilt session cheaply. Only a caller's own cancellation qualifies: a timeout or
 shutdown still counts, and a client that disconnects after a finished response
 cancelled nothing. A chat can excuse four rebuilds this way; a real cache read of at
-least 65,536 tokens or a five-minute idle restores that allowance. After four, ordinary counting resumes, so
+least 65,536 tokens or an idle reset before a safety stop restores that allowance. After four, ordinary counting resumes, so
 a client that disconnects and retries in a loop still reaches the stop. The stop can
 therefore only follow a follow-up if more than four rebuilds in a row were cancelled
 or excused with no cache reuse between them.
 
 A rebuild that the caller caused by changing its tools, instructions, thinking or Fast
-setting is excused in the same way. The provider reports it (for Claude, a
+setting is excused in the same way during ordinary work. A cold recovery probe
+after a cooldown still starts another cooldown, even when its miss is excused.
+The provider reports client changes (for Claude, a
 `fingerprint_changed` reseed), and the next request continues the rebuilt session. On
 8 November 2026 a resumed chat of about 600,000 tokens seeded cold, Codex then added 39 MCP
 tools 17 seconds later, and Gateway stopped the warm request that followed. These rebuilds
@@ -88,8 +101,8 @@ counted and a refuse-and-rebuild loop therefore still reaches the stop.
 A refusal is never excused, even when the caller also cancelled it.
 
 A cache failure receives a final HTTP 400 or terminal stream error telling the
-person to wait 5 minutes without sending anything and then send one message, because
-each attempt during the pause restarts the wait. It never reports
+person how many seconds remain before another recovery attempt. It explains that
+the history is preserved and retries do not extend the cooldown. It never reports
 `context_length_exceeded`, marks a client's context full, or instructs automatic
 compaction. Real provider context overflows retain their normal context-limit
 code. Unchanged reconnects cannot repeat costly inference. Legacy
@@ -102,8 +115,8 @@ CLI directly, so the next request can append to that same native history. This
 is a transport-size heuristic, not a tokenizer or context-window limit. Explicit
 `claudeSessions.warmup` choices remain authoritative. Small requests, standalone
 compaction/prewarm/memory requests, replay mode, capacity checks and preserved-
-session refusals retain their existing behavior. No extra cache miss or hidden
-inference retry is allowed.
+session refusals retain their existing behavior. This optimization adds no
+standalone warmup or hidden inference retry.
 
 The guard is scoped to the provider binding, model and stable caller thread or
 session. Anonymous requests share their binding/model budget. Count-only state
@@ -137,7 +150,7 @@ is patched by this feature.
 
 Run `node scripts/e2e-cache-recovery.mjs --package INSTALLED_PACKAGE --code CHECKOUT
 --root TASK_DIRECTORY` after building the checkout. The isolated real SDK must
-allow two measured cold calls and stop the third without reporting context
+allow three measured cold calls and stop the fourth without reporting context
 exhaustion. An unchanged retry must remain blocked without automatic compaction
 or another provider call. A separate explicit caller compaction command may then
 compact once and continue with smaller input in the same chat and model. The

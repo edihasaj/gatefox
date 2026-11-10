@@ -22,7 +22,7 @@ test("a reseed the caller forced by adding tools does not stop the warm continua
 
 test("without the client-change mark the same sequence still stops", () => {
   const budget = () => contextCacheBudget("client-change-unmarked", "thread", "opus", 3000000);
-  budget().record(coldSeed); budget().record(toolReseed);
+  budget().record(coldSeed); budget().record(toolReseed); budget().record(toolReseed);
   assert.throws(() => budget().beforeRequest("provider"), ContextCacheBlocked);
 });
 
@@ -37,7 +37,7 @@ test("a catalog that changes on every request still reaches the stop", () => {
   const budget = contextCacheBudget("client-change-flap", "thread", "opus", 1000);
   let spent = 0;
   assert.throws(() => { for (;;) { budget.beforeRequest("provider"); spent++; budget.record(toolReseed, { clientChange: true }); assert.ok(spent < 20); } }, ContextCacheBlocked);
-  assert.equal(spent, 6, "four excused rebuilds, then the two ordinary misses");
+  assert.equal(spent, 7, "four excused rebuilds, then three ordinary misses");
 });
 
 test("a real cache hit renews the allowance for later catalog changes", () => {
@@ -57,6 +57,6 @@ test("the shared provider guard hears a provider's client-change rebuild", async
   const send = async (mark: boolean, scope: string) => { for await (const _ of cacheGuardedInference(provider(mark), { model: "m", input: "large" }, new AbortController().signal, { threadId: "t" }, scope)) { /* drained */ } };
   await send(false, "guard-marked"); await send(true, "guard-marked");
   await assert.doesNotReject(send(false, "guard-marked"));
-  await send(false, "guard-unmarked"); await send(false, "guard-unmarked");
+  await send(false, "guard-unmarked"); await send(false, "guard-unmarked"); await send(false, "guard-unmarked");
   await assert.rejects(send(false, "guard-unmarked"), ContextCacheBlocked);
 });

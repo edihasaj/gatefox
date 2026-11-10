@@ -300,7 +300,7 @@ explicit continuation, explicit queue start, and the native failure behavior.
 Three cache-recovery accounting tests cover cumulative usage below, at and above
 the context window, absent usage and unchanged unmarked behavior. Also run
 `scripts/e2e-cache-recovery.mjs` against the built SDK and current Gateway code
-before publishing. It must prove that a third cold call and unchanged retry
+before publishing. It must prove that a fourth cold call and unchanged retry
 stop without a fake context-overflow signal or automatic compaction. Only a
 separate explicit client compaction may produce a smaller continuation in the
 same chat and model. See [cache safety](cache-safety.md#recovery-verification).

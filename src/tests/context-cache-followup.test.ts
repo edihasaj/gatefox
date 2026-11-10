@@ -41,6 +41,7 @@ test("a cancellation that reported no usage still gives the rebuild its pass", (
   budget.record(rebuild);
   assert.doesNotThrow(() => budget.beforeRequest("provider"), "the pass covered only the first rebuild");
   budget.record(rebuild);
+  budget.beforeRequest("provider"); budget.record(rebuild);
   assert.throws(() => budget.beforeRequest("provider"), ContextCacheBlocked);
 });
 
@@ -50,6 +51,7 @@ test("repeated resends after an excused rebuild still stop", () => {
   budget.record(rebuild); budget.record(rebuild);
   assert.doesNotThrow(() => budget.beforeRequest("provider"));
   budget.record(rebuild);
+  budget.beforeRequest("provider"); budget.record(rebuild);
   assert.throws(() => budget.beforeRequest("provider"), ContextCacheBlocked);
 });
 
@@ -57,7 +59,7 @@ test("a client that disconnects and retries in a loop still reaches the stop", (
   const budget = contextCacheBudget("followup-loop", "thread", "opus", 1000);
   let spent = 0;
   assert.throws(() => { for (;;) { budget.beforeRequest("provider"); spent++; budget.record(rebuild, { cancelled: true }); assert.ok(spent < 20); } }, ContextCacheBlocked);
-  assert.equal(spent, 6, "four forgiven rebuilds, then the two ordinary misses");
+  assert.equal(spent, 7, "four forgiven rebuilds, then three ordinary misses");
 });
 
 test("real cache reuse restores the forgiveness a long chat has used", () => {
@@ -77,7 +79,7 @@ test("a tiny request does not renew the allowance", () => {
     for (let cancel = 0; cancel < 4; cancel++) { budget.beforeRequest("provider"); spent++; budget.record(uncached, { cancelled: true }); }
     budget.record({ input: 1, read: 0, uncached: 1 });
   } }, ContextCacheBlocked);
-  assert.equal(spent, 6, "the second round spends only the two ordinary misses");
+  assert.equal(spent, 7, "the second round spends only three ordinary misses");
 });
 
 test("cancellations without usage stay inside the bounded history", () => {
@@ -88,8 +90,8 @@ test("cancellations without usage stay inside the bounded history", () => {
 
 test("the stop tells the person how to clear it", () => {
   for (const blocked of [new ContextCacheBlocked(), new ContextCacheBlocked(true)]) {
-    assert.match(blocked.message, /Wait 5 minutes without sending anything, then send one message/);
-    assert.match(blocked.message, /Each attempt during the pause restarts the wait/);
+    assert.match(blocked.message, /Try one message again in 300 seconds/);
+    assert.match(blocked.message, /Retries do not extend the cooldown/);
     assert.doesNotMatch(blocked.message, /Restore provider/);
   }
 });
@@ -105,10 +107,10 @@ const send = async (provider: Provider, scope: string, cancelled: () => boolean,
 
 test("only the caller's own cancellation of an unfinished request is forgiven", async () => {
   // A timeout or shutdown aborts the request too, but the caller did not cancel it.
-  await send(coldProvider(false), "not-cancelled", () => false); await send(coldProvider(false), "not-cancelled", () => false);
+  await send(coldProvider(false), "not-cancelled", () => false); await send(coldProvider(false), "not-cancelled", () => false); await send(coldProvider(false), "not-cancelled", () => false);
   await assert.rejects(send(coldProvider(false), "not-cancelled", () => false), ContextCacheBlocked);
   // Codex disconnects straight after a finished response, which cancelled nothing.
-  await send(coldProvider(true), "finished", () => true); await send(coldProvider(true), "finished", () => true);
+  await send(coldProvider(true), "finished", () => true); await send(coldProvider(true), "finished", () => true); await send(coldProvider(true), "finished", () => true);
   await assert.rejects(send(coldProvider(true), "finished", () => true), ContextCacheBlocked);
   await send(coldProvider(false), "cancelled", () => true); await send(coldProvider(false), "cancelled", () => true);
   await assert.doesNotReject(send(coldProvider(false), "cancelled", () => true));

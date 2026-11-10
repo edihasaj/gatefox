@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Large chats get one additional request to recover from two measured cache misses.
+  If reuse still fails, the five-minute cooldown has a fixed deadline that retries
+  cannot extend. After the cooldown, one recovery request can check whether the
+  provider cache is working again. Unknown cache usage and provider refusals retain
+  their earlier spending limits. The error reports the remaining wait and preserves
+  the chat history.
+
 ## 1.8.6 — 2026-11-09
 
 - Fixed a rolling-update regression introduced in 1.8.5: changing the gateway auth

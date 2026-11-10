@@ -65,7 +65,7 @@ test("native Messages caller-owned compaction replaces history without synthetic
 for (const mode of ["pending-tools", "cache-budget"] as const) test(`native history replacement preserves ${mode} safety`, { timeout: 30000 }, async () => {
   const fixture = await installClaudeFixture({ cache: true, replies: mode === "pending-tools"
     ? [{ calls: [{ tool: "read", input: {} }] }, { text: "Must not run" }]
-    : [{ text: "First" }, { text: "Second" }, { text: "Must not run" }] });
+    : [{ text: "First" }, { text: "Second" }, { text: "Recovery attempt" }, { text: "Must not run" }] });
   configureTelemetry(fixture.directory, "test");
   const provider = new ClaudeSubscription({ id: `native-safety-${mode}-${process.pid}`, type: "claude-subscription", models: { fixture: "fixture" }, claudeSessions: { mode: "live", warmup: 0 } });
   const metadata = { user_id: JSON.stringify({ device_id: "device", account_uuid: "", session_id: "019a1234-5678-7890-abcd-0123456789ab" }) };
@@ -76,10 +76,10 @@ for (const mode of ["pending-tools", "cache-budget"] as const) test(`native hist
   };
   try {
     await turn(mode === "cache-budget" ? "a".repeat(300000) : "Read");
-    if (mode === "cache-budget") await turn("b".repeat(300000));
-    await assert.rejects(turn(mode === "cache-budget" ? "c".repeat(300000) : "Replace pending history"),
+    if (mode === "cache-budget") { await turn("b".repeat(300000)); await turn("c".repeat(300000)); }
+    await assert.rejects(turn(mode === "cache-budget" ? "d".repeat(300000) : "Replace pending history"),
       (error: unknown) => error instanceof ProviderError && error.status === 400);
-    assert.equal((await fixture.capture()).filter(row => row.start).length, mode === "cache-budget" ? 2 : 1);
+    assert.equal((await fixture.capture()).filter(row => row.start).length, mode === "cache-budget" ? 3 : 1);
     assert.equal(claudeLive({ max: 6, parkMinutes: 60 }).sessions().length, 1, "a rejected replacement retains the existing session");
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await flushTelemetry(); await fixture.restore(); }
 });

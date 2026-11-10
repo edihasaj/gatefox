@@ -40,23 +40,23 @@ try{
  await client.request('initialize',{clientInfo:{name:'cache_recovery_fixture',version:'1'},capabilities:{experimentalApi:true}});
  client.send({method:'initialized'});
  const thread=await client.request('thread/start',{model:'fixture/sol',modelProvider:'fixture',cwd:work,approvalPolicy:'never',sandbox:'read-only'});
- const id=thread.thread.id;await turn(id,'Retain PROOF_CACHE_RECOVERY.','completed');await turn(id,'Continue.','completed');await turn(id,'Continue.','completed');
- assert.equal(requests.length,3);
- const blocked=await turn(id,'Continue.','failed');assert.equal(requests.length,3,'blocked call never reached inference');
+ const id=thread.thread.id;await turn(id,'Retain PROOF_CACHE_RECOVERY.','completed');await turn(id,'Continue.','completed');await turn(id,'Continue.','completed');await turn(id,'Continue.','completed');
+ assert.equal(requests.length,4);
+ const blocked=await turn(id,'Continue.','failed');assert.equal(requests.length,4,'blocked call never reached inference');
  assert(!blocked.some(e=>e.method==='error'&&e.params?.error?.codexErrorInfo==='contextWindowExceeded'),'cache refusal is not a context overflow');
  await turn(id,'Continue.','failed');
- assert.equal(requests.length,3,'an unchanged retry never spends another inference');
+ assert.equal(requests.length,4,'an unchanged retry never spends another inference');
  assert.equal(compactions,0,'Gateway never forces client compaction for cache loss');
  // Explicit caller compaction remains available, separately budgeted and never automatic.
  const at=events.length;await client.request('thread/compact/start',{threadId:id});
  await until(()=>events.slice(at).find(e=>e.method==='turn/completed'&&e.params.turn.status==='completed'));
  assert.equal(compactions,1,'only the explicit caller command compacted');
  const resumed=await turn(id,'Continue.','completed');
- assert.equal(requests.length,5,'one warm seed, two cold calls, one compaction and one reduced continuation');
+ assert.equal(requests.length,6,'one warm seed, three cold calls, one compaction and one reduced continuation');
  assert(requests.at(-1).bytes<=requests[1].bytes/2,'resumed input is genuinely smaller');
  assert(requests.at(-1).retainsProof,'the compacted summary remains in the resumed request');
  assert(requests.every(r=>r.model==='mock-sol'&&r.thread===id&&r.recoveryCapable),'same selected model, thread and actual SDK capability throughout');
  await flushTelemetry();const logs=await readTelemetry(state,0);assert.equal(logs.filter(e=>e.event==='context_cache_guard'&&e.outcome==='compaction_required').length,0);
- proof={passed:true,providerCalls:requests.length,compactions,sameThread:true,sameModel:true,paidInference:0,thirdColdCallPrevented:true,reducedInput:true,noForcedCompaction:true};
+ proof={passed:true,providerCalls:requests.length,compactions,sameThread:true,sameModel:true,paidInference:0,fourthColdCallPrevented:true,reducedInput:true,noForcedCompaction:true};
  await writeFile(join(root,'result.json'),JSON.stringify(proof,null,2)+'\n');console.log(JSON.stringify(proof));
 }finally{client.stop();await client.exited;server.closeAllConnections();await new Promise(r=>server.close(r));}

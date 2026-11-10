@@ -29,18 +29,18 @@ for (const kind of kinds) test(`all-provider cache safety covers ${kind} through
       const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "thread-id": `${protocol}-${stream}` };
       const body = protocol === "responses" ? { model: "alias", input: "Repeated history", stream }
         : { model: "alias", max_tokens: 10, messages: [{ role: "user", content: "Repeated history" }], stream };
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < 4; attempt++) {
         const response = await fetch(base + "/v1/" + protocol, { method: "POST", headers, body: JSON.stringify(body) });
         const text = await response.text();
-        if (!stream) assert.equal(response.status, attempt < 2 ? 200 : 400);
-        else if (attempt === 2) {
+        if (!stream) assert.equal(response.status, attempt < 3 ? 200 : 400);
+        else if (attempt === 3) {
           const frames = text.split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6)));
           if (protocol === "responses") assert.equal(frames.at(-1).response.error.code, "invalid_prompt");
           else assert.ok(frames.some(frame => frame.type === "error" && frame.error.type === "invalid_request_error"));
         }
       }
     }
-    assert.equal(calls, 8, "neither ingress protocol or streaming mode spends on its third cold request");
+    assert.equal(calls, 12, "neither ingress protocol or streaming mode spends on its fourth cold request");
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 
@@ -71,12 +71,12 @@ test("a local address alone stays stopped, because it can be a proxy to a metere
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const token = await gatewayToken(state);
   try {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
       const response = await fetch(base + "/v1/responses", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "thread-id": "proxy-worker" },
         body: JSON.stringify({ model: "alias", input: "Repeated history", stream: false }) });
-      assert.equal(response.status, attempt < 2 ? 200 : 400);
+      assert.equal(response.status, attempt < 3 ? 200 : 400);
     }
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 
@@ -90,7 +90,7 @@ test("a metered provider on the same request shape still stops, so only an advis
   const scope = "advisory-scope"; const cold = { read: 0, uncached: 200000, input: 200000 };
   for (const advisory of [true, false]) {
     const budget = contextCacheBudget(scope + advisory, "thread", "model", 1000, { advisory });
-    budget.record(cold); budget.record(cold);
+    budget.record(cold); budget.record(cold); budget.record(cold);
     if (advisory) budget.beforeRequest("provider");
     else assert.throws(() => budget.beforeRequest("provider"), { code: "invalid_request" });
   }
@@ -106,7 +106,8 @@ test("shared guard retains measured cache costs when any provider fails", async 
     for await (const _ of cacheGuardedInference(provider, { model: "m", input: "history" }, new AbortController().signal, { threadId: "failure" }, "shared-failure")) {}
   };
   await assert.rejects(turn(), { code: "upstream_error" }); await assert.rejects(turn(), { code: "upstream_error" });
-  await assert.rejects(turn(), { code: "invalid_request" }); assert.equal(calls, 2);
+  await assert.rejects(turn(), { code: "upstream_error" });
+  await assert.rejects(turn(), { code: "invalid_request" }); assert.equal(calls, 3);
 });
 
 test("unknown cache metrics never become a fake zero but repeated large unverified inputs also stop", () => {
@@ -124,16 +125,16 @@ test("shared guard reports a final streaming error rather than a reconnectable f
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const token = await gatewayToken(state);
   try {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
       const response = await fetch(base + "/v1/responses", { method: "POST", headers: {
         Authorization: `Bearer ${token}`, "Content-Type": "application/json", "thread-id": "stream" },
         body: JSON.stringify({ model: "alias", input: "history", stream: true }) });
       const frames = (await response.text()).split("\n").filter(line => line.startsWith("data: ") && !line.includes("[DONE]"))
         .map(line => JSON.parse(line.slice(6)) as { type: string; response?: { error?: { code?: string } } });
-      assert.equal(frames.at(-1)?.type, attempt < 2 ? "response.completed" : "response.failed");
-      if (attempt === 2) assert.equal(frames.at(-1)?.response?.error?.code, "invalid_prompt");
+      assert.equal(frames.at(-1)?.type, attempt < 3 ? "response.completed" : "response.failed");
+      if (attempt === 3) assert.equal(frames.at(-1)?.response?.error?.code, "invalid_prompt");
     }
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 
@@ -144,11 +145,11 @@ test("compaction has a separate bounded budget and can recover an ordinary block
     for await (const _ of cacheGuardedInference(provider, { model: "m", input }, new AbortController().signal,
       { threadId: "compact", ...(compaction ? { requestKind: "compaction" } : {}) }, "bounded-compaction")) {}
   };
-  await turn("a".repeat(1000)); await turn("a".repeat(1000));
+  await turn("a".repeat(1000)); await turn("a".repeat(1000)); await turn("a".repeat(1000));
   await assert.rejects(turn("a".repeat(1000)), { code: "invalid_request" });
-  await turn("a".repeat(1000), true); await turn("a".repeat(1000), true);
+  await turn("a".repeat(1000), true); await turn("a".repeat(1000), true); await turn("a".repeat(1000), true);
   await assert.rejects(turn("a".repeat(1000), true), { code: "invalid_request" });
-  await turn("Short compacted conversation"); assert.equal(calls, 5);
+  await turn("Short compacted conversation"); assert.equal(calls, 7);
 });
 
 test("a client's side requests neither trip nor inherit the conversation's cache stop", async () => {
@@ -157,7 +158,7 @@ test("a client's side requests neither trip nor inherit the conversation's cache
     for await (const _ of cacheGuardedInference(provider, { model: "m", input: "a".repeat(1000) }, new AbortController().signal,
       { sessionId: "side", ...(auxiliary ? { requestKind: "auxiliary" as const } : {}) }, "bounded-side-requests")) {}
   };
-  await turn(); await turn();
+  await turn(); await turn(); await turn();
   await assert.rejects(turn(), { code: "invalid_request" });
   await turn(true);
   await assert.rejects(turn(), { code: "invalid_request" }, "a side request does not clear the conversation's stop");

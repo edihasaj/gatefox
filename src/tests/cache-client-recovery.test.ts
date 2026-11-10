@@ -22,14 +22,14 @@ test("a blocked SDK turn remains a cache refusal and never impersonates context 
     for await (const _ of cacheGuardedInference(provider, { model: "same", input }, new AbortController().signal,
       { ...context, ...extra }, "sdk-cache-recovery")) {}
   };
-  await run(); await run();
+  await run(); await run(); await run();
   await assert.rejects(run(), error => error instanceof ContextCacheBlocked && streamFailureCode(error) === "invalid_prompt" && !/compact|context window/i.test(error.message));
-  assert.equal(calls, 2, "the cache stop never spends a third full-context request");
+  assert.equal(calls, 3, "the cache stop never spends a fourth full-context request");
   await assert.rejects(run(undefined, { turnId: "retry-turn" }), { code: "invalid_request" });
-  await run(undefined, { requestKind: "compaction" }); await run(undefined, { requestKind: "compaction" });
+  await run(undefined, { requestKind: "compaction" }); await run(undefined, { requestKind: "compaction" }); await run(undefined, { requestKind: "compaction" });
   await assert.rejects(run(undefined, { requestKind: "compaction" }), { code: "invalid_request" });
-  assert.equal(calls, 4, "cold compaction has its own bound and never enters SDK trim/retry recovery");
-  await run("short summary"); assert.equal(calls, 5);
+  assert.equal(calls, 6, "cold compaction has its own bound and never enters SDK trim/retry recovery");
+  await run("short summary"); assert.equal(calls, 7);
 });
 
 test("anonymous, unclassified, and native Messages clients retain the final refusal", async () => {
@@ -39,7 +39,7 @@ test("anonymous, unclassified, and native Messages clients retain the final refu
     { threadId: "messages", turnId: "t", requestKind: "turn", clientProtocol: "messages", cacheRecovery: true }] as InferenceContext[]) {
     const run = async () => { for await (const _ of cacheGuardedInference(provider, { model: "m", input: "large" },
       new AbortController().signal, context, "no-sdk-cache-recovery")) {} };
-    await run(); await run(); await assert.rejects(run(), { code: "invalid_request" });
+    await run(); await run(); await run(); await assert.rejects(run(), { code: "invalid_request" });
   }
 });
 
@@ -48,7 +48,7 @@ test("legacy SDK capability and late writers cannot turn a cache stop into a con
   const scope = "legacy-recovery", identity = "thread", model = "m";
   const budget = contextCacheBudget(scope, identity, model, 1000);
   const cold = { input: 200000, read: 0, uncached: 200000 };
-  budget.record(cold); budget.record(cold);
+  budget.record(cold); budget.record(cold); budget.record(cold);
   const legacyBeforeRequest: (mode: "provider", legacyFlag: boolean) => void = budget.beforeRequest;
   assert.throws(() => legacyBeforeRequest("provider", true), { code: "invalid_request" });
   const key = createHash("sha256").update(JSON.stringify([scope, identity, model])).digest("hex");
