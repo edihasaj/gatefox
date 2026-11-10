@@ -8,11 +8,15 @@ import { join } from "node:path";
 import { once } from "node:events";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { bridgeRouteName, stableRouteNumber } from "../claude-desktop-profile.js";
 
 const run = promisify(execFile);
 const cli = fileURLToPath(new URL("../cli.js", import.meta.url));
+const opaqueRouteId = (alias: string) => `claude-hg-route-${stableRouteNumber(alias)}`;
+const byId = (models: Array<Record<string, unknown>>, id: string) => models.find(model => model.id === id)!;
+const rowsOf = (profile: Record<string, unknown>) => profile.inferenceModels as Array<Record<string, unknown>>;
 
-async function fixture() {
+async function fixture(options: { reasoning?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "gateway-claude-desktop-cli-"));
   const home = join(root, "home");
   const library = join(home, "Library/Application Support/Claude-3p/configLibrary");
@@ -28,7 +32,9 @@ async function fixture() {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ models: [
       { slug: "claude-fable-5-1", display_name: "Claude Fable" },
-      { slug: "codex/gpt", display_name: "GPT" },
+      options.reasoning
+        ? { slug: "codex/gpt", display_name: "GPT", supported_reasoning_levels: ["low", "high"] }
+        : { slug: "codex/gpt", display_name: "GPT" },
     ] }));
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
@@ -74,6 +80,54 @@ test("Claude Desktop help is handled before the ordinary gateway configuration p
   assert.match(stdout, /claude-desktop inference --gateway-config PATH --native-config PATH/);
   assert.match(stdout, /--endpoint LOOPBACK_URL --token-file PATH/);
   assert.match(stdout, /loopback SSH forward/);
+  assert.match(stdout, /\[--native-model-metadata\]/);
+  assert.match(stdout, /--native-model-metadata is opt-in/);
+});
+
+test("configure --native-model-metadata keeps the opaque row and carries native metadata", async () => {
+  const f = await fixture({ reasoning: true });
+  try {
+    const { stdout } = await run(process.execPath, [cli, "claude-desktop", "configure", "--gateway-config", f.gatewayConfig, "--home", f.home, "--native-model-metadata"]);
+    const output = JSON.parse(stdout) as { candidate: { desktopProfilePath: string; adapterConfigPath: string } };
+    const profile = JSON.parse(await readFile(output.candidate.desktopProfilePath, "utf8")) as Record<string, unknown>;
+    const adapter = JSON.parse(await readFile(output.candidate.adapterConfigPath, "utf8")) as { models: Array<Record<string, unknown>> };
+    const rows = rowsOf(profile);
+    // The picker row keeps the opaque ID the app already knows and names the recognized Claude base.
+    assert.deepEqual(rows.map(row => row.name), ["claude-fable-5-1", opaqueRouteId("codex/gpt")]);
+    assert.deepEqual(rows[1], { name: opaqueRouteId("codex/gpt"), labelOverride: "GPT", maxEffort: "high", behavesAs: "claude-opus-5" });
+    // Both IDs of the route name the same upstream and controls, so a saved chat naming either still works.
+    const route = { upstream: "codex/gpt", displayName: "GPT", supportedEfforts: ["low", "high"], preserveOptionalToolArguments: true };
+    assert.deepEqual(byId(adapter.models, opaqueRouteId("codex/gpt")), { id: opaqueRouteId("codex/gpt"), ...route });
+    assert.deepEqual(byId(adapter.models, bridgeRouteName("codex/gpt")), { id: bridgeRouteName("codex/gpt"), ...route });
+    assert.equal(rows.some(row => String(row.name) === bridgeRouteName("codex/gpt")), false, "the bridge ID is adapter-only when native metadata is on");
+  } finally {
+    await new Promise<void>(resolveResult => f.server.close(() => resolveResult()));
+  }
+});
+
+test("configure without the flag keeps the bridge row ID and never emits native metadata", async () => {
+  const f = await fixture({ reasoning: true });
+  try {
+    const { stdout } = await run(process.execPath, [cli, "claude-desktop", "configure", "--gateway-config", f.gatewayConfig, "--home", f.home]);
+    const output = JSON.parse(stdout) as { candidate: { desktopProfilePath: string; adapterConfigPath: string } };
+    const profile = JSON.parse(await readFile(output.candidate.desktopProfilePath, "utf8")) as Record<string, unknown>;
+    const adapter = JSON.parse(await readFile(output.candidate.adapterConfigPath, "utf8")) as { models: Array<Record<string, unknown>> };
+    assert.deepEqual(rowsOf(profile).map(row => row.name), ["claude-fable-5-1", bridgeRouteName("codex/gpt")]);
+    assert.equal(JSON.stringify(profile).includes("behavesAs"), false);
+    assert.equal(byId(adapter.models, bridgeRouteName("codex/gpt")).upstream, "codex/gpt");
+    assert.deepEqual(byId(adapter.models, bridgeRouteName("codex/gpt")).supportedEfforts, ["low", "high"]);
+  } finally {
+    await new Promise<void>(resolveResult => f.server.close(() => resolveResult()));
+  }
+});
+
+test("--native-model-metadata is only accepted by configure", async () => {
+  const configureOnly = /Configure options are only valid for claude-desktop configure/;
+  await assert.rejects(run(process.execPath, [cli, "claude-desktop", "serve", "--config", "/tmp/adapter.json", "--native-model-metadata"]), configureOnly);
+  await assert.rejects(run(process.execPath, [cli, "claude-desktop", "install", "--config", "/tmp/adapter.json", "--native-model-metadata"]), configureOnly);
+  await assert.rejects(run(process.execPath, [cli, "claude-desktop", "status", "--native-model-metadata"]), configureOnly);
+  await assert.rejects(run(process.execPath, [cli, "claude-desktop", "inference", "--gateway-config", "/tmp/gateway.json", "--native-config", "/tmp/native.json", "--native-model-metadata"]),
+    /Inference accepts only --gateway-config and --native-config/);
 });
 
 test("inference requires absolute private gateway and native configuration paths", async () => {

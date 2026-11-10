@@ -63,6 +63,8 @@ export interface ClaudeDesktopProfileOptions {
   adapterPort?: number;
   upstream?: string;
   credentialHelper?: CredentialHelper;
+  /** Opt in: a secondary route with reasoning levels keeps its opaque ID and carries `behavesAs`. */
+  nativeModelMetadata?: boolean;
 }
 
 export interface ClaudeDesktopAdapterModel {
@@ -258,6 +260,20 @@ function boundedMaxEffort(prior: unknown, efforts: VariantEffort[]): unknown {
   return priorRank < variantEffortOrder.indexOf(top) ? prior : top;
 }
 
+/** The cap recorded under this row name, or undefined when the row does not carry one. */
+function recordedCap(oldMetadata: Map<string, Record<string, unknown>>, name: string): unknown {
+  const entry = oldMetadata.get(name);
+  if (entry === undefined || !Object.hasOwn(entry, "maxEffort")) return undefined;
+  return entry.maxEffort;
+}
+
+/** A user cap on a native row, which only our own `behavesAs` marker can prove. */
+function recordedNativeCap(oldMetadata: Map<string, Record<string, unknown>>, name: string): unknown {
+  const entry = oldMetadata.get(name);
+  if (entry === undefined || entry.behavesAs !== bridgeRouteBase) return undefined;
+  return recordedCap(oldMetadata, name);
+}
+
 /** Efforts at or below the native row's bounded cap, so a Fast variant cannot exceed what Standard allows. */
 function effortsWithin(cap: unknown, efforts: VariantEffort[]): VariantEffort[] {
   const rank = variantEffortOrder.indexOf(cap as VariantEffort);
@@ -366,29 +382,37 @@ export function buildClaudeDesktopProfile(
   const hiddenIds = new Set<string>();
   const extras: Record<string, unknown>[] = [];
   const hiddenCompat: ClaudeDesktopAdapterModel[] = [];
+  const nativeMetadata = options.nativeModelMetadata === true;
   for (const alias of [...aliases.keys()].filter(alias => !primary.has(alias)).sort()) {
     const row = catalogModels.get(alias)!;
     const efforts = variantEfforts(row);
     const compatId = stableRouteId(alias);
-    const routeId = efforts.length ? bridgeRouteName(alias) : compatId;
+    const bridgeId = bridgeRouteName(alias);
+    // Native rows keep the opaque ID and name the recognized base; legacy rows borrow the bridge ID.
+    const routeId = efforts.length ? (nativeMetadata ? compatId : bridgeId) : compatId;
     if (usedIds.has(routeId) || hiddenIds.has(routeId)) fail(`Compatibility route ID collision for ${alias}: ${routeId}`);
     usedIds.add(routeId);
     const entry: Record<string, unknown> = { name: routeId, labelOverride: row.display_name };
     if (efforts.length) {
-      // A cap the user set on this row survives. An old opaque row's `maxEffort: "high"` was
-      // automatic, not a choice, so it must not hide the efforts this route newly advertises.
-      const prior = oldMetadata.get(routeId);
-      const maxEffort = boundedMaxEffort(prior && Object.hasOwn(prior, "maxEffort") ? prior.maxEffort : undefined, efforts);
+      // Keep the cap set on this row, or on the row this mode replaces, so a migration keeps it.
+      // An old opaque row's automatic `maxEffort: "high"` is not a choice and caps nothing.
+      const prior = nativeMetadata
+        ? recordedNativeCap(oldMetadata, compatId) ?? recordedCap(oldMetadata, bridgeId)
+        : recordedCap(oldMetadata, bridgeId) ?? recordedNativeCap(oldMetadata, compatId);
+      const maxEffort = boundedMaxEffort(prior, efforts);
       if (maxEffort !== undefined) entry.maxEffort = maxEffort;
+      if (nativeMetadata) entry.behavesAs = bridgeRouteBase;
     } else if (supportsHigh(row)) entry.maxEffort = "high";
     extras.push(entry);
     const owner = aliases.get(alias)!;
     const keepOptional = owner.providerType === "codex-subscription" || owner.providerType === "responses-api";
     if (efforts.length) {
       adapterModels.push({ ...adapterModel(routeId, alias, row, keepOptional), supportedEfforts: efforts });
-      if (usedIds.has(compatId) || hiddenIds.has(compatId)) fail(`Compatibility route ID collision for ${alias}: ${compatId}`);
-      hiddenIds.add(compatId);
-      hiddenCompat.push({ ...adapterModel(compatId, alias, row, keepOptional), supportedEfforts: efforts });
+      // Saved chats may name either ID; only one of them is a visible row.
+      const compatAliasId = nativeMetadata ? bridgeId : compatId;
+      if (usedIds.has(compatAliasId) || hiddenIds.has(compatAliasId)) fail(`Compatibility route ID collision for ${alias}: ${compatAliasId}`);
+      hiddenIds.add(compatAliasId);
+      hiddenCompat.push({ ...adapterModel(compatAliasId, alias, row, keepOptional), supportedEfforts: efforts });
     } else adapterModels.push(adapterModel(routeId, alias, row, keepOptional));
     variantBases.push({ alias, row, keepOptionalToolArguments: keepOptional, primary: false, efforts: variantEfforts(row), tiers: variantTiers(row, owner.providerType) });
   }
