@@ -49,10 +49,19 @@ Run the native CLI proof after building:
 node scripts/e2e-claude-native-metadata.mjs --claude /absolute/path/to/claude
 ```
 
-`--serve` keeps the generated fixture profile and loopback adapter available for
-a manual GUI check. Use only its fresh data directory with the signed app's
-`--user-data-dir` switch and `--use-mock-keychain`, plus its own
-`CLAUDE_CONFIG_DIR`. Never use mock encryption with a real profile or account.
+`--serve` creates a separate profile library containing only the two fixture
+models, plus `gui-cli` and `gui-workspace`, and keeps the loopback adapter alive
+for a manual GUI check. Set `fixture_root` to the actual root printed by the
+runner, then launch the unmodified signed app:
+
+```sh
+CLAUDE_CONFIG_DIR="$fixture_root/gui-cli" \
+  /Applications/Claude.app/Contents/MacOS/Claude \
+  --user-data-dir="$fixture_root/desktop-3p" --use-mock-keychain
+```
+
+Use only these fresh directories. Never use mock encryption with a real profile
+or account. Choose `gui-workspace` in the test app before sending a prompt.
 Stop the fixture after closing its test app; copy its compact receipts before
 cleaning its task directory.
 

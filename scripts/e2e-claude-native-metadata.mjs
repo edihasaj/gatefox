@@ -2,7 +2,7 @@
 // Native client proof against a synthetic loopback backend. No account or paid inference is used.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -125,10 +125,18 @@ async function main() {
     receipt.passed = receipt.nativeConfigurationUnchanged && receipt.legacyBridgeRetained && receipt.legacyBridgeCompleted && runs.every(run => run.exit === 0 && run.completed
       && run.requests.some(request => request.model === alias && request.effort === run.requestedEffort && request.thinking === 'adaptive'));
     await writeFile(join(root, 'receipt.json'), JSON.stringify(receipt, null, 2), { mode: 0o600 });
-    await writeFile(join(root, 'desktop-profile.json'), JSON.stringify(state.built.profile, null, 2), { mode: 0o600 });
+    // The primary row exists only to exercise the builder; the backend serves the two mapped fixtures.
+    const desktopProfile = { ...state.built.profile, inferenceModels: state.rows };
+    await writeFile(join(root, 'desktop-profile.json'), JSON.stringify(desktopProfile, null, 2), { mode: 0o600 });
     console.log(JSON.stringify(receipt));
     process.exitCode = receipt.passed ? 0 : 1;
     if (values.serve) {
+      const library = join(root, 'desktop-3p/configLibrary');
+      await mkdir(library, { recursive: true, mode: 0o700 });
+      for (const name of ['gui-cli', 'gui-workspace']) await mkdir(join(root, name), { mode: 0o700 });
+      const id = randomUUID();
+      await writeFile(join(library, `${id}.json`), JSON.stringify(desktopProfile), { mode: 0o600, flag: 'wx' });
+      await writeFile(join(library, '_meta.json'), JSON.stringify({ entries: [{ id, name: 'GateFox fixture' }], appliedId: id }), { mode: 0o600, flag: 'wx' });
       retained = true;
       console.log(JSON.stringify({ serving: true, root, endpoint: state.endpoint }));
       const stop = async () => {
