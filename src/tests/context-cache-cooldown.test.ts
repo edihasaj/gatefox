@@ -115,3 +115,25 @@ test("stale completion and cleanup cannot release a newer compacted chat's recov
     assert.doesNotThrow(() => budget(500).beforeRequest("provider"));
   }
 });
+
+test("a provider cacheMissLimit lets a new cheap worker warm its cache before the stop", t => {
+  let now = Date.now(); t.mock.method(Date, "now", () => now);
+  const budget = (missLimit?: number) => contextCacheBudget("miss-limit", "thread", "model", 1000, { missLimit });
+  for (let i = 0; i < 5; i++) { const request = budget(6); request.beforeRequest("provider"); request.record(cold); }
+  const sixth = budget(6); sixth.beforeRequest("provider");
+  assert.throws(() => budget(6).beforeRequest("provider"), ContextCacheBlocked, "the last allowed attempt is reserved against parallel requests");
+  sixth.record(cold);
+  assert.throws(() => budget(6).beforeRequest("provider"), ContextCacheBlocked, "six measured misses reach the stop");
+  now += 5 * 60_000;
+  const recovered = budget(6); recovered.beforeRequest("provider"); recovered.record(warm);
+  assert.doesNotThrow(() => budget(6).beforeRequest("provider"));
+  const other = (missLimit?: number) => contextCacheBudget("miss-limit-default", "thread", "model", 1000, { missLimit });
+  for (let i = 0; i < 3; i++) { const request = other(99); request.beforeRequest("provider"); request.record(cold); }
+  assert.throws(() => other(99).beforeRequest("provider"), ContextCacheBlocked, "an out-of-range value keeps the default of three");
+});
+
+test("unknown usage keeps the two-miss stop even with a larger cacheMissLimit", () => {
+  const budget = () => contextCacheBudget("miss-limit-unknown", "thread", "model", 1000, { missLimit: 8 });
+  for (let i = 0; i < 2; i++) { const request = budget(); request.beforeRequest("provider"); request.record({ input: 104562 }); }
+  assert.throws(() => budget().beforeRequest("provider"), ContextCacheBlocked);
+});

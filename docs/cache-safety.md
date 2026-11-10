@@ -40,6 +40,13 @@ A miss streak containing unreported cache usage or a provider refusal keeps the
 two-miss limit. Unknown cache usage has a distinct explanation and is never
 presented as a measured zero.
 
+A provider can raise the measured-miss allowance with `cacheMissLimit` (an integer
+from 3 to 12; default 3). The last allowed request is still reserved against parallel
+requests, and the cooldown and single recovery probe are unchanged. Use it only for a
+cheap metered provider whose prefix cache builds asynchronously: on 10 November 2026 a
+new DeepSeek Flash worker on OpenRouter was paused after three cold requests at about
+7% cache reuse. Unknown cache usage and provider refusals keep the two-miss limit.
+
 Before a safety stop, five minutes without request activity starts a fresh warm-up period. An idle
 chat can legitimately lose its provider cache or live session, so a cold seed
 after that gap does not combine with an old miss to block its first continuation.

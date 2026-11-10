@@ -83,6 +83,9 @@ test("a local address alone stays stopped, because it can be a proxy to a metere
 test("selfHosted is refused away from a loopback or tailnet inference provider", () => {
   const row = { id: "x", models: { alias: "upstream" }, apiKeyEnv: "UNUSED_CACHE_GUARD_KEY", selfHosted: true };
   assert.throws(() => validateConfig({ version: 1, port: 0, stateDirectory: "/tmp/unused", providers: [{ ...row, type: "responses-api", baseUrl: "https://openrouter.ai/api/v1" }] }), /selfHosted requires/);
+  const openrouter = { ...row, type: "responses-api" as const, baseUrl: "https://openrouter.ai/api/v1" };
+  for (const bad of [2, 13, 4.5, "6"]) assert.throws(() => validateConfig({ version: 1, port: 0, stateDirectory: "/tmp/unused", providers: [{ ...openrouter, selfHosted: undefined, cacheMissLimit: bad as number }] }), /cacheMissLimit must be an integer from 3 to 12/);
+  assert.doesNotThrow(() => validateConfig({ version: 1, port: 0, stateDirectory: "/tmp/unused", providers: [{ ...openrouter, selfHosted: undefined, cacheMissLimit: 6 }] }));
   assert.throws(() => validateConfig({ version: 1, port: 0, stateDirectory: "/tmp/unused", providers: [{ id: "x", type: "codex-subscription", models: { alias: "upstream" }, credentialFile: "/tmp/unused/c", selfHosted: true }] }), /selfHosted/);
 });
 

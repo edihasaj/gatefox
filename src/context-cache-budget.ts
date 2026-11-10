@@ -52,10 +52,14 @@ export interface ContextCacheBudget {
 }
 
 const trim = () => { while (histories.size > maxHistories) histories.delete(histories.keys().next().value!); };
-const missLimit = (prior: Rewrite): number => prior.unknown || prior.strict ? 2 : 3;
+const defaultMissLimit = 3;
+/** Unknown usage and refusals keep two misses; a provider can allow more measured misses (3–12) to warm a new cache. */
+const limitFor = (measured: number) => (prior: Rewrite): number => prior.unknown || prior.strict ? 2 : measured;
 
 /** Count-only, bounded process state shared by every provider and preserved across hot upgrades. `advisory` records without stopping. */
-export function contextCacheBudget(scope: string, identity: string | undefined, model: string, bytes: number, options: { advisory?: boolean } = {}): ContextCacheBudget {
+export function contextCacheBudget(scope: string, identity: string | undefined, model: string, bytes: number, options: { advisory?: boolean; missLimit?: number } = {}): ContextCacheBudget {
+  const measuredLimit = Number.isInteger(options.missLimit) && options.missLimit! >= defaultMissLimit && options.missLimit! <= 12 ? options.missLimit! : defaultMissLimit;
+  const missLimit = limitFor(measuredLimit);
   const key = createHash("sha256").update(JSON.stringify([scope, identity ?? null, model])).digest("hex");
   let ownsProbe = false;
   let cooldownProbe = false;
@@ -109,7 +113,7 @@ export function contextCacheBudget(scope: string, identity: string | undefined, 
       // claim the same recovery allowance. Only its own completion releases it.
       const reserve = () => { prior.probe = probeToken; ownsProbe = true; admit(); };
       if (!limited && !prior.probe) {
-        if (!options.advisory && prior.count === 2) reserve(); else admit();
+        if (!options.advisory && missLimit(prior) === measuredLimit && prior.count === measuredLimit - 1) reserve(); else admit();
         return;
       }
       if (limited && prior.blockedUntil === undefined) prior.blockedUntil = (prior.lastActivityAt ?? now) + idleResetMs;

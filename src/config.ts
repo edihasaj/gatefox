@@ -32,6 +32,12 @@ export interface ProviderConfig {
    * proxy to a metered upstream, so leave this off for anything that forwards.
    */
   selfHosted?: boolean;
+  /**
+   * Measured large cache misses in a row that cache safety allows before its five-minute stop (default 3, maximum 12).
+   * Raise it only for a cheap metered provider whose prefix cache builds asynchronously, such as DeepSeek through
+   * OpenRouter, so a fresh worker can warm up. Unknown usage and refusals keep their two-miss limit.
+   */
+  cacheMissLimit?: number;
   /** Send the caller's reasoning effort through vLLM chat template kwargs, for routers with narrower effort enums. */
   chatTemplateReasoningEffort?: boolean;
   apiKeyEnv?: string;
@@ -279,6 +285,9 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
         || (!provider.tailnet && !["localhost", "127.0.0.1", "[::1]"].includes(new URL(provider.baseUrl).hostname))) {
         throw new Error(`${provider.id}: selfHosted requires a loopback or tailnet inference provider`);
       }
+    }
+    if (provider.cacheMissLimit !== undefined && (!Number.isInteger(provider.cacheMissLimit) || provider.cacheMissLimit < 3 || provider.cacheMissLimit > 12)) {
+      throw new Error(`${provider.id}: cacheMissLimit must be an integer from 3 to 12`);
     }
     if (provider.grokHome !== undefined && (provider.type !== "grok-subscription" || typeof provider.grokHome !== "string" || !provider.grokHome)) throw new Error(`${provider.id}: grokHome is only valid for grok-subscription providers`);
     if (provider.defaultForBareModels !== undefined) {

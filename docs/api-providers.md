@@ -166,6 +166,10 @@ OpenRouter can fall back to a cache key or hashes of the opening messages.
 Manual provider order, endpoint eligibility and vendor cache expiry still apply;
 the gateway does not change provider selection or cache retention settings.
 
+DeepSeek builds its prefix cache in the background, so a new worker's first few
+large requests can miss it. Set `"cacheMissLimit": 6` on the OpenRouter provider to
+let such a worker warm up before the shared [cache-safety stop](cache-safety.md).
+
 `gateway diagnostics` reports `cacheHit` as cached input tokens divided by
 reported total input tokens, not the fraction of requests that hit a cache.
 Short/cold requests, new workers and changed prefixes can legitimately show

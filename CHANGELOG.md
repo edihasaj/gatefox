@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- A provider can set `cacheMissLimit` (3 to 12, default 3) to allow more measured
+  large cache misses in a row before the five-minute cache-safety stop. DeepSeek on
+  OpenRouter builds its prefix cache asynchronously, so a fresh Flash worker could be
+  paused after three cold requests although its cache was still warming. Unknown usage
+  and refusals keep the two-miss limit, and other providers are unchanged.
+
 ## 1.8.8 — 2026-11-10
 
 - Chat Completions servers (local Qwen through vLLM) now report every context overflow
