@@ -343,13 +343,13 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     let recorded = false;
     let providerId: string | undefined; let providerType: string | undefined; let model: string | undefined; let requestedModel: string | undefined; let context: InferenceContext | undefined; let routedAs: string | undefined;
     const startedAt = Date.now();
-    let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let droppedControlItems = 0; let usage: Usage | undefined; let accounting: UsageAccounting | undefined; let responseId: string | undefined; let turnStateReturned = false;
+    let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let droppedControlItems = 0; let contextOutputs = 0; let usage: Usage | undefined; let accounting: UsageAccounting | undefined; let responseId: string | undefined; let turnStateReturned = false;
     const outcome = () => { const routing = context ?? inferenceContext(req.headers); return { requestId, provider: providerId, model, durationMs: Date.now() - startedAt, queueMs: admittedAt ? admittedAt - startedAt : undefined,
       autoReview: model !== undefined && isAutoReviewModel(model) ? true : undefined, requestedModel,
       clientProtocol: messagesProtocol ? "messages" : "responses",
       firstEventMs: firstEventAt ? firstEventAt - (admittedAt || startedAt) : undefined, events, toolCalls: tools, inputTokens: usage?.input_tokens,
       cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens,
-      providerType, cacheWriteTokens: accounting?.cacheWriteTokens ?? usage?.input_tokens_details?.cache_creation_tokens, reasoningTokens: accounting?.reasoningTokens, nanoAiu: accounting?.nanoAiu, nanoAiuStatus: accounting?.nanoAiuStatus, initiator: accounting?.initiator, session: !!routing.sessionId, turnStateEchoed: !!routing.turnState, turnStateReturned, droppedControlItems: droppedControlItems || undefined }; };
+      providerType, cacheWriteTokens: accounting?.cacheWriteTokens ?? usage?.input_tokens_details?.cache_creation_tokens, reasoningTokens: accounting?.reasoningTokens, nanoAiu: accounting?.nanoAiu, nanoAiuStatus: accounting?.nanoAiuStatus, initiator: accounting?.initiator, session: !!routing.sessionId, turnStateEchoed: !!routing.turnState, turnStateReturned, droppedControlItems: droppedControlItems || undefined, contextOutputs: contextOutputs || undefined }; };
     // Content-free record of what the request cost, appended once per finished request.
     const ledger = (status: LedgerStatus) => recordUsage(config.stateDirectory, { requestId, responseId, provider: providerId, providerType, model, status,
       inputTokens: usage?.input_tokens, cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens, cacheWriteTokens: accounting?.cacheWriteTokens ?? usage?.input_tokens_details?.cache_creation_tokens,
@@ -421,7 +421,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       }
       const translated = messagesProtocol ? messagesToResponses(wire, { countTokens, agentId: messagesAgentId(req.headers) }) : wire;
       // Internal wire fields and control items go once, here, whichever protocol the request arrived in.
-      const internal = stripOpenAIInternal(translated); const request = internal.request; droppedControlItems = internal.droppedControlItems;
+      const internal = stripOpenAIInternal(translated); const request = internal.request; droppedControlItems = internal.droppedControlItems; contextOutputs = internal.contextOutputs;
       const claudeCodeKind = messagesProtocol ? messagesRequestKind(req.headers) : undefined;
       context = { ...inferenceContext(req.headers, request), ...(claudeCodeKind ? { requestKind: claudeCodeKind } : {}), ...(messagesProtocol ? { clientProtocol: "messages" as const,
         ...((wire.thinking as { type?: string } | undefined)?.type === "adaptive" ? { adaptiveThinking: true } : {}) } : {}) };

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { validateConfig, gatewayToken, type ProviderConfig } from "../config.js";
 import { createGatewayHandler, startGateway } from "../server.js";
 import { stripOpenAIInternal } from "../protocol/openai-internal.js";
+import { responsesToChatRequest } from "../protocol/request.js";
 import { ResponsesAPI } from "../providers/responses-api.js";
 import type { InferenceEvent, ResponsesRequest } from "../protocol/types.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -176,4 +177,19 @@ test("malformed client_metadata and non-object items pass through the strip help
     const raw = { model: "m", input } as unknown as ResponsesRequest;
     assert.equal(stripOpenAIInternal(raw).request, raw);
   }
+});
+
+test("Codex app context outputs without a call ID become user context every provider can translate", () => {
+  // The exact shape a Codex 26.1103 app sent on 10 November 2026 (internal metadata trimmed).
+  const page = { type: "function_call_output", id: "fco_1", name: "codex_apps_open_page", namespace: "agent", output: "{\"page_id\":null}",
+    internal_chat_message_metadata_passthrough: { turn_id: "t" } };
+  const request = { model: "claude-secondary/claude-sonnet-5-5", input: [{ type: "message", role: "user", content: "hi" }, page] } as unknown as ResponsesRequest;
+  const prepared = stripOpenAIInternal(request);
+  assert.equal(prepared.contextOutputs, 1);
+  assert.deepEqual((prepared.request.input as unknown[])[1], { type: "message", role: "user",
+    content: [{ type: "input_text", text: "<external_codex_apps_open_page>{\"page_id\":null}</external_codex_apps_open_page>" }] });
+  assert.doesNotThrow(() => responsesToChatRequest(prepared.request));
+  assert.throws(() => responsesToChatRequest(request), "the raw item still has no call ID to pair");
+  const paired = { model: "m", input: [{ type: "function_call", call_id: "c", name: "f", arguments: "{}" }, { type: "function_call_output", call_id: "c", output: "ok" }] } as unknown as ResponsesRequest;
+  assert.equal(stripOpenAIInternal(paired).request, paired, "ordinary tool outputs are untouched");
 });

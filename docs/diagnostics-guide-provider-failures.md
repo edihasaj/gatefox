@@ -101,6 +101,7 @@ Two fixed fields describe how the gateway treated a Responses request before any
 | Field | Where | Meaning |
 | --- | --- | --- |
 | `translation_reason` | `request_failed`, and the stderr `provider_failure` line | The gateway refused the request by its own rule, not because translation failed. The only value is `unsupported_compaction`: the request carried a `compaction_trigger` item. Any other value is dropped. |
+| `contextOutputs` | `request_completed`, `request_empty`, `request_failed` | How many call-ID-less client context outputs were rewritten as user context. A count only; absent when it is zero. |
 | `droppedControlItems` | `request_completed`, `request_empty`, `request_failed` | How many `configuration_update` items were removed. A count only, never item content; absent when it is zero. |
 
 `gateway diagnostics` counts a refused compaction as `failed:invalid_request:unsupported_compaction`

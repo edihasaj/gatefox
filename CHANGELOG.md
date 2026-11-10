@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Codex app context items that arrive as a `function_call_output` with a name but no
+  `call_id` (such as `codex_apps_open_page`) are rewritten once, before any provider,
+  as a user context message `<external_NAME>…</external_NAME>`. They previously failed
+  every gateway turn on Claude and other translated routes with "Responses request
+  contains invalid or unsupported data". Request telemetry counts them as `contextOutputs`.
+
 ## 1.8.9 — 2026-11-10
 
 - A provider can set `cacheMissLimit` (3 to 12, default 3) to allow more measured

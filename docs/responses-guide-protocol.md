@@ -329,6 +329,12 @@ Messages request after it has been translated. Shapes that are not objects (`cli
 that is `null`, an array or a string, an input item that is `null`, a number or an array) are not
 read as maps and are left for translation to accept or reject.
 
+Codex app builds from 26.1103 send client context, such as `codex_apps_open_page` page
+snapshots, as a `function_call_output` with a `name` and no `call_id`. It answers no tool
+call, so the request handler rewrites it once, for every route, as a user message whose
+text is `<external_NAME>OUTPUT</external_NAME>`, the form the app itself presents to models.
+Outputs that carry a `call_id` are unchanged. The count is `contextOutputs`.
+
 Two input items are executor control, not model input. A `configuration_update` item is removed
 before translation and counted in the request's telemetry record as `droppedControlItems` (a count
 only, never item content). A `compaction_trigger` item fails the request as final: streams get a
