@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.8.7 — 2026-11-10
 
 - Large chats get one additional request to recover from two measured cache misses.
   If reuse still fails, the five-minute cooldown has a fixed deadline that retries
