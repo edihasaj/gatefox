@@ -15,6 +15,7 @@ const help = `gateway claude-desktop — isolated Claude Desktop aliases
 
   gateway claude-desktop configure --gateway-config PATH [--home PATH] [--port NUMBER]
     [--primary-claude-provider ID] [--model MODEL] [--endpoint LOOPBACK_URL --token-file PATH] [--apply]
+    [--native-model-metadata]
   gateway claude-desktop serve --config ADAPTER_CONFIG.json
   gateway claude-desktop install --config ADAPTER_CONFIG.json [--home PATH]
   gateway claude-desktop status [--config ADAPTER_CONFIG.json] [--home PATH]
@@ -25,6 +26,9 @@ candidate under Claude-3p/alias-trial/candidate. --apply requires Claude Desktop
 to be quit, writes a recoverable backup, and updates only that selected profile
 and the private adapter config. For a separate gateway, use a local http://
 loopback SSH forward as --endpoint and pair it with that forward's --token-file.
+--native-model-metadata is opt-in: a secondary route that advertises reasoning levels keeps its
+opaque row ID and carries native model metadata so Claude Desktop shows its own effort control.
+Without it the candidate matches the previously generated profile.
 install is retired: it never creates a separate LaunchAgent. Existing deployments
 move under the signed app with gateway service claude-desktop --on-restart.`;
 
@@ -127,6 +131,7 @@ async function configure(values: Record<string, string | boolean | undefined>): 
     tokenFile, adapterRoot: paths.adapterRoot, adapterPort: parsePort(typeof values.port === "string" ? values.port : undefined),
     primaryClaudeProvider: typeof values["primary-claude-provider"] === "string" ? values["primary-claude-provider"] : undefined,
     defaultModel: typeof values.model === "string" ? values.model : undefined, upstream: endpoint,
+    nativeModelMetadata: values["native-model-metadata"] === true,
     credentialHelper: { command: helper.command, args: [...helper.args, "token"] },
   });
   const candidate = await writeClaudeDesktopCandidate(paths.candidateRoot, built.profile, built.adapterConfig);
@@ -176,6 +181,7 @@ export async function runClaudeDesktopCommand(argv: string[]): Promise<void> {
       config: { type: "string" }, "gateway-config": { type: "string" }, home: { type: "string" }, port: { type: "string" },
       "primary-claude-provider": { type: "string" }, model: { type: "string" }, apply: { type: "boolean" },
       "token-file": { type: "string" }, endpoint: { type: "string" }, "native-config": { type: "string" },
+      "native-model-metadata": { type: "boolean" },
     },
   });
   const [command, ...extra] = positionals;
@@ -185,13 +191,13 @@ export async function runClaudeDesktopCommand(argv: string[]): Promise<void> {
     await configure(values); return;
   }
   if (command === "inference") {
-    if ([values.config, values.home, values.port, values["primary-claude-provider"], values.model, values.apply, values["token-file"], values.endpoint].some(value => value !== undefined)) {
+    if ([values.config, values.home, values.port, values["primary-claude-provider"], values.model, values.apply, values["token-file"], values.endpoint, values["native-model-metadata"]].some(value => value !== undefined)) {
       throw new Error("Inference accepts only --gateway-config and --native-config");
     }
     await inference(requireAbsolute(values["gateway-config"], "--gateway-config"), requireAbsolute(values["native-config"], "--native-config"));
     return;
   }
-  if ([values["gateway-config"], values.port, values["primary-claude-provider"], values.model, values.apply, values["token-file"], values.endpoint, values["native-config"]].some(value => value !== undefined)) {
+  if ([values["gateway-config"], values.port, values["primary-claude-provider"], values.model, values.apply, values["token-file"], values.endpoint, values["native-config"], values["native-model-metadata"]].some(value => value !== undefined)) {
     throw new Error("Configure options are only valid for claude-desktop configure");
   }
   if (command === "serve") {

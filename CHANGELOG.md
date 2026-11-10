@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Claude Desktop configuration can opt into native `behavesAs` model metadata
+  with `--native-model-metadata`. Secondary reasoning models keep stable opaque
+  IDs, while older saved-chat routes remain accepted and explicit effort caps
+  survive migration. The existing mapping remains the default.
+
 ## 1.9.1 — 2026-11-11
 
 - Claude Fable 5.2 and Mythos 5.1 now advertise a 1M context window instead of 200K.

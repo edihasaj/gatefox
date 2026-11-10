@@ -1,0 +1,147 @@
+{
+  "nativeCliVersion": "2.1.299",
+  "desktopVersion": "4.23118.1",
+  "paidInference": false,
+  "cli": {
+    "syntheticInference": true,
+    "runs": [
+      {
+        "mapped": true,
+        "requestedEffort": "low",
+        "exit": 0,
+        "timedOut": false,
+        "overflow": false,
+        "completed": true,
+        "requests": [
+          {
+            "model": "claude-hg-route-107001",
+            "effort": "low",
+            "tier": null,
+            "thinking": "adaptive",
+            "stream": true
+          }
+        ]
+      },
+      {
+        "mapped": true,
+        "requestedEffort": "high",
+        "exit": 0,
+        "timedOut": false,
+        "overflow": false,
+        "completed": true,
+        "requests": [
+          {
+            "model": "claude-hg-route-107001",
+            "effort": "high",
+            "tier": null,
+            "thinking": "adaptive",
+            "stream": true
+          }
+        ]
+      },
+      {
+        "mapped": true,
+        "requestedEffort": "max",
+        "exit": 0,
+        "timedOut": false,
+        "overflow": false,
+        "completed": true,
+        "requests": [
+          {
+            "model": "claude-hg-route-107001",
+            "effort": "max",
+            "tier": null,
+            "thinking": "adaptive",
+            "stream": true
+          }
+        ]
+      }
+    ],
+    "control": {
+      "mapped": false,
+      "requestedEffort": "high",
+      "exit": 0,
+      "timedOut": false,
+      "overflow": false,
+      "completed": true,
+      "requests": [
+        {
+          "model": "claude-hg-route-107001",
+          "effort": "high",
+          "tier": null,
+          "thinking": "adaptive",
+          "stream": true
+        }
+      ]
+    },
+    "legacyBridgeRetained": true,
+    "legacyBridgeCompleted": true,
+    "nativeConfigurationUnchanged": true,
+    "passed": true
+  },
+  "gui": {
+    "firstRowEffortMenu": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "cappedRowEffortMenu": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "firstRowCompletedAtMax": true,
+    "secondRowCompletedAtLow": true,
+    "relaunchModelAndEffortPreserved": true,
+    "resumedChatCompleted": true,
+    "fixtureResponses": 3,
+    "appUnmodified": true,
+    "appVersion": "4.23118.1",
+    "guiUpstreamControls": [
+      {
+        "model": "claude-hg-route-107001",
+        "effort": null,
+        "tier": null,
+        "thinking": null,
+        "stream": false
+      },
+      {
+        "model": "claude-hg-route-107001",
+        "effort": null,
+        "tier": null,
+        "thinking": null,
+        "stream": false
+      },
+      {
+        "model": "claude-hg-route-107001",
+        "effort": "high",
+        "tier": null,
+        "thinking": "adaptive",
+        "stream": true
+      },
+      {
+        "model": "claude-hg-route-107001",
+        "effort": "max",
+        "tier": null,
+        "thinking": "adaptive",
+        "stream": true
+      },
+      {
+        "model": "claude-hg-route-107002",
+        "effort": "low",
+        "tier": null,
+        "thinking": "adaptive",
+        "stream": true
+      },
+      {
+        "model": "claude-hg-route-107002",
+        "effort": "low",
+        "tier": null,
+        "thinking": "adaptive",
+        "stream": true
+      }
+    ]
+  }
+}
