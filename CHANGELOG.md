@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.9.0 — 2026-11-10
 
 - Codex app context items that arrive as a `function_call_output` with a name but no
   `call_id` (such as `codex_apps_open_page`) are rewritten once, before any provider,
