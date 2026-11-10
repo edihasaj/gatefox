@@ -247,9 +247,12 @@ test("system tunnel liveness binds the service PID and start to its actual execu
   const child = spawn("/bin/sleep", ["10"], { stdio: "ignore" });
   try {
     assert.ok(child.pid);
-    const live = await componentLiveness({ id: "tunnel-fixture", kind: "tunnel", command: "/bin/sleep", args: [], log: "/tmp/rollout-test.log" },
-      child.pid!, new Date().toISOString());
+    const component = { id: "tunnel-fixture", kind: "tunnel" as const, command: "/bin/sleep", args: [], log: "/tmp/rollout-test.log" };
+    const startedAt = new Date().toISOString();
+    const live = await componentLiveness(component, child.pid!, startedAt);
     assert.equal(live, true);
+    assert.equal(await componentLiveness({ ...component, command: process.execPath }, child.pid!, startedAt), false, "another executable cannot attest this process");
+    assert.equal(await componentLiveness(component, child.pid!, new Date(Date.now() - 60_000).toISOString()), false, "a mismatched process start stays pending");
   } finally {
     child.kill("SIGTERM");
     await once(child, "close");

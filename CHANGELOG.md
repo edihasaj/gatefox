@@ -9,6 +9,10 @@
   their earlier spending limits. The error reports the remaining wait and preserves
   the chat history.
 
+- Linux rollout checks verify external component executables through procfs,
+  so minimal hosts without `lsof` can attest a live tunnel while mismatched
+  executables and process start stamps remain pending.
+
 ## 1.8.6 — 2026-11-09
 
 - Fixed a rolling-update regression introduced in 1.8.5: changing the gateway auth

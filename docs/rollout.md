@@ -52,6 +52,10 @@ start and expected executable. Its deliberately pinned private JavaScript is not
 relabeled as the main installed release; its authenticated endpoints require
 separate post-migration checks.
 
+On Linux, external component executable identity comes from `/proc/<pid>/exe`
+after the PID, owner and start stamp match. It does not require `lsof`; unreadable
+or mismatched executable identity keeps the component pending.
+
 The normal command accepts only a host-controlled cached canary report that is
 less than five minutes old and still matches the live status. `--verify` runs a
 new isolated serving-host canary. It uses a local mock provider and a temporary

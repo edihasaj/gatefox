@@ -231,6 +231,9 @@ export async function componentLiveness(component: ServicePlan["components"][num
     if (!row || !startsTogether(row.startedAt, startedAt)) return false;
     const expected = await realpath(component.command).catch(() => undefined);
     if (!expected) return false;
+    // Linux comm is only a short process name, and minimal hosts may not have
+    // lsof. Procfs identifies the actual executable and fails closed if unreadable.
+    if (process.platform === "linux") return await realpath(`/proc/${pid}/exe`).catch(() => undefined) === expected;
     // `comm=` contains the executable, never its arguments. An absolute command
     // must resolve to the exact plan executable. BSD ps may return only a basename;
     // in that case an immutable text mapping supplies the exact path.
