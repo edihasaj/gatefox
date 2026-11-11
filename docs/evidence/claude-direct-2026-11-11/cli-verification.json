@@ -106,6 +106,27 @@
       ],
       "passed": true,
       "expectedEffort": "low"
+    },
+    {
+      "name": "discovery",
+      "discoveredRows": 2,
+      "rowKind": "opaque",
+      "requestedEffort": "high",
+      "exit": 0,
+      "timedOut": false,
+      "overflow": false,
+      "completed": true,
+      "requests": [
+        {
+          "model": "claude-hg-route-107001",
+          "effort": "high",
+          "tier": null,
+          "thinking": "adaptive",
+          "stream": true
+        }
+      ],
+      "passed": true,
+      "expectedEffort": "high"
     }
   ],
   "nativeConfigurationUnchanged": true,

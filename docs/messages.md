@@ -114,7 +114,7 @@ is accepted by the generator and normalized for this purpose.
 | `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS` | Declares the launch model's catalog window so compaction runs at the right point. It is left out when the model's window is unknown, because the catalog's 32,768 placeholder does not describe the model. A remote client sees only the public catalog, so a model there whose real window is exactly 32,768 is also left out. |
 | `env.CLAUDE_CODE_AUTO_MODE_SERVER=0` | Keeps auto mode on its client-side classifier. Claude Code 2.1.319 otherwise asks the server for the review, which this gateway does not offer, and denies every reviewed action. |
 | `effortLevel` | Starts on the launch model's default effort when the model offers one and it is a level Claude Code keeps from settings (`low`, `medium`, `high`, `xhigh`), because Claude Code's own default can be a level the route refuses. |
-| `modelPicker` | Lists the catalog's visible aliases in `/model`, plus the launch model. Claude Code's own discovery keeps only IDs containing `claude` or `anthropic`, so it would hide GPT and Qwen. |
+| `modelPicker` | Lists the catalog's visible aliases in `/model`, plus the launch model. Claude Code's own discovery keeps only IDs containing `claude` or `anthropic`, so it never shows a GPT or Qwen alias; it can show their [Claude-safe IDs](claude-desktop-direct.md#claude-code-model-discovery) instead. |
 
 `modelPicker` replaces the built-in rows because they name models this gateway may
 not serve. Claude Code keeps its own **Default** row, which still names a Claude

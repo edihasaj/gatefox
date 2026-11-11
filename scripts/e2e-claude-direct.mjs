@@ -50,19 +50,23 @@ async function fixture(root) {
   }
 }
 
-async function runClient(cli, state, root, name, row, effort) {
+// `discovery` leaves the picker rows out and lets the client read the gateway's model list itself.
+async function runClient(cli, state, root, name, row, effort, discovery = false) {
   const home = join(root, name);
   await mkdir(home, { mode: 0o700 });
   const settings = join(home, 'settings.json');
+  const debugFile = join(home, 'debug.log');
   const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
   await writeFile(settings, JSON.stringify({ apiKeyHelper: `${quote(process.execPath)} ${quote(state.helper)}`,
-    modelPicker: { options: [{ model: row.name, label: row.labelOverride, ...(row.behavesAs ? { behavesAs: row.behavesAs } : {}) }] },
-    env: { ANTHROPIC_BASE_URL: state.endpoint, DISABLE_AUTOUPDATER: '1',
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', CLAUDE_CODE_ENABLE_TELEMETRY: '0' },
+    ...(discovery ? {} : { modelPicker: { options: [{ model: row.name, label: row.labelOverride, ...(row.behavesAs ? { behavesAs: row.behavesAs } : {}) }] } }),
+    env: { ANTHROPIC_BASE_URL: state.endpoint, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_ENABLE_TELEMETRY: '0',
+      // Discovery counts as nonessential traffic, so that run turns off telemetry and error reports one by one.
+      ...(discovery ? { CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: '1', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1' } : { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' }) },
   }), { mode: 0o600 });
   const before = state.backend.requests.length;
   const child = spawn(cli, ['--print', '--model', row.name, '--effort', effort, '--settings', settings,
     '--setting-sources', '', '--output-format', 'stream-json', '--verbose', '--no-session-persistence',
+    ...(discovery ? ['--debug-file', debugFile] : []),
     '--tools', '', '--max-turns', '1', '--restricted', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}'], {
     cwd: home, env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: home, TMPDIR: home,
       CLAUDE_CONFIG_DIR: home, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, LANG: 'en_US.UTF-8' },
@@ -90,7 +94,9 @@ async function runClient(cli, state, root, name, row, effort) {
     child.once('error', () => done(null)); child.once('close', code => done(code));
   });
   if (pending) consume(pending);
-  return { name, rowKind: row.behavesAs ? 'opaque+behavesAs' : /\[/.test(row.name) ? 'bridge' : 'opaque', requestedEffort: effort, exit, timedOut, overflow,
+  // The client's own debug line says how many rows of the list it kept; nothing else of the log is read or retained.
+  const cached = discovery ? Number(/\[gatewayDiscovery\] cached (\d+) models/.exec(await readFile(debugFile, 'utf8').catch(() => ''))?.[1] ?? NaN) : undefined;
+  return { name, ...(discovery ? { discoveredRows: Number.isFinite(cached) ? cached : null } : {}), rowKind: row.behavesAs ? 'opaque+behavesAs' : /\[/.test(row.name) ? 'bridge' : 'opaque', requestedEffort: effort, exit, timedOut, overflow,
     completed: result?.success === true && result.marker, requests: state.backend.requests.slice(before) };
 }
 
@@ -118,6 +124,11 @@ async function main() {
         && run.requests.some(request => request.effort === expected && request.thinking === 'adaptive');
       run.expectedEffort = expected; runs.push(run);
     }
+    // Claude Code's own gateway discovery, with no picker rows in its settings: it reads the same list a profile is built from.
+    const discovered = await runClient(values.claude, state, root, 'discovery', { name: state.rows[reasoner].id, labelOverride: '' }, 'high', true);
+    discovered.passed = discovered.exit === 0 && discovered.completed && discovered.discoveredRows === state.rows.length
+      && discovered.requests.some(request => request.model === routes['synthetic/reasoner'].upstream && request.effort === 'high');
+    discovered.expectedEffort = 'high'; runs.push(discovered);
     const receipt = { root, syntheticInference: true, adapter: false, rows: state.rows.length, runs,
       nativeConfigurationUnchanged: JSON.stringify(before) === JSON.stringify(await Promise.all(protectedPaths().map(digest))) };
     receipt.passed = receipt.nativeConfigurationUnchanged && runs.every(run => run.passed);

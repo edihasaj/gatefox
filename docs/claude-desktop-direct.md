@@ -119,6 +119,20 @@ alias and whether a hidden variant was used. It contains no request content.
 
 `POST /v1/responses` does not accept these IDs.
 
+## Claude Code model discovery
+
+Claude Code can fill `/model` from a gateway when
+`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` is set next to
+`ANTHROPIC_BASE_URL`. It keeps only IDs that contain `claude` or `anthropic`,
+which is why it used to hide every GPT and local model here. The Anthropic
+list above passes that filter, so discovery now returns one row per gateway
+model, with its real label.
+
+The [generated settings](messages.md#claude-code-setup) remain the better
+setup for Claude Code. They list the gateway aliases themselves and declare
+the launch model's context window and default effort. A discovered row is an
+ID Claude Code does not know, so it assumes a 200K window for it.
+
 ## Moving from the adapter
 
 Apply a direct profile as shown above. The adapter configuration on disk and
@@ -149,11 +163,13 @@ asks you to choose a model again.
 
 ## Verification
 
-On 11 November 2026 the native Claude Code CLI 2.1.299 completed five turns
+On 11 November 2026 the native Claude Code CLI 2.1.299 completed six turns
 against a real gateway listener with no adapter, using a synthetic loopback
 backend. Bridge rows and opaque rows with `behavesAs` both reached their own
 upstream model. A `max` request reached a route that offers up to `high` as
-`high`, and `medium` reached a `low`/`high` route as `low`. See the
+`high`, and `medium` reached a `low`/`high` route as `low`. In the sixth run
+the settings held no picker rows: the client's own gateway discovery kept
+both listed rows, and a turn on a discovered ID completed. See the
 [sanitized receipt](evidence/claude-direct-2026-11-11/cli-verification.json).
 
 ```sh
@@ -162,7 +178,8 @@ node scripts/e2e-claude-direct.mjs --claude /absolute/path/to/claude
 ```
 
 This check uses no account and no paid inference. The rendered Claude Desktop
-picker against a direct profile, a real provider turn selected in the app, and
-Auto mode through a direct profile have not been verified yet.
+picker against a direct profile, the `/model` picker after discovery, a real
+provider turn selected in the app, and Auto mode through a direct profile
+have not been verified yet.
 
 Return to the [Claude Desktop guide](claude-desktop.md).
