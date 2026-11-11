@@ -42,7 +42,9 @@ removes the others.
   failure within two minutes that no newer healthy probe has cleared.
 - `limited`: a live quota window is at 100% (until its reset, however old the
   reading), a quota failure within six hours with no later success or newer quota
-  reading, a throttle until its `Retry-After` (two minutes without one), or a fresh
+  reading, a ChatGPT `subscription_sharing_usage_limit_exceeded` refusal within six
+  hours with no later success (no quota reading clears it: Spendwatch measures native
+  ChatGPT usage, not the sharing allowance), a throttle until its `Retry-After` (two minutes without one), or a fresh
   zero balance.
 - `unknown`: a local server without a probe in the last 90 seconds.
 - `busy`: running requests reached the provider's limit, or requests are queued.

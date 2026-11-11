@@ -155,6 +155,18 @@ test("an empty Spendwatch row is no observation and never clears a quota refusal
   assert.equal(providerRow(facts({ local: false, outcome: failure, quota: expired }), now).status, "limited", "a reading without a live window says nothing");
 });
 
+test("a newer native quota reading never clears a subscription-sharing refusal; a success or six hours does", () => {
+  const now = 10 * hour;
+  const reading = { source: "spendwatch" as const, observedAt: now - 1000, windows: [{ minutes: 10080, usedPercent: 56, resetsAt: now + 100 * hour }] };
+  const generic = { lastFailure: { class: "quota" as const, code: "usage_limit", at: now - hour } };
+  assert.equal(providerRow(facts({ local: false, outcome: generic, quota: reading }), now).status, "available", "a live native window still clears a plain usage limit");
+  const sharing = { lastFailure: { class: "quota" as const, code: "subscription_sharing_usage_limit_exceeded", at: now - hour } };
+  const row = providerRow(facts({ local: false, outcome: sharing, quota: reading }), now);
+  assert.equal(row.status, "limited"); assert.deepEqual(row.reasons, ["quota_exhausted"]);
+  assert.equal(providerRow(facts({ local: false, outcome: { ...sharing, lastSuccessAt: now - 1000 }, quota: reading }), now).status, "available");
+  assert.equal(providerRow(facts({ local: false, outcome: sharing, quota: reading }), now + 6 * hour).status, "available", "after six hours one request may probe it again");
+});
+
 async function modelServer(status = 200, ids = ["flash"]) {
   const seen: Array<string | undefined> = [];
   const server = createServer((req, res) => {

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `gateway availability` now keeps a ChatGPT account `limited` after a
+  `subscription_sharing_usage_limit_exceeded` refusal until a request on it succeeds or
+  six hours pass. A fresh Spendwatch reading used to clear it within two minutes, although
+  Spendwatch measures native usage and not the sharing allowance, so agents and managed
+  routes kept choosing the refused account.
+
 ## 1.9.1 — 2026-11-11
 
 - Claude Fable 5.2 and Mythos 5.1 now advertise a 1M context window instead of 200K.

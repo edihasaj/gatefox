@@ -50,8 +50,10 @@ export function reasonsFor(facts: ProviderFacts, now: number): AvailabilityReaso
   if (failure && (outcome.lastSuccessAt === undefined || failure.at > outcome.lastSuccessAt)) {
     const age = now - failure.at;
     if (failure.class === "authentication" && age < 86_400_000) reasons.push("authentication");
-    // Only a newer reading with a live window clears a refusal; a reading without one says nothing about the limit.
-    if (failure.class === "quota" && age < 21_600_000 && !(quota && quota.observedAt > failure.at && liveWindows(quota.windows, now).length)) reasons.push("quota_exhausted");
+    // Only a newer reading with a live window clears a refusal; a reading without one says nothing about the limit. No reader
+    // measures ChatGPT's subscription-sharing allowance (Spendwatch reads native usage), so only a success or time clears that one.
+    const unmeasured = failure.code === "subscription_sharing_usage_limit_exceeded";
+    if (failure.class === "quota" && age < 21_600_000 && (unmeasured || !(quota && quota.observedAt > failure.at && liveWindows(quota.windows, now).length))) reasons.push("quota_exhausted");
     if (failure.class === "throttle" && (failure.retryAt !== undefined ? failure.retryAt > now : age < 120_000)) reasons.push("rate_limited");
     if (failure.class === "connection" && age < 120_000 && !(healthFresh && health.status !== "unhealthy" && health.observedAt > failure.at)) reasons.push("connection_failed");
   }
