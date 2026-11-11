@@ -10,12 +10,14 @@ import { providerCommand } from "../provider-tool-runtime.js";
 import { releasedAtMetadata } from "../model-auto-latest/metadata.js";
 
 // Context windows the Claude CLI reports (result modelUsage.contextWindow) on a
-// subscription, measured 2026-10-13. These run with 1M under their plain IDs.
+// subscription, measured 2026-10-13 and 2026-11-11. These run with 1M under their plain IDs.
 const millionTokenModels = new Set(["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5",
-  "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7"]);
+  "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7", "claude-mythos-5-1"]);
 // These reach 1M only through the CLI's "[1m]" variant, which the subscription
-// includes. Sonnet 4.6's variant needs paid usage credits and is not used.
-export const longContextVariants = new Set(["claude-opus-4-6"]);
+// includes. CLI 2.1.299 does not yet recognize Fable 5.2 and runs its plain ID
+// at 200K. Sonnet 4.6's variant needs paid usage credits and is not used; Haiku
+// 4.5 has no 1M variant (the CLI silently runs a different model for it).
+export const longContextVariants = new Set(["claude-opus-4-6", "claude-fable-5-2"]);
 /** The model ID the CLI runs; aliases keep the plain ID so saved chats survive. */
 export function claudeCliModel(model: string): string { return longContextVariants.has(model) ? `${model}[1m]` : model; }
 /** Claude Code's fast mode, offered under Codex's Fast tier for models whose catalog row supports it. */

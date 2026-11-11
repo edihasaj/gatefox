@@ -102,11 +102,14 @@ Claude also reports the context window the CLI actually used in every response
 and the next refresh adopts it, so a window never needs a manual table. Clients
 receive the new catalog the next time the app starts its app-server.
 
-The initial Claude windows were measured on a subscription on 13 Oct 2026. The 5.x
-models, Opus 4.8 and Opus 4.7 run with 1M under their plain IDs. Opus 4.6 runs
-as the CLI's `claude-opus-4-6[1m]` variant, which the subscription includes; its
-gateway alias keeps the plain ID so saved chats keep working. Sonnet 4.6's 1M
-variant needs paid usage credits and Haiku 4.5 has none, so both report 200K.
+The initial Claude windows were measured on a subscription on 13 Oct 2026 and
+rechecked on 11 Nov 2026. The 5.x models (including Mythos 5.1), Opus 4.8 and
+Opus 4.7 run with 1M under their plain IDs. Opus 4.6 and Fable 5.2 run as the
+CLI's `[1m]` variants, which the subscription includes; Claude CLI 2.1.299 does
+not yet recognize Fable 5.2 and runs its plain ID at 200K. Their gateway aliases
+keep the plain IDs so saved chats keep working. Sonnet 4.6's 1M variant needs
+paid usage credits, and Haiku 4.5 has none (its `[1m]` variant silently runs a
+different model), so both report 200K.
 Other personal Claude settings are not applied: a fallback model would silently
 change the caller's model, and hooks, MCP servers and permissions must not run
 inside an inference backend.

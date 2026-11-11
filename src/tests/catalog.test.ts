@@ -5,7 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeEffort } from "../providers/claude.js";
-import { nativeClaudeModels, readClaudeModels } from "../providers/claude-models.js";
+import { claudeCliModel, nativeClaudeModels, readClaudeModels } from "../providers/claude-models.js";
 import { discoverModels, loadDiscoveredModels, modelCatalog, modelLabel } from "../catalog.js";
 import type { GatewayConfig, ProviderConfig } from "../config.js";
 import { validateConfig } from "../config.js";
@@ -29,6 +29,18 @@ test("Claude catalog resolves aliases, removes duplicate defaults, and retains n
   assert.equal(models[1].metadata.multiAgentVersion, undefined);
   assert.equal(models[1].metadata.contextWindow, 200000, "older Claude rows report Claude's real window instead of a 32K fallback");
   assert.throws(() => nativeClaudeModels([{ value: "opus", displayName: "Opus", supportedEffortLevels: ["unsupported"] }]), /reasoning/);
+});
+
+test("Claude models that reach 1M on the subscription advertise 1M, including Fable 5.2 through the CLI's [1m] variant", () => {
+  const models = nativeClaudeModels([
+    { value: "claude-fable-5-2", displayName: "Fable 5.2" }, { value: "claude-mythos-5-1", displayName: "Mythos 5.1" },
+    { value: "claude-sonnet-4-6", displayName: "Sonnet 4.6" }, { value: "claude-haiku-4-5-20251001", displayName: "Haiku 4.5" },
+  ]);
+  assert.deepEqual(models.map(m => [m.model, m.metadata.contextWindow]),
+    [["claude-fable-5-2", 1000000], ["claude-mythos-5-1", 1000000], ["claude-sonnet-4-6", 200000], ["claude-haiku-4-5-20251001", 200000]]);
+  assert.equal(claudeCliModel("claude-fable-5-2"), "claude-fable-5-2[1m]", "the CLI runs Fable 5.2's plain ID at 200K");
+  assert.equal(claudeCliModel("claude-mythos-5-1"), "claude-mythos-5-1");
+  assert.equal(claudeCliModel("claude-haiku-4-5-20251001"), "claude-haiku-4-5-20251001", "Haiku's [1m] variant silently runs another model");
 });
 
 test("refresh retains existing account aliases and metadata while replacing the offered model set", () => {
