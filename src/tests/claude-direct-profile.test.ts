@@ -34,7 +34,9 @@ test("a direct profile points at the gateway and lists one row per model, in the
   const before = structuredClone(existing);
   const profile = buildClaudeDirectProfile(existing, rows, { ...options, credentialHelper: { command: "/bin/gateway", args: ["token"] } });
   assert.deepEqual(existing, before);
-  assert.deepEqual(profile.retained, { kept: true });
+  assert.deepEqual(profile.retained, { kept: true }); assert.equal(profile.deploymentDisplayName, "GateFox");
+  assert.equal(buildClaudeDirectProfile({ deploymentDisplayName: "Harness Gateway" }, rows, options).deploymentDisplayName, "GateFox");
+  assert.equal(buildClaudeDirectProfile({ deploymentDisplayName: "Team AI" }, rows, options).deploymentDisplayName, "Team AI");
   assert.equal(profile.inferenceGatewayBaseUrl, "http://127.0.0.1:3457"); assert.equal(profile.modelDiscoveryEnabled, false); assert.equal(profile.alwaysStartWithDefaultModel, true);
   assert.equal(profile.inferenceCredentialHelper, "/bin/gateway"); assert.deepEqual(profile.inferenceCredentialHelperArgs, ["token", "--file", options.tokenFile]);
   // The model the profile already started with stays first, with its family fields and its lower cap.

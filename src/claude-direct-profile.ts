@@ -4,7 +4,7 @@
  * only name an ID that gateway resolves. Nothing here reads provider configuration or credentials.
  */
 import { isAbsolute } from "node:path";
-import { applyCredentialHelper, boundedMaxEffort, bridgeRouteBase, existingModelMetadata, recordedCap, recordedNativeCap, variantEffortOrder,
+import { applyCredentialHelper, boundedMaxEffort, claudeDesktopProfileName, claudeDesktopProfileNames, bridgeRouteBase, existingModelMetadata, recordedCap, recordedNativeCap, variantEffortOrder,
   type CredentialHelper, type VariantEffort } from "./claude-desktop-profile.js";
 
 /** Claude Desktop accepts at most this many rows in a profile's model list. */
@@ -84,6 +84,8 @@ export function buildClaudeDirectProfile(existingProfile: Record<string, unknown
     return entry;
   });
   const profile: Record<string, unknown> = structuredClone(existingProfile);
+  // The app shows this name in its account menu. A profile still named Harness Gateway, or unnamed, becomes GateFox; a name the user chose is kept.
+  if (profile.deploymentDisplayName === undefined || claudeDesktopProfileNames.includes(String(profile.deploymentDisplayName))) profile.deploymentDisplayName = claudeDesktopProfileName;
   profile.inferenceGatewayBaseUrl = endpoint.origin;
   profile.modelDiscoveryEnabled = false;
   profile.alwaysStartWithDefaultModel = true;
