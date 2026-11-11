@@ -1,0 +1,113 @@
+{
+  "date": "2026-11-11",
+  "client": "Claude Code 2.1.299 (native CLI)",
+  "gateway": "worktree build of codex/claude-direct, in-process listener",
+  "backend": "scripts/claude-native-trial/fixture.mjs (synthetic)",
+  "syntheticInference": true,
+  "adapter": false,
+  "rows": 2,
+  "runs": [
+    {
+      "name": "bridge-low",
+      "rowKind": "bridge",
+      "requestedEffort": "low",
+      "exit": 0,
+      "timedOut": false,
+      "overflow": false,
+      "completed": true,
+      "requests": [
+        {
+          "model": "claude-hg-route-107001",
+          "effort": "low",
+          "tier": null,
+          "thinking": "adaptive",
+          "stream": true
+        }
+      ],
+      "passed": true,
+      "expectedEffort": "low"
+    },
+    {
+      "name": "bridge-max-clamped",
+      "rowKind": "bridge",
+      "requestedEffort": "max",
+      "exit": 0,
+      "timedOut": false,
+      "overflow": false,
+      "completed": true,
+      "requests": [
+        {
+          "model": "claude-hg-route-107001",
+          "effort": "high",
+          "tier": null,
+          "thinking": "adaptive",
+          "stream": true
+        }
+      ],
+      "passed": true,
+      "expectedEffort": "high"
+    },
+    {
+      "name": "native-high",
+      "rowKind": "opaque+behavesAs",
+      "requestedEffort": "high",
+      "exit": 0,
+      "timedOut": false,
+      "overflow": false,
+      "completed": true,
+      "requests": [
+        {
+          "model": "claude-hg-route-107001",
+          "effort": "high",
+          "tier": null,
+          "thinking": "adaptive",
+          "stream": true
+        }
+      ],
+      "passed": true,
+      "expectedEffort": "high"
+    },
+    {
+      "name": "native-max-clamped",
+      "rowKind": "opaque+behavesAs",
+      "requestedEffort": "max",
+      "exit": 0,
+      "timedOut": false,
+      "overflow": false,
+      "completed": true,
+      "requests": [
+        {
+          "model": "claude-hg-route-107001",
+          "effort": "high",
+          "tier": null,
+          "thinking": "adaptive",
+          "stream": true
+        }
+      ],
+      "passed": true,
+      "expectedEffort": "high"
+    },
+    {
+      "name": "standard-medium-clamped",
+      "rowKind": "bridge",
+      "requestedEffort": "medium",
+      "exit": 0,
+      "timedOut": false,
+      "overflow": false,
+      "completed": true,
+      "requests": [
+        {
+          "model": "claude-hg-route-107002",
+          "effort": "low",
+          "tier": null,
+          "thinking": "adaptive",
+          "stream": true
+        }
+      ],
+      "passed": true,
+      "expectedEffort": "low"
+    }
+  ],
+  "nativeConfigurationUnchanged": true,
+  "passed": true
+}

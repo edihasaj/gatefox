@@ -18,8 +18,8 @@ interface; see [Claude Code setup and Messages compatibility](messages.md).
 
 The optional [Claude Desktop client](claude-desktop.md) shows truthful
 account and model labels for Claude, separately registered GPT accounts, and
-local models. Its isolated compatibility adapter preserves the existing Codex
-client and shared gateway configuration.
+local models. The gateway serves it [directly](claude-desktop-direct.md); the
+earlier isolated compatibility adapter stays supported.
 
 Claude runs the unmodified Claude Code binary using its subscription login.
 A private virtual MCP server declares the client's tools. The gateway returns

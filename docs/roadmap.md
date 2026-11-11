@@ -31,8 +31,9 @@ deep knowledge of the gateway. Read [CONTRIBUTING.md](../CONTRIBUTING.md) first.
 | Work | Why | Start in |
 | --- | --- | --- |
 | Report each route's real context window to Claude Desktop ([#73](https://github.com/edihasaj/gatefox/issues/73)) | Routes show Claude's generic 200K or 1M estimate, so compaction can start too late or too early | [Claude Desktop](claude-desktop.md#verified-coverage-and-limits), `src/claude-desktop-*.ts` |
-| Set up Claude Desktop from the GateFox app ([#74](https://github.com/edihasaj/gatefox/issues/74)) | Today it needs commands and a manual quit and apply | [Claude Desktop](claude-desktop.md#apply-and-run), [app management](app-management.md) |
-| Native reasoning and Fast controls without patching Claude ([#75](https://github.com/edihasaj/gatefox/issues/75)) | The [native picker trial](claude-native-trial.md) works only on a patched copy of one Claude version | `scripts/claude-native-trial/` |
+| Set up Claude Desktop from the GateFox app ([#74](https://github.com/edihasaj/gatefox/issues/74)) | [Direct serving](claude-desktop-direct.md) removed the adapter, but setup still needs a command and a manual quit and apply | [Claude Desktop, served directly](claude-desktop-direct.md#set-it-up), [app management](app-management.md) |
+| Fast and Ultracode controls without patching Claude ([#75](https://github.com/edihasaj/gatefox/issues/75)) | Reasoning controls work on the stock app through [native model metadata](claude-desktop-native-metadata.md); Fast and Ultracode still appear only in the patched [native picker trial](claude-native-trial.md) | `scripts/claude-native-trial/` |
+| Refresh Claude Desktop rows when the catalog changes | A direct profile lists the models present when `configure --direct` ran; a new gateway model needs the command again | [Claude Desktop, served directly](claude-desktop-direct.md) |
 | Long-session checks for Claude Code ([#76](https://github.com/edihasaj/gatefox/issues/76)) | Short checks do not cover long compaction or every MCP schema | [Messages](messages.md), `scripts/e2e-*.mjs` |
 | Clearer errors for unsupported Claude features ([#77](https://github.com/edihasaj/gatefox/issues/77)) | A route that cannot honour a feature should say so in the client, not fail later | [Known request rejections](messages.md#known-request-rejections) |
 

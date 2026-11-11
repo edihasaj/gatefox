@@ -8,6 +8,11 @@ read_when:
 
 # Claude Desktop
 
+The gateway can now serve Claude Desktop itself, with no adapter process and
+no second gateway: see [Claude Desktop, served directly](claude-desktop-direct.md).
+Prefer that for a new setup. This page describes the adapter profile, which
+stays supported, and the behavior both share.
+
 Claude Desktop rejects model IDs that name GPT or Qwen. The optional Claude
 adapter exposes stable opaque route IDs while retaining the actual provider and
 model in the picker label. Native Claude IDs still select the primary Claude

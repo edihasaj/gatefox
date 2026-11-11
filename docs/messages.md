@@ -31,6 +31,8 @@ existing subscription adapters retain their native CLI or API transports.
 | `POST /v1/messages` | Accepts a native Messages request and returns JSON or Messages SSE. |
 | `POST /v1/messages?beta=true` | Uses the same route; routing matches the pathname. |
 | `POST /v1/messages/count_tokens` | Returns a 501 in the normal error envelope. Claude Code uses its own context estimate. The gateway records one `request_unsupported` telemetry event (`route`, `endpoint`), not `request_failed`, and prints no diagnostic. |
+| `GET /v1/models` with an `anthropic-version` or `x-api-key` header | Returns the Anthropic model list with Claude-safe IDs; see [Claude Desktop, served directly](claude-desktop-direct.md#endpoints). Without those headers the alias list is unchanged. |
+| `GET /v1/models/{id}` | Returns one model of that list by ID. |
 | `POST /v1/responses` | Retains the existing Responses client behavior. |
 
 Messages requests use the existing gateway client credential in either

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The gateway can serve Claude Desktop itself. `gateway claude-desktop configure --direct`
+  points the app's profile at the gateway's own port and lists one row per catalog model,
+  including GPT accounts, local models and API models. The separate adapter process and
+  the private inference gateway are no longer needed for a new setup; both stay supported.
+  The gateway resolves the same Claude-safe model IDs the adapter used, clamps an effort
+  the route does not offer, and answers `GET /v1/models` in Anthropic's shape for a client
+  that sends `anthropic-version` or `x-api-key`. Other clients keep the alias list.
 - Claude Desktop configuration can opt into native `behavesAs` model metadata
   with `--native-model-metadata`. Secondary reasoning models keep stable opaque
   IDs, while older saved-chat routes remain accepted and explicit effort caps
