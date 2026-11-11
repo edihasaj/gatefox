@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.9.1 — 2026-11-11
+
+- Claude Fable 5.2 and Mythos 5.1 now advertise a 1M context window instead of 200K.
+  Fable 5.2 runs through the Claude CLI's `[1m]` variant, because CLI 2.1.299 does not
+  yet recognize the model and runs its plain ID at 200K. Its gateway alias keeps the
+  plain ID, so saved chats keep working. Codex previously limited Fable 5.2 chats to
+  about 180K, so a chat switched to it after compaction could fail with "ran out of room
+  in the model's context window". Sonnet 4.6 and Haiku 4.5 stay at 200K: on a
+  subscription, Sonnet's 1M variant needs paid usage credits, and Haiku has none.
+
 ## 1.9.0 — 2026-11-10
 
 - Codex app context items that arrive as a `function_call_output` with a name but no
