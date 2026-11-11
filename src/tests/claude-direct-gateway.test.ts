@@ -47,8 +47,8 @@ test("an Anthropic client reads Claude-safe rows while other clients keep the al
     assert.equal(list.status, 200); assert.ok(list.headers.get("request-id"));
     const body = await list.json() as any;
     assert.equal(body.type, "list");
-    assert.deepEqual(body.data.map((row: any) => [row.id, row.display_name]), [[opaque("codex/gpt"), "Codex · GPT X"], ["claude-fable-5-1", "Claude · claude-fable-5-1"], [opaque("qwen/flash"), "Local · qwen-flash"]]);
-    assert.equal(body.data[0].gatefox.bridge_id, bridge);
+    assert.deepEqual(body.data.map((row: any) => [row.id, row.display_name]), [["claude-fable-5-1", "Claude · claude-fable-5-1"], [opaque("codex/gpt"), "Codex · GPT X"], [opaque("qwen/flash"), "Local · qwen-flash"]]);
+    assert.equal(body.data[1].gatefox.bridge_id, bridge);
     assert.ok(body.data.every((row: any) => !/gpt|qwen/i.test(row.id)));
     // The key header alone also marks an Anthropic client.
     const keyed = await gateway.get("/v1/models", { "x-api-key": gateway.token });

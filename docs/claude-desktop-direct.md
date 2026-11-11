@@ -59,6 +59,9 @@ models in the gateway; the picker does not refresh by itself.
 `--port` and `--primary-claude-provider` belong to the adapter profile and are
 refused with `--direct`.
 
+Rows are listed Claude accounts first: the primary Claude account, then the
+other Claude accounts, then every other provider in the gateway's catalog order.
+
 ## Model IDs
 
 The gateway derives the IDs from each alias alone, with the same function the

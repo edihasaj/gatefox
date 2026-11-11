@@ -76,6 +76,14 @@ function derive(config: GatewayConfig): ClaudeDirectSurface {
   for (const model of [...opaque.models, ...bridged.models]) if (opaquePattern.test(model.id) || bridgePattern.test(model.id)) routes.set(model.id, model);
   const details = new Map(opaque.models.map(model => [model.id, model] as const));
   const primaryAliases = primary ? Object.entries(primary.models) : [];
+  // A Claude client lists its own accounts first: the primary Claude account, the other Claude accounts in configuration
+  // order, then every other provider in catalog order.
+  const providerOf = new Map(config.providers.flatMap((provider, index) => Object.keys(provider.models).map(alias => [alias, { provider, index }] as const)));
+  const rank = (alias: string): number => {
+    const owner = providerOf.get(alias);
+    if (!owner || owner.provider.type !== "claude-subscription") return 2;
+    return owner.provider === primary ? 0 : 1;
+  };
   const rows = opaque.rows.map((row): ClaudeDirectRow => {
     const id = String(row.entry.name); const detail = details.get(id);
     // A native row stands for every alias of that model, so one visible alias keeps it listed.
@@ -84,7 +92,7 @@ function derive(config: GatewayConfig): ClaudeDirectSurface {
     return { id, alias: row.alias, displayName: String(row.entry.labelOverride), efforts: row.efforts, native: row.native, listed,
       ...(detail?.contextWindow === undefined ? {} : { contextWindow: detail.contextWindow }),
       ...(row.compatId && bridgePattern.test(row.compatId) ? { bridgeId: row.compatId } : {}) };
-  }).sort((left, right) => (order.get(left.alias) ?? 0) - (order.get(right.alias) ?? 0));
+  }).sort((left, right) => rank(left.alias) - rank(right.alias) || (order.get(left.alias) ?? 0) - (order.get(right.alias) ?? 0));
   return { rows, routes, ...(degraded ? { degraded } : {}) };
 }
 

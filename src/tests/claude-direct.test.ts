@@ -20,11 +20,11 @@ function config(extra: Array<Record<string, unknown>> = [], claude: Record<strin
 test("every alias outside the primary Claude account answers to its opaque and bridge IDs", () => {
   const surface = claudeDirectSurface(config());
   assert.equal(surface.degraded, undefined);
-  // Catalog order, one row per model: the hidden row is derived but not listed.
+  // Claude accounts first, then catalog order, one row per model: the hidden row is derived but not listed.
   assert.deepEqual(surface.rows.map(row => [row.id, row.alias, row.native, row.listed]), [
-    [opaque("codex/gpt"), "codex/gpt", false, true], [opaque("codex/old"), "codex/old", false, false],
-    ["claude-fable-5-1", "claude/claude-fable-5-1", true, true], [opaque("qwen/flash"), "qwen/flash", false, true]]);
-  const gpt = surface.rows[0]!;
+    ["claude-fable-5-1", "claude/claude-fable-5-1", true, true],
+    [opaque("codex/gpt"), "codex/gpt", false, true], [opaque("codex/old"), "codex/old", false, false], [opaque("qwen/flash"), "qwen/flash", false, true]]);
+  const gpt = surface.rows[1]!;
   assert.deepEqual(gpt.efforts, efforts); assert.equal(gpt.bridgeId, bridgeRouteName("codex/gpt")); assert.equal(gpt.contextWindow, 272000);
   // No window is advertised for a row whose window is only the catalog placeholder.
   assert.equal(surface.rows[3]!.contextWindow, undefined); assert.equal(surface.rows[3]!.bridgeId, undefined);
@@ -66,16 +66,20 @@ test("only a designated or sole Claude account keeps native IDs", () => {
   const designated = config([second], { defaultForBareModels: true });
   assert.equal(claudeDirectPrimary(designated)?.id, "claude");
   assert.deepEqual(claudeDirectSurface(designated).rows.filter(row => row.alias.includes("fable")).map(row => row.id), ["claude-fable-5-1", opaque("claude-2/claude-fable-5-1")]);
+  // The primary Claude account leads, the second Claude account follows, and other providers come after both.
+  const order = claudeDirectSurface(designated).rows.map(row => row.alias);
+  assert.deepEqual(order.slice(0, 2), ["claude/claude-fable-5-1", "claude-2/claude-fable-5-1"]);
+  assert.ok(order.indexOf("codex/gpt") > 1);
 });
 
 test("the model list is Anthropic-shaped and one model resolves by any of its IDs", () => {
   const surface = claudeDirectSurface(config());
   const list = claudeDirectModelList(surface) as { type: string; has_more: boolean; first_id: string; data: Array<Record<string, any>> };
-  assert.equal(list.type, "list"); assert.equal(list.has_more, false); assert.equal(list.first_id, opaque("codex/gpt"));
-  assert.deepEqual(list.data.map(row => row.display_name), ["Codex · GPT X", "Claude · Fable 5.1", "Local · qwen-flash"]);
-  assert.deepEqual(list.data[0], { id: opaque("codex/gpt"), type: "model", display_name: "Codex · GPT X", created_at: "2026-01-01T00:00:00Z", context_window: 272000,
+  assert.equal(list.type, "list"); assert.equal(list.has_more, false); assert.equal(list.first_id, "claude-fable-5-1");
+  assert.deepEqual(list.data.map(row => row.display_name), ["Claude · Fable 5.1", "Codex · GPT X", "Local · qwen-flash"]);
+  assert.deepEqual(list.data[1], { id: opaque("codex/gpt"), type: "model", display_name: "Codex · GPT X", created_at: "2026-01-01T00:00:00Z", context_window: 272000,
     gatefox: { alias: "codex/gpt", native: false, efforts, bridge_id: bridgeRouteName("codex/gpt") } });
-  assert.deepEqual(list.data[1]!.gatefox, { alias: "claude/claude-fable-5-1", native: true, efforts: ["low", "high", "max"] });
+  assert.deepEqual(list.data[0]!.gatefox, { alias: "claude/claude-fable-5-1", native: true, efforts: ["low", "high", "max"] });
   assert.equal((claudeDirectModelDetail(surface, bridgeRouteName("codex/gpt")) as any).display_name, "Codex · GPT X");
   assert.equal((claudeDirectModelDetail(surface, opaque("codex/old")) as any).id, opaque("codex/old"));
   assert.equal((claudeDirectModelDetail(surface, "claude-fable-5-1") as any).gatefox.native, true);

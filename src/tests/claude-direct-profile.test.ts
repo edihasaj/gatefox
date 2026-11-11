@@ -73,8 +73,8 @@ test("a model list is read strictly, and the gateway's own list round-trips", ()
   const config = validateConfig({ version: 1, port: 3457, stateDirectory: "/tmp/claude-direct-profile-test", providers: providers("/tmp/claude-direct-profile-test") });
   const parsed = claudeDirectListRows(JSON.parse(JSON.stringify(claudeDirectModelList(claudeDirectSurface(config)))));
   assert.deepEqual(parsed.map(row => [row.id, row.alias, row.native, row.efforts, row.bridgeId]), [
-    [opaque("codex/gpt"), "codex/gpt", false, ["low", "medium", "high"], bridgeRouteName("codex/gpt")],
-    ["claude-fable-5-1", "claude/claude-fable-5-1", true, [], undefined], [opaque("qwen/flash"), "qwen/flash", false, [], undefined]]);
+    ["claude-fable-5-1", "claude/claude-fable-5-1", true, [], undefined],
+    [opaque("codex/gpt"), "codex/gpt", false, ["low", "medium", "high"], bridgeRouteName("codex/gpt")], [opaque("qwen/flash"), "qwen/flash", false, [], undefined]]);
   const row = { id: "claude-hg-route-1", type: "model", display_name: "One", gatefox: { native: false, efforts: [] } };
   // An older gateway answers with its alias list, which is not a Claude Desktop list.
   assert.throws(() => claudeDirectListRows({ object: "list", data: [{ id: "codex/gpt", object: "model" }] }), /does not list Claude Desktop models/);
