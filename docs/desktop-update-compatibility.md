@@ -66,6 +66,22 @@ joined `hostVerifiedAppEngines` in 1.7.8 after `scripts/e2e-shared-native.mjs` p
 all 24 phases over stdio and Unix, with and without `--host-codex`, with the native
 configuration unchanged and no owned process left behind.
 
+Engine 0.167.0-alpha.4.1 corresponds to OpenAI commit
+`d2c035639366e0bf2c316aa2065c24aabc12bcdc` (tag `rust-v0.167.0-alpha.4.1`). ChatGPT
+26.1106.51428 shipped it; on 11 Nov 2026 the M5 MacBook took that update, and at its next
+service start the 1.9.3 relay refused the engine ("requires the matching Codex CLI build")
+and paused as `failing`, while the shared host reported `native_sharing_unavailable`
+(`sdk_version`). Relative to the admitted 0.167.0-alpha.3.2, `app-server-transport`
+(including `remote_control`), the app-server remote-control processor and its tests,
+`state/migrations` and `login/src/auth/storage.rs` (`AuthDotJson`) are byte-identical, and
+`CHATGPT_ACCOUNT_ID_HEADER` is still `chatgpt-account-id`. The engine was taken from the
+official update ZIP (`ChatGPT-darwin-arm64-26.1106.51428.zip`, OpenAI TeamIdentifier
+`2DC432GLL2`, notarized). 1.9.4 admits it for both the relay and the shared host: the
+rebuilt relay passed its 47 tests and the upstream `remote_control` suite, and
+`scripts/e2e-shared-native.mjs` passed every stdio and Unix phase against it, with and
+without `--host-codex`, with the native configuration unchanged, no paid inference and no
+owned process left behind.
+
 ## Verify an app update
 
 1. Verify the installed app engine's exact version, OpenAI signature and binary

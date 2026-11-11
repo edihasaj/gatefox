@@ -40,6 +40,7 @@ separate lists in `src/native-engine-versions.ts`:
 
 | App engine | Relay (`relayAcceptedAppEngines`) | Shared native host (`hostVerifiedAppEngines`) |
 | --- | --- | --- |
+| `codex-cli 0.167.0-alpha.4.1` | Requires the rebuilt relay (1.9.4); `app-server-transport`, the remote-control processor, state migrations and the `auth.json` format byte-identical to 0.167.0-alpha.3.2 | Verified with the signed engine through the stdio and Unix shared-native fixtures, with and without `--host-codex` (11 Nov 2026, 1.9.4) |
 | `codex-cli 0.167.0-alpha.3.2` | Requires the rebuilt relay (1.7.7); `app-server-transport`, state migrations and the `auth.json` format unchanged from 0.166.0-alpha.6 | Verified with the signed engine through the stdio and Unix shared-native fixtures, with and without `--host-codex` (8 Nov 2026, 1.7.8) |
 | `codex-cli 0.166.0-alpha.6` | Requires the rebuilt relay (1.5.9); `app-server-transport`, state migrations and login byte-identical to 0.166.0-alpha.5.1 | Verified with the signed engine through the stdio and Unix shared-native fixtures, with and without `--host-codex` (4 Nov 2026) |
 | `codex-cli 0.166.0-alpha.5.1` | Requires the rebuilt relay; remote-control wire contract unchanged from 0.165 | Verified with the signed engine through the stdio and Unix shared-native fixtures (31 Oct 2026) |
