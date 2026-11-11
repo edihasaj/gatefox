@@ -220,6 +220,14 @@ export async function writeClaudeDesktopCandidate(root: string, profile: Record<
   return { desktopProfilePath, adapterConfigPath };
 }
 
+/** Writes the candidate of a profile that needs no adapter: the gateway itself serves its model IDs. */
+export async function writeClaudeDesktopDirectCandidate(root: string, profile: Record<string, unknown>): Promise<{ desktopProfilePath: string }> {
+  const desktopProfilePath = join(await ensurePrivateDirectory(root), "desktop-profile.json");
+  const staged = await stageJson(desktopProfilePath, profile);
+  try { await rename(staged, desktopProfilePath); } catch (error) { await discard(staged); throw error; }
+  return { desktopProfilePath };
+}
+
 async function protectedHashes(paths: string[]): Promise<ProtectedHash[]> {
   const unique = new Set<string>();
   const result: ProtectedHash[] = [];
@@ -261,18 +269,30 @@ async function backupFile(destination: string, bytes: Buffer): Promise<void> {
  * whether the app is stopped; this module deliberately does not inspect processes.
  */
 export async function applyClaudeDesktopProfile(options: ClaudeDesktopApplyOptions): Promise<ClaudeDesktopApplyResult> {
+  const applied = await applyProfile(options);
+  return { ...applied, adapterConfigPath: applied.adapterConfigPath! };
+}
+
+export type ClaudeDesktopDirectApplyOptions = Omit<ClaudeDesktopApplyOptions, "adapterRoot" | "adapterConfig">;
+/** Applies a direct profile alone, with the same backup and rollback. An adapter configuration already on disk is left as it is. */
+export async function applyClaudeDesktopDirectProfile(options: ClaudeDesktopDirectApplyOptions): Promise<{ desktopProfilePath: string; backupDirectory: string }> {
+  const { desktopProfilePath, backupDirectory } = await applyProfile(options);
+  return { desktopProfilePath, backupDirectory };
+}
+
+async function applyProfile(options: ClaudeDesktopDirectApplyOptions & Partial<Pick<ClaudeDesktopApplyOptions, "adapterRoot" | "adapterConfig">>): Promise<{ desktopProfilePath: string; adapterConfigPath?: string; backupDirectory: string }> {
   if (!await options.appNotRunning()) fail("Quit Claude Desktop before applying its saved configuration");
   const selected = await assertExpectedProfile(options.library, options.expectedProfile);
-  const adapterRoot = await ensurePrivateDirectory(options.adapterRoot);
-  const adapterConfigPath = await checkedFile(join(adapterRoot, "config.json"), true);
+  const withAdapter = options.adapterRoot !== undefined && options.adapterConfig !== undefined;
+  const adapterConfigPath = withAdapter ? await checkedFile(join(await ensurePrivateDirectory(options.adapterRoot!), "config.json"), true) : undefined;
   const backupRoot = await ensurePrivateDirectory(options.backupRoot);
   const protectedPaths = await protectedHashes(options.protectedPaths);
   const protectedDestinations = new Set(protectedPaths.map(entry => entry.path));
-  if (protectedDestinations.has(selected.profilePath) || protectedDestinations.has(adapterConfigPath)) fail("Protected configuration overlaps a Claude Desktop destination");
+  if (protectedDestinations.has(selected.profilePath) || (adapterConfigPath !== undefined && protectedDestinations.has(adapterConfigPath))) fail("Protected configuration overlaps a Claude Desktop destination");
   const profileBytes = await readPlainFile(selected.profilePath);
   const profileMode = (await lstat(selected.profilePath)).mode & 0o777;
-  const adapterInfo = await absentOr(() => lstat(adapterConfigPath));
-  const adapterBytes = adapterInfo ? await readPlainFile(adapterConfigPath) : undefined;
+  const adapterInfo = adapterConfigPath === undefined ? undefined : await absentOr(() => lstat(adapterConfigPath));
+  const adapterBytes = adapterInfo ? await readPlainFile(adapterConfigPath!) : undefined;
   const adapterMode = adapterInfo ? adapterInfo.mode & 0o777 : 0o600;
   const backupDirectory = join(backupRoot, `claude-aliases-${new Date().toISOString().replaceAll(/[-:.]/g, "")}-${randomUUID()}`);
   await mkdir(backupDirectory, { mode: 0o700 });
@@ -289,7 +309,7 @@ export async function applyClaudeDesktopProfile(options: ClaudeDesktopApplyOptio
   let adapterStage: string | undefined;
   try {
     profileStage = await stageJson(selected.profilePath, options.profile);
-    adapterStage = await stageJson(adapterConfigPath, options.adapterConfig);
+    if (adapterConfigPath !== undefined) adapterStage = await stageJson(adapterConfigPath, options.adapterConfig);
     await assertProtectedUnchanged(protectedPaths);
     await assertExpectedProfile(options.library, options.expectedProfile);
   } catch (error) {
@@ -301,13 +321,13 @@ export async function applyClaudeDesktopProfile(options: ClaudeDesktopApplyOptio
   let adapterReplaced = false;
   try {
     await replace(profileStage, selected.profilePath); profileReplaced = true; profileStage = undefined;
-    await replace(adapterStage, adapterConfigPath); adapterReplaced = true; adapterStage = undefined;
+    if (adapterStage !== undefined && adapterConfigPath !== undefined) { await replace(adapterStage, adapterConfigPath); adapterReplaced = true; adapterStage = undefined; }
   } catch (error) {
     await discard(profileStage); await discard(adapterStage);
     let restored = true;
     try {
       if (profileReplaced) await replace(await stageBytes(selected.profilePath, profileBytes, profileMode), selected.profilePath);
-      if (adapterReplaced) {
+      if (adapterReplaced && adapterConfigPath !== undefined) {
         if (adapterBytes) await replace(await stageBytes(adapterConfigPath, adapterBytes, adapterMode), adapterConfigPath);
         else await rm(adapterConfigPath, { force: true });
       }
@@ -315,7 +335,7 @@ export async function applyClaudeDesktopProfile(options: ClaudeDesktopApplyOptio
     if (!restored) fail("Could not apply the Claude Desktop alias profile and rollback was incomplete");
     throw new Error("Could not apply the Claude Desktop alias profile; previous files were restored", { cause: error });
   }
-  return { desktopProfilePath: selected.profilePath, adapterConfigPath, backupDirectory };
+  return { desktopProfilePath: selected.profilePath, ...(adapterConfigPath === undefined ? {} : { adapterConfigPath }), backupDirectory };
 }
 
 export const readClaudeDesktopProfile = readSelectedClaudeDesktopProfile;
