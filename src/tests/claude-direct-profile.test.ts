@@ -126,7 +126,8 @@ test("configure --direct reads a running gateway and writes only a candidate pro
     await assert.rejects(stat(f.paths.adapterRoot)); await assert.rejects(stat(f.paths.backupRoot));
     // The same rows over an explicit endpoint, as a forwarded gateway is named.
     const remote = JSON.parse((await run(process.execPath, [cli, "claude-desktop", "configure", "--direct", "--endpoint", `http://127.0.0.1:${port}/v1`, "--token-file", join(state, "client-token"), "--home", f.home, "--native-model-metadata"])).stdout);
-    assert.equal(JSON.parse(await readFile(remote.candidate.desktopProfilePath, "utf8")).inferenceModels[0].behavesAs, "claude-opus-5");
+    const remoteRows = JSON.parse(await readFile(remote.candidate.desktopProfilePath, "utf8")).inferenceModels;
+    assert.equal(remoteRows.find((row: any) => row.labelOverride === "Codex · GPT X").behavesAs, "claude-opus-5");
     await assert.rejects(run(process.execPath, [cli, "claude-desktop", "configure", "--direct", "--gateway-config", gatewayConfig, "--home", f.home, "--port", "3467"]), /belong to the adapter profile/);
   } finally { await new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }); }
 });
