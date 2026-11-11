@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.9.3 — 2026-11-11
+
+- Claude Desktop Code sessions can run on another machine over SSH while using this Mac's
+  gateway. Claude Desktop sends such a session's inference from the remote host and refuses
+  a loopback endpoint for it, so the gateway can now also listen on this Mac's own Tailscale
+  addresses when the configuration sets `"tailnetListener": true`. Only tailnet peers are
+  accepted, and every request still needs the client token. `gateway claude-desktop
+  configure --direct --tailnet --ssh-host HOST` points the profile at that address and
+  writes the `sshHostAllowlist` that makes the app offer SSH environments. The listener is
+  off by default and follows a live configuration edit without a restart.
+
 ## 1.9.2 — 2026-11-11
 
 - The gateway can serve Claude Desktop itself. `gateway claude-desktop configure --direct`
