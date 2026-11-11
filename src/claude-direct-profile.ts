@@ -11,8 +11,28 @@ import { applyCredentialHelper, boundedMaxEffort, claudeDesktopProfileName, clau
 const maxProfileModelRows = 200;
 const modelId = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const bridgeId = /^claude-opus-5\[hg-route-[0-9]{1,20}\]$/;
+/** An `sshHostAllowlist` entry: a hostname, a `*.` wildcard or an IP address, as Claude Desktop matches them. */
+const sshHostEntry = /^(?:\*\.)?[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}))*$|^[0-9a-fA-F:.]{2,45}$/;
 function fail(message: string): never { throw new Error(message); }
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+
+/** Claude Desktop's own test for an endpoint an SSH host cannot reach: a literal loopback name or address, nothing resolved. */
+export function isLoopbackEndpointHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").replace(/\.+$/, "").toLowerCase();
+  return host === "localhost" || host.endsWith(".localhost") || host === "::1" || host === "::" || host === "0.0.0.0" || host === "::ffff:0:0"
+    || /^127(\.\d{1,3}){1,3}$/.test(host) || /^::ffff:7f[0-9a-f]{2}:/.test(host);
+}
+
+/** The allowlist Claude Desktop reads, checked entry by entry. Matching ignores case, so entries are kept lower-case and unique. */
+export function claudeSshHostAllowlist(hosts: string[]): string[] {
+  const entries = [...new Set(hosts.map(host => host.trim().toLowerCase()))];
+  if (!entries.length) fail("--ssh-host needs at least one host");
+  for (const entry of entries) {
+    if (entry === "*") fail("--ssh-host * would send the gateway token to any host; name each host instead");
+    if (entry.length > 253 || !sshHostEntry.test(entry)) fail(`--ssh-host ${entry} is not a hostname, *.domain wildcard or IP address`);
+  }
+  return entries;
+}
 
 export interface ClaudeDirectListRow { id: string; displayName: string; alias?: string; native: boolean; efforts: VariantEffort[]; bridgeId?: string }
 
@@ -47,6 +67,11 @@ export interface ClaudeDirectProfileOptions {
   nativeModelMetadata?: boolean;
   /** The row listed first, by its ID, bridge ID or gateway alias. */
   defaultModel?: string;
+  /**
+   * SSH hosts Claude Desktop may start Code sessions on. Absent keeps the profile's own `sshHostAllowlist`. The remote host
+   * calls the endpoint itself, so a list needs an endpoint that host can reach.
+   */
+  sshHosts?: string[];
 }
 
 const names = (row: ClaudeDirectListRow): string[] => [row.id, ...(row.bridgeId ? [row.bridgeId] : [])];
@@ -57,6 +82,10 @@ export function buildClaudeDirectProfile(existingProfile: Record<string, unknown
   let endpoint: URL;
   try { endpoint = new URL(options.endpoint); } catch { fail("Gateway endpoint must be a valid URL"); }
   if (endpoint.protocol !== "http:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/") fail("Gateway endpoint must be a plain http:// origin");
+  const sshHosts = options.sshHosts === undefined ? undefined : claudeSshHostAllowlist(options.sshHosts);
+  if (sshHosts && isLoopbackEndpointHost(endpoint.hostname)) {
+    fail("Claude Desktop refuses a loopback gateway for SSH sessions, because the remote host cannot reach it; use --tailnet so the profile names this Mac's Tailscale address");
+  }
   if (rows.length > maxProfileModelRows) fail(`Claude Desktop allows at most ${maxProfileModelRows} model rows, but this gateway lists ${rows.length}; hide or remove models in the gateway`);
   const oldMetadata = existingModelMetadata(existingProfile);
   const previous = Array.isArray(existingProfile.inferenceModels) && record(existingProfile.inferenceModels[0]) ? existingProfile.inferenceModels[0].name : undefined;
@@ -90,6 +119,7 @@ export function buildClaudeDirectProfile(existingProfile: Record<string, unknown
   profile.modelDiscoveryEnabled = false;
   profile.alwaysStartWithDefaultModel = true;
   profile.inferenceModels = entries;
+  if (sshHosts) profile.sshHostAllowlist = sshHosts;
   applyCredentialHelper(profile, options.credentialHelper, options.tokenFile);
   return profile;
 }

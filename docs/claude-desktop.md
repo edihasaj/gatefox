@@ -12,6 +12,8 @@ The gateway can now serve Claude Desktop itself, with no adapter process and
 no second gateway: see [Claude Desktop, served directly](claude-desktop-direct.md).
 Prefer that for a new setup. This page describes the adapter profile, which
 stays supported, and the behavior both share.
+Code sessions on another machine over SSH need a direct profile on a Tailscale
+address: see [SSH environments](claude-desktop-direct.md#ssh-environments).
 
 Claude Desktop rejects model IDs that name GPT or Qwen. The optional Claude
 adapter exposes stable opaque route IDs while retaining the actual provider and

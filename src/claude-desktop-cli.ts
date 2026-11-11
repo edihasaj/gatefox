@@ -11,12 +11,13 @@ import { buildClaudeDirectProfile, claudeDirectListRows } from "./claude-direct-
 import { buildClaudeDesktopProfile, type ClaudeDesktopCatalog, type ClaudeDesktopGatewaySource } from "./claude-desktop-profile.js";
 import { claudeDesktopServiceStatus, installClaudeDesktopService } from "./claude-desktop-service.js";
 import { startClaudeDesktopInference } from "./claude-desktop-inference.js";
+import { tailnetInterfaceAddresses } from "./tailnet-listener.js";
 
 const catalogLimitBytes = 1024 * 1024;
 const help = `gateway claude-desktop — Claude Desktop model rows for gateway models
 
   gateway claude-desktop configure --direct [--gateway-config PATH] [--home PATH] [--model ID_OR_ALIAS]
-    [--endpoint LOOPBACK_URL --token-file PATH] [--native-model-metadata] [--apply]
+    [--endpoint LOOPBACK_URL --token-file PATH | --tailnet [--ssh-host HOST]...] [--native-model-metadata] [--apply]
   gateway claude-desktop configure --gateway-config PATH [--home PATH] [--port NUMBER]
     [--primary-claude-provider ID] [--model MODEL] [--endpoint LOOPBACK_URL --token-file PATH] [--apply]
     [--native-model-metadata]
@@ -29,6 +30,11 @@ configure --direct points the profile at the gateway itself, which resolves the
 Claude-safe model IDs in-process: no adapter port, no second gateway, and the
 rows come from that gateway's own model list. It needs a gateway release that
 lists Claude Desktop models. Without --direct the profile uses the adapter.
+
+--tailnet names this Mac's Tailscale address instead of 127.0.0.1, so SSH
+sessions can reach the gateway from the remote host; the gateway configuration
+must set "tailnetListener": true. Each --ssh-host adds that host to the
+profile's sshHostAllowlist, which Claude Desktop needs before it offers SSH.
 
 configure reads the selected Claude Desktop GateFox profile and writes a
 candidate under Claude-3p/alias-trial/candidate. --apply requires Claude Desktop
@@ -170,30 +176,52 @@ async function directRows(endpoint: string, tokenFile: string) {
   return claudeDirectListRows(value);
 }
 
+/** This Mac's Tailscale endpoint for the gateway's port. IPv4 first; an IPv6 address is bracketed. */
+function tailnetEndpoint(port: number): string {
+  const [address] = tailnetInterfaceAddresses();
+  if (!address) throw new Error("--tailnet needs Tailscale to be connected on this Mac; no Tailscale address was found");
+  return `http://${address.includes(":") ? `[${address}]` : address}:${port}`;
+}
+
+function sshHosts(value: string | boolean | string[] | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  return (Array.isArray(value) ? value : [String(value)]).flatMap(entry => entry.split(",")).map(entry => entry.trim()).filter(Boolean);
+}
+
 /** The gateway serves the app itself, so only the profile is written: its rows are that gateway's own model list. */
-async function configureDirect(values: Record<string, string | boolean | undefined>): Promise<void> {
+async function configureDirect(values: Record<string, string | boolean | string[] | undefined>): Promise<void> {
   if (values.port !== undefined || values["primary-claude-provider"] !== undefined) throw new Error("--port and --primary-claude-provider belong to the adapter profile; --direct takes the gateway's own port and its designated Claude account");
   const remoteToken = typeof values["token-file"] === "string" ? requireAbsolute(values["token-file"], "--token-file") : undefined;
   const remoteEndpoint = typeof values.endpoint === "string" ? endpointOrigin(values.endpoint) : undefined;
   if (Boolean(remoteToken) !== Boolean(remoteEndpoint)) throw new Error("--token-file and --endpoint must be provided together");
+  const tailnet = values.tailnet === true;
+  if (tailnet && remoteEndpoint) throw new Error("--tailnet names this Mac's own gateway; it cannot be combined with --endpoint");
+  const hosts = sshHosts(values["ssh-host"]);
+  if (hosts && !tailnet) throw new Error("--ssh-host needs --tailnet: Claude Desktop refuses a loopback gateway for SSH sessions");
   let endpoint = remoteEndpoint; let tokenFile = remoteToken; let gatewayConfig: string | undefined;
   if (!endpoint || !tokenFile) {
     gatewayConfig = await defaultConfigPath(typeof values["gateway-config"] === "string" ? requireAbsolute(values["gateway-config"], "--gateway-config") : undefined);
     const config = await loadConfig(gatewayConfig);
     if (!config.port) throw new Error("Use a fixed gateway port before configuring Claude Desktop");
-    endpoint = `http://127.0.0.1:${config.port}`; tokenFile = resolve(config.stateDirectory, "client-token");
+    if (tailnet && config.tailnetListener !== true) throw new Error("--tailnet needs \"tailnetListener\": true in the gateway configuration, so the gateway listens on this Mac's Tailscale address");
+    endpoint = tailnet ? tailnetEndpoint(config.port) : `http://127.0.0.1:${config.port}`; tokenFile = resolve(config.stateDirectory, "client-token");
   } else if (values["gateway-config"] !== undefined) throw new Error("--gateway-config is not read when --endpoint and --token-file name the gateway");
   const paths = pathsFor(typeof values.home === "string" ? values.home : undefined);
-  const rows = await directRows(endpoint, tokenFile);
+  // Reading the list through the endpoint the profile will name proves the app can reach the gateway there.
+  const rows = await directRows(endpoint, tokenFile).catch((error: unknown) => {
+    if (tailnet && error instanceof Error && error.message.includes("is not reachable")) throw new Error(`Gateway does not answer on ${endpoint} yet; it listens there within 30 seconds of "tailnetListener": true, or after Tailscale connects`);
+    throw error;
+  });
   const existing = await readSelectedClaudeDesktopProfile(paths.library);
   const helper = gatewayCommand();
   const profile = buildClaudeDirectProfile(existing.profile, rows, {
     endpoint, tokenFile, nativeModelMetadata: values["native-model-metadata"] === true,
     defaultModel: typeof values.model === "string" ? values.model : undefined,
+    ...(hosts ? { sshHosts: hosts } : {}),
     credentialHelper: { command: helper.command, args: [...helper.args, "token"] },
   });
   const candidate = await writeClaudeDesktopDirectCandidate(paths.candidateRoot, profile);
-  const summary = { direct: true, endpoint, models: rows.length };
+  const summary = { direct: true, endpoint, models: rows.length, ...(Array.isArray(profile.sshHostAllowlist) ? { sshHostAllowlist: profile.sshHostAllowlist } : {}) };
   if (values.apply !== true) { process.stdout.write(JSON.stringify({ candidate, applied: false, ...summary }, null, 2) + "\n"); return; }
   const applied = await applyClaudeDesktopDirectProfile({
     library: paths.library, backupRoot: paths.backupRoot, profile, expectedProfile: existing,
@@ -237,23 +265,26 @@ export async function runClaudeDesktopCommand(argv: string[]): Promise<void> {
       "primary-claude-provider": { type: "string" }, model: { type: "string" }, apply: { type: "boolean" },
       "token-file": { type: "string" }, endpoint: { type: "string" }, "native-config": { type: "string" },
       "native-model-metadata": { type: "boolean" }, direct: { type: "boolean" },
+      tailnet: { type: "boolean" }, "ssh-host": { type: "string", multiple: true },
     },
   });
   const [command, ...extra] = positionals;
   if (extra.length || !["configure", "serve", "install", "status", "inference"].includes(command || "")) throw new Error("Choose claude-desktop configure, serve, install, status, or inference");
   if (command === "configure") {
     if (values.config || values["native-config"]) throw new Error("--config and --native-config are only valid for their matching Claude Desktop command");
-    if (values.direct === true) await configureDirect(values); else await configure(values);
+    if (values.direct === true) await configureDirect(values);
+    else if (values.tailnet !== undefined || values["ssh-host"] !== undefined) throw new Error("--tailnet and --ssh-host are only valid with --direct");
+    else await configure(values as Record<string, string | boolean | undefined>);
     return;
   }
   if (command === "inference") {
-    if ([values.config, values.home, values.port, values["primary-claude-provider"], values.model, values.apply, values["token-file"], values.endpoint, values["native-model-metadata"], values.direct].some(value => value !== undefined)) {
+    if ([values.config, values.home, values.port, values["primary-claude-provider"], values.model, values.apply, values["token-file"], values.endpoint, values["native-model-metadata"], values.direct, values.tailnet, values["ssh-host"]].some(value => value !== undefined)) {
       throw new Error("Inference accepts only --gateway-config and --native-config");
     }
     await inference(requireAbsolute(values["gateway-config"], "--gateway-config"), requireAbsolute(values["native-config"], "--native-config"));
     return;
   }
-  if ([values["gateway-config"], values.port, values["primary-claude-provider"], values.model, values.apply, values["token-file"], values.endpoint, values["native-config"], values["native-model-metadata"], values.direct].some(value => value !== undefined)) {
+  if ([values["gateway-config"], values.port, values["primary-claude-provider"], values.model, values.apply, values["token-file"], values.endpoint, values["native-config"], values["native-model-metadata"], values.direct, values.tailnet, values["ssh-host"]].some(value => value !== undefined)) {
     throw new Error("Configure options are only valid for claude-desktop configure");
   }
   if (command === "serve") {

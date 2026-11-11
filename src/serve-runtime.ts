@@ -12,6 +12,10 @@ import { releaseState, watchForUpgrade } from "./self-update.js";
 import { retainRunningRelease, type ReleaseLease } from "./release-retention.js";
 import { hostAutoLatestMaintenance } from "./model-auto-latest/hosting.js";
 import { refreshApiModeCatalog } from "./desktop-api-mode.js";
+import { reconcileTailnetListener } from "./tailnet-listener.js";
+
+/** How often an enabled tailnet listener picks up a Tailscale address that appeared or left, for example after login. */
+const tailnetRefreshMs = 30_000;
 
 /** Releases that agree on this number can take over a running server in place. */
 export const serveRuntimeVersion = 1;
@@ -26,10 +30,16 @@ export async function startServeRuntime(configPath: string, port?: number, serve
  try {
   const config = await loadConfig(configPath); if (port) config.port = port;
   configureTelemetry(config.stateDirectory, "server"); startErrorReports(config.stateDirectory, "server");
+  // The tailnet socket follows the configuration this runtime adopts, including a live edit, and this Mac's addresses.
+  let tailnetEnabled = config.tailnetListener === true; let tailnetTarget: GatewayServer | undefined;
+  const syncTailnet = () => { if (tailnetTarget) void reconcileTailnetListener(tailnetTarget, tailnetEnabled); };
   // API mode's model list lives in a file the app's own engine reads, so it follows every configuration this service
   // adopts. No timer and no background item of its own: the hook runs on the apply that is already happening, and only
   // at all while the API mode receipt exists.
-  const live = new LiveConfig(configPath, config, port, applied => { void refreshApiModeCatalog(applied); });
+  const live = new LiveConfig(configPath, config, port, applied => {
+    void refreshApiModeCatalog(applied);
+    tailnetEnabled = applied.tailnetListener === true; syncTailnet();
+  });
   const options = { configRejection: () => live.rejection };
   const handler: GatewayHandler = await createGatewayHandler(config, undefined, () => live.current(), options);
   let gateway: GatewayServer;
@@ -39,6 +49,8 @@ export async function startServeRuntime(configPath: string, port?: number, serve
     await new Promise<void>((done, fail) => { listener.once("error", fail); listener.listen(config.port, "127.0.0.1", () => { listener.off("error", fail); done(); }); });
   }
   await previous?.stop();
+  tailnetTarget = gateway; await reconcileTailnetListener(gateway, tailnetEnabled);
+  const tailnetTimer = setInterval(syncTailnet, tailnetRefreshMs); tailnetTimer.unref();
   // The existing app-owned service tree hosts model maintenance. Never register another background item.
   const maintenance = hostAutoLatestMaintenance(configPath, "server");
   // Model metadata follows each provider's own catalog: shortly after start, then every six hours.
@@ -65,7 +77,8 @@ export async function startServeRuntime(configPath: string, port?: number, serve
   };
   runtime = { version: serveRuntimeVersion, stop: () => {
     if (stopped) return stopping;
-    stopped = true; gateway.off("close", onClose); clearTimeout(first); clearInterval(every); stopWatching(); releaseWhenDrained();
+    // The tailnet sockets stay with the process: the runtime that takes over reconciles them, and the server's close ends them.
+    stopped = true; tailnetTarget = undefined; gateway.off("close", onClose); clearTimeout(first); clearInterval(every); clearInterval(tailnetTimer); stopWatching(); releaseWhenDrained();
     return stopping = Promise.resolve(maintenance.stop());
   } };
   const onClose = () => { void runtime.stop(); };

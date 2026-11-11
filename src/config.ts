@@ -144,6 +144,12 @@ export interface GatewayConfig {
   maxConcurrent?: number;
   timeoutMs?: number;
   clientOnly?: boolean;
+  /**
+   * Opt-in: the inference server also accepts connections on this Mac's own Tailscale addresses, from tailnet peers only,
+   * on the same port and with the same client token. Claude Desktop needs it for SSH sessions, because it refuses a
+   * loopback endpoint for them. Off when absent. See docs/claude-desktop-direct.md#ssh-environments.
+   */
+  tailnetListener?: boolean;
   /** Explicit operator policy: persist trust for every selected or created Codex project folder. Off by default. */
   trustAllProjects?: boolean;
   /**
@@ -210,6 +216,8 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   if (config.version !== 1) throw new Error("Unsupported configuration version; expected 1");
   if (!Number.isInteger(config.port) || config.port < 0 || config.port > 65535) throw new Error("port must be 0 through 65535");
   if (config.clientOnly !== undefined && typeof config.clientOnly !== "boolean") throw new Error("clientOnly must be boolean");
+  if (config.tailnetListener !== undefined && typeof config.tailnetListener !== "boolean") throw new Error("tailnetListener must be boolean");
+  if (config.tailnetListener === true && config.clientOnly) throw new Error("tailnetListener needs a local inference server; a remote client configuration has none");
   if (config.trustAllProjects !== undefined && typeof config.trustAllProjects !== "boolean") throw new Error("trustAllProjects must be boolean");
   if (config.midTurnModelSwitch !== undefined && typeof config.midTurnModelSwitch !== "boolean") throw new Error("midTurnModelSwitch must be boolean");
   if (!Array.isArray(config.providers) || (!config.clientOnly && !config.providers.length)) throw new Error("At least one provider is required");
@@ -340,6 +348,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   const managedRouting = config.managedRouting === undefined ? undefined : validateManagedRouting(config.managedRouting, providers);
   return { version: 1, port: config.port, stateDirectory, providers,
     maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}), ...(accountEngines ? { accountEngines } : {}),
+    ...(config.tailnetListener === true ? { tailnetListener: true } : {}),
     ...(config.trustAllProjects === undefined ? {} : { trustAllProjects: config.trustAllProjects }),
     ...(config.midTurnModelSwitch === true ? { midTurnModelSwitch: true } : {}),
     ...(config.chatIdentity ? { chatIdentity: config.chatIdentity } : {}), ...(nativeModelPicker ? { nativeModelPicker } : {}),

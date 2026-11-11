@@ -4,6 +4,7 @@ read_when:
   - Connecting Claude Desktop to GateFox without the separate adapter and private inference process
   - Changing the Claude-safe model IDs, the Anthropic model list, or `claude-desktop configure --direct`
   - Moving an adapter profile to direct serving
+  - Starting Claude Desktop Code sessions on another Mac over SSH, or changing the tailnet listener
 ---
 
 # Claude Desktop, served directly
@@ -53,6 +54,8 @@ models in the gateway; the picker does not refresh by itself.
 | --- | --- |
 | `--gateway-config PATH` | Uses that gateway configuration for the port and client token. The default is the installed configuration. |
 | `--endpoint URL --token-file PATH` | Names a gateway reached through a loopback SSH forward. Only its public model list is read. |
+| `--tailnet` | Names this Mac's Tailscale address instead of `127.0.0.1`. Needed for [SSH environments](#ssh-environments). |
+| `--ssh-host HOST` | With `--tailnet`, adds the host to the profile's `sshHostAllowlist`. Repeat it, or separate hosts with commas. |
 | `--model ID_OR_ALIAS` | Lists that model first, by row ID or gateway alias. Without it, the model the profile already starts with stays first. |
 | `--native-model-metadata` | Writes opaque row IDs with `behavesAs`, for an app version that reads it. See [native model metadata](claude-desktop-native-metadata.md). |
 
@@ -61,6 +64,71 @@ refused with `--direct`.
 
 Rows are listed Claude accounts first: the primary Claude account, then the
 other Claude accounts, then every other provider in the gateway's catalog order.
+
+## SSH environments
+
+Claude Desktop can run a Code session's Claude Code engine on another machine over
+SSH, while the window stays on this Mac. With a third-party profile such as GateFox,
+two rules from Anthropic decide whether that works
+([SSH remote sessions on 3P](https://claude.com/docs/third-party/claude-desktop/ssh-remote-sessions)):
+
+1. SSH stays off, and **New environment** offers no SSH tab, until the profile sets
+   `sshHostAllowlist`.
+2. The remote engine calls the profile's endpoint **from the remote host**, with the
+   token the credential helper prints on this Mac. Claude Desktop refuses a loopback
+   endpoint (`localhost`, `*.localhost`, `127.x`, `::1`, `0.0.0.0`) for those sessions
+   with "SSH sessions can't use your model provider settings". It checks the literal
+   name only, and resolves nothing.
+
+Codex's SSH support carries the gateway inside its own SSH connection. Claude Desktop
+owns its SSH connection and opens no tunnel for inference, so the gateway must answer
+on an address the host can reach. With `tailnetListener` the gateway also listens on
+this Mac's own Tailscale addresses:
+
+```text
+local session   Claude Desktop ─────────────────────────────► http://100.x.y.z:3457 ─┐
+SSH session     Claude Desktop ══SSH══► host: Claude Code ───► http://100.x.y.z:3457 ─┴► this Mac's GateFox
+```
+
+Both kinds of session use this Mac's gateway, its accounts and its model list, as a
+Codex SSH chat does.
+
+### Set it up
+
+1. Add `"tailnetListener": true` to the gateway configuration. The running gateway
+   starts listening within 30 seconds, without a restart, on the same port.
+2. With Claude quit, write the profile:
+
+   ```sh
+   gateway claude-desktop configure --direct --tailnet --ssh-host macbook-server --apply
+   ```
+
+3. Open Claude, choose the environment selector under the prompt box, then **New
+   environment** → **SSH** → **Host** → **Add SSH connection…**, and enter the host and a
+   folder there.
+
+The host needs the Claude Code engine's own requirements and a route to this Mac over
+Tailscale; it needs no GateFox. `--ssh-host` entries are hostnames, `*.domain`
+wildcards or IP addresses, matched against the `HostName` that `~/.ssh/config` gives for
+the entered host. `*` is refused, because every listed host receives the gateway token
+for the session. Without `--ssh-host`, an allowlist already in the profile is kept.
+
+### What the tailnet listener accepts
+
+| Check | Behavior |
+| --- | --- |
+| Addresses | This Mac's non-internal addresses in `100.64.0.0/10` and `fd7a:115c:a1e0::/48`, rechecked every 30 seconds, so an address that appears after login is picked up and one that leaves is closed. |
+| Peers | Only Tailscale addresses. Any other peer is closed before a byte is read. |
+| Requests | Handed to the loopback listener's own HTTP server: the same client token, the browser-origin refusal, admission limits and timeouts. Only `GET /health` answers without the token, as on loopback. |
+| Upgrades | An in-place upgrade keeps the sockets and reconciles them with the configuration it adopts. Setting the key to `false`, or removing it, closes them. |
+
+Every tailnet device can reach the port, and any device holding the client token can use
+every account this gateway serves. Turn the listener on only on Macs whose SSH sessions
+need it, and issue the token only to machines you trust.
+
+A Tailscale address is stable for a Mac. If it changes, run the `configure` command
+again. Each listener start records a `tailnet_listener` telemetry event with the number of
+addresses served, not the addresses themselves.
 
 ## Model IDs
 
