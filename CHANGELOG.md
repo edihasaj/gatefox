@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.9.2 — 2026-11-11
 
 - The gateway can serve Claude Desktop itself. `gateway claude-desktop configure --direct`
   points the app's profile at the gateway's own port and lists one row per catalog model,
