@@ -17,7 +17,8 @@ import { ResponsesWriter } from "./protocol/responses.js";
 import { MessagesWriter, anthropicError } from "./protocol/messages.js";
 import { messagesToResponses } from "./protocol/messages-request.js";
 import { messagesAgentId, messagesRequestKind } from "./protocol/messages-session.js";
-import { nativeReviewTarget, nativeReviewUsage, serveNativeReview } from "./claude-native-review.js";
+import { nativeReviewTarget, nativeReviewUsage, nativeRuntimeModule, serveNativeReview } from "./claude-native-review.js";
+import { claudeDirectModelDetail, claudeDirectModelList, claudeDirectRequest, claudeDirectSurface, optionalToolsRuntime, restoreOptionalToolCall, type OptionalToolsRuntime } from "./claude-direct.js";
 import { messagesProviderRequest } from "./protocol/messages-routing.js";
 import { responsesToChatRequest } from "./protocol/request.js";
 import { reportDroppedSearch } from "./protocol/tool-search-bridge.js";
@@ -294,10 +295,15 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     if (path === undefined) { send(res, 400, { error: { code: "invalid_request", message: "Request target is not valid" } }); return; }
     const messagesProtocol = path === "/v1/messages" || path === "/v1/messages/count_tokens";
     const countTokens = path === "/v1/messages/count_tokens";
+    // An Anthropic client reads the model list in its own shape. Its version header, or its key header, tells it from the
+    // OpenAI-style clients that have always read `/v1/models` here; one model by ID is an Anthropic-only endpoint.
+    const modelDetail = req.method === "GET" && path.startsWith("/v1/models/");
+    const anthropicModels = modelDetail || (req.method === "GET" && path === "/v1/models" && (req.headers["anthropic-version"] !== undefined || req.headers["x-api-key"] !== undefined));
+    const anthropicClient = messagesProtocol || anthropicModels;
     const fail = (status: number, code: string, message: string, contextTokens?: { used: number; maximum: number }) => send(res, status,
-      messagesProtocol ? { ...anthropicError(code, message, status, contextTokens), request_id: requestId } : { error: { code, message } });
+      anthropicClient ? { ...anthropicError(code, message, status, contextTokens), request_id: requestId } : { error: { code, message } });
     const requestId = randomUUID(); res.setHeader("X-Request-Id", requestId);
-    if (messagesProtocol) res.setHeader("request-id", requestId);
+    if (anthropicClient) res.setHeader("request-id", requestId);
     if (req.method === "GET" && path === "/health") {
       try { const state = await snapshot(); try { const { running, queued } = admissions.totals(); const configRejected = options.configRejection?.(); send(res, 200, { status: "ok", ...(configRejected ? { configRejected } : {}), active: active.size, running, queued, idleRestart: true, idleUpgrade: true, features: gatewayFeatures }); } finally { state.release(); } }
       catch { send(res, 503, { status: "configuration_error", active: active.size, idleRestart: true }); }
@@ -306,8 +312,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     if (req.headers.origin) { fail(403, "cross_origin", "Browser cross-origin requests are disabled"); return; }
     const apiKey = req.headers["x-api-key"];
     const authenticated = req.headers.authorization !== undefined ? validBearer(req.headers.authorization, token)
-      && (!messagesProtocol || apiKey === undefined || (typeof apiKey === "string" && validBearer(`Bearer ${apiKey}`, token)))
-      : messagesProtocol && typeof apiKey === "string" && validBearer(`Bearer ${apiKey}`, token);
+      && (!anthropicClient || apiKey === undefined || (typeof apiKey === "string" && validBearer(`Bearer ${apiKey}`, token)))
+      : anthropicClient && typeof apiKey === "string" && validBearer(`Bearer ${apiKey}`, token);
     if (!authenticated) { fail(401, "authentication", "Gateway client token required"); return; }
     // Node versions that hand an upgrade to the request handler instead of the "upgrade" listener get the same refusal.
     if (path === "/v1/responses" && isUpgradeRequest(req.headers)) { sendUpgradeRefusal(res); return; }
@@ -319,6 +325,16 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       try {
         const info = gatewayInfoPayload(state.config); res.setHeader("Cache-Control", "no-store");
         if (info) send(res, 200, info); else fail(503, "catalog_unavailable", "The gateway catalog does not fit the shared-catalog protocol");
+      } finally { state.release(); } return;
+    }
+    if (anthropicModels) {
+      try {
+        const surface = claudeDirectSurface(state.config);
+        if (!modelDetail) { send(res, 200, claudeDirectModelList(surface)); return; }
+        let id: string | undefined;
+        try { id = decodeURIComponent(path.slice("/v1/models/".length)); } catch { /* A malformed ID names no model. */ }
+        const model = id && !id.includes("/") ? claudeDirectModelDetail(surface, id) : undefined;
+        if (model) send(res, 200, model); else fail(404, "model_not_found", "Unknown model");
       } finally { state.release(); } return;
     }
     if (req.method === "GET" && path === "/v1/models") { try { const hidden = pickerHiddenAliases(state.config); send(res, 200, { object: "list", data: [...state.routes].filter(([id]) => !hidden.has(id)).map(([id, route]) => ({ id, object: "model", owned_by: route.id })) }); } finally { state.release(); } return; }
@@ -342,6 +358,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     // A request is recorded once, whichever of its end and a process exit gets there first.
     let recorded = false;
     let providerId: string | undefined; let providerType: string | undefined; let model: string | undefined; let requestedModel: string | undefined; let context: InferenceContext | undefined; let routedAs: string | undefined;
+    // Set when the client named a Claude-safe route ID: its reply carries that ID, and converted tool schemas are undone.
+    let exposedModel: string | undefined; let optionalTools: { runtime: OptionalToolsRuntime; plans: Map<string, unknown> } | undefined;
     const startedAt = Date.now();
     let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let droppedControlItems = 0; let contextOutputs = 0; let usage: Usage | undefined; let accounting: UsageAccounting | undefined; let responseId: string | undefined; let turnStateReturned = false;
     const outcome = () => { const routing = context ?? inferenceContext(req.headers); return { requestId, provider: providerId, model, durationMs: Date.now() - startedAt, queueMs: admittedAt ? admittedAt - startedAt : undefined,
@@ -403,7 +421,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     const cancel = () => { if (!res.writableEnded) { abortCause ||= "cancelled"; clearInterval(heartbeat); controller.abort(); } };
     res.once("close", cancel);
     try {
-      const wire = await body(req);
+      let wire = await body(req);
       const review = messagesProtocol && !countTokens && options.claudeNativeReview !== false ? await nativeReviewTarget(state.config, wire, req.headers) : undefined;
       const reviewRoute = review ? state.routes.get(review.alias) : undefined;
       if (review && reviewRoute) {
@@ -418,6 +436,17 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
         telemetry("claude_native_review", { requestId, provider: providerId, durationMs: Date.now() - startedAt, inputTokens: usage?.input_tokens, cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens });
         ledger("completed");
         return;
+      }
+      // A Claude-safe route ID is another spelling of one alias: resolve it, with its effort and speed, before translation.
+      const surface = messagesProtocol ? claudeDirectSurface(state.config) : undefined;
+      const direct = surface?.routes.has(wire.model) ? claudeDirectRequest(surface, wire, (await nativeRuntimeModule().catch(() => undefined))?.isNativeClassifierRequest) : undefined;
+      if (direct) {
+        wire = direct.wire as ResponsesRequest; exposedModel = direct.exposedModel;
+        if (direct.route.preserveOptionalToolArguments && !countTokens) {
+          const runtime = await optionalToolsRuntime(); const prepared = runtime.prepareOptionalToolArguments(wire);
+          wire = prepared.payload as ResponsesRequest; if (prepared.plans.size) optionalTools = { runtime, plans: prepared.plans };
+        }
+        telemetry("claude_direct_route", { alias: direct.route.upstream, variant: direct.route.reasoningEffort !== undefined || direct.route.serviceTier !== undefined });
       }
       const translated = messagesProtocol ? messagesToResponses(wire, { countTokens, agentId: messagesAgentId(req.headers) }) : wire;
       // Internal wire fields and control items go once, here, whichever protocol the request arrived in.
@@ -442,7 +471,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!route && isAutoReviewModel(request.model)) model = request.model;
       if (!route) throw new ProviderError("model_not_found", unknownModelMessage(request.model), 404);
       if (alias && alias !== request.model) telemetry("model_alias_resolved", { requested: request.model, alias });
-      providerId = route.id; providerType = route.type; model = alias ?? request.model; requestedModel = alias && alias !== request.model ? request.model : undefined; admission = route.admission;
+      providerId = route.id; providerType = route.type; model = alias ?? request.model; requestedModel = alias && alias !== request.model ? request.model : exposedModel; admission = route.admission;
       routedAs = availability.identityOf(route.id);
       // Validate the supported protocol before invoking any provider. Only the Codex subscription route forwards hosted web_search
       // and drops or bridges tool_search; every other route drops both and their replayed items (keeping tools a search loaded),
@@ -463,7 +492,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       // A marked id lets a spend tool match this request to the client's own record of the response.
       responseId = usageLedgerMarks(route.type) ? gatewayMarkedId(messagesProtocol ? "messages" : "responses", requestId) : undefined;
       const Writer = messagesProtocol ? MessagesWriter : ResponsesWriter;
-      const output = writer = new Writer(request.model, event => { if (streaming && !res.destroyed) {
+      const output = writer = new Writer(exposedModel ?? request.model, event => { if (streaming && !res.destroyed) {
         lastEventAt = Date.now();
         const frame = messagesProtocol && event.type === "error" ? { ...event, request_id: requestId } : event;
         res.write(`event: ${event.type}\ndata: ${JSON.stringify(frame)}\n\n`);
@@ -515,7 +544,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
           }
           open(); events++; if (!firstEventAt) firstEventAt = Date.now();
           if (event.type === "tool") tools++;
-          writer.accept(event.type === "reasoning-state" ? { ...event, item: wrapReasoning(event.item, route.reasoningScope) } : event);
+          writer.accept(event.type === "reasoning-state" ? { ...event, item: wrapReasoning(event.item, route.reasoningScope) }
+            : event.type === "tool" && optionalTools ? { ...event, call: restoreOptionalToolCall(event.call, optionalTools.plans, optionalTools.runtime) } : event);
           if (writer.completed) clearInterval(heartbeat);
           if (streaming && res.writableNeedDrain) await waitForDrain(res, controller.signal);
           if (controller.signal.aborted || res.destroyed) { stopped = true; break; }

@@ -12,8 +12,8 @@ const maxProfileModelRows = 200;
 /** Fail-closed bound on hidden compatibility aliases in the adapter configuration; they never appear in the picker. */
 const maxHiddenVariantAliases = 1000;
 /** Only these efforts are offered as variants; ultra, none and minimal have no Claude request equivalent. */
-const variantEffortOrder = ["low", "medium", "high", "xhigh", "max"] as const;
-type VariantEffort = typeof variantEffortOrder[number];
+export const variantEffortOrder = ["low", "medium", "high", "xhigh", "max"] as const;
+export type VariantEffort = typeof variantEffortOrder[number];
 const effortLabels: Record<VariantEffort, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra High", max: "Max" };
 /** Transports that honor an explicit service tier. */
 const tierProviderTypes = new Set(["claude-subscription", "codex-subscription", "responses-api"]);
@@ -23,7 +23,7 @@ const standardTier: VariantTier = { id: "default", name: "Standard" };
  * model ID shape, with an opaque bracketed suffix, so Claude Desktop shows its native effort
  * slider for it. The name must never mention GPT or Qwen: the app rejects those IDs.
  */
-const bridgeRouteBase = "claude-opus-5";
+export const bridgeRouteBase = "claude-opus-5";
 
 export interface ClaudeDesktopProvider {
   id: string;
@@ -142,13 +142,13 @@ function catalogByAlias(catalog: ClaudeDesktopCatalog): Map<string, ClaudeDeskto
   return result;
 }
 
-function sourceAliases(source: ClaudeDesktopGatewaySource, primaryId: string): { aliases: Map<string, AliasOwner>; primary: Map<string, string> } {
-  if (!Array.isArray(source.providers)) fail("gateway.providers must be an array");
+function sourceAliases(providers: ClaudeDesktopProvider[], primaryId: string | null): { aliases: Map<string, AliasOwner>; primary: Map<string, string> } {
+  if (!Array.isArray(providers)) fail("gateway.providers must be an array");
   const aliases = new Map<string, AliasOwner>();
   const primary = new Map<string, string>();
   let primaryCount = 0;
   const providerIds = new Set<string>();
-  for (const provider of source.providers) {
+  for (const provider of providers) {
     if (!provider || !nonEmptyString(provider.id) || !nonEmptyString(provider.type) || !provider.models || typeof provider.models !== "object" || Array.isArray(provider.models)) {
       fail("Every gateway provider needs id, type, and a models object");
     }
@@ -166,6 +166,7 @@ function sourceAliases(source: ClaudeDesktopGatewaySource, primaryId: string): {
       if (isPrimary) primary.set(alias, native);
     }
   }
+  if (primaryId === null) return { aliases, primary };
   if (primaryCount !== 1) fail(`Exactly one primary ${primaryProviderType} provider named ${primaryId} is required`);
   if (!primary.size) fail("The primary Claude subscription has no models");
   return { aliases, primary };
@@ -251,7 +252,7 @@ function selectVariants(bases: VariantBase[]): Array<{ base: VariantBase; spec: 
 }
 
 /** The highest effort the model supports, bounded by a cap already in the profile. */
-function boundedMaxEffort(prior: unknown, efforts: VariantEffort[]): unknown {
+export function boundedMaxEffort(prior: unknown, efforts: VariantEffort[]): unknown {
   const top = efforts[efforts.length - 1];
   if (top === undefined) return prior;
   if (prior === undefined) return top;
@@ -261,14 +262,14 @@ function boundedMaxEffort(prior: unknown, efforts: VariantEffort[]): unknown {
 }
 
 /** The cap recorded under this row name, or undefined when the row does not carry one. */
-function recordedCap(oldMetadata: Map<string, Record<string, unknown>>, name: string): unknown {
+export function recordedCap(oldMetadata: Map<string, Record<string, unknown>>, name: string): unknown {
   const entry = oldMetadata.get(name);
   if (entry === undefined || !Object.hasOwn(entry, "maxEffort")) return undefined;
   return entry.maxEffort;
 }
 
 /** A user cap on a native row, which only our own `behavesAs` marker can prove. */
-function recordedNativeCap(oldMetadata: Map<string, Record<string, unknown>>, name: string): unknown {
+export function recordedNativeCap(oldMetadata: Map<string, Record<string, unknown>>, name: string): unknown {
   const entry = oldMetadata.get(name);
   if (entry === undefined || entry.behavesAs !== bridgeRouteBase) return undefined;
   return recordedCap(oldMetadata, name);
@@ -287,7 +288,7 @@ function adapterModel(id: string, upstream: string, row: ClaudeDesktopCatalogMod
   return result;
 }
 
-function existingModelMetadata(profile: Record<string, unknown>): Map<string, Record<string, unknown>> {
+export function existingModelMetadata(profile: Record<string, unknown>): Map<string, Record<string, unknown>> {
   const models = profile.inferenceModels;
   if (models === undefined) return new Map();
   if (!Array.isArray(models)) fail("Existing GateFox profile inferenceModels must be an array");
@@ -349,15 +350,80 @@ export function buildClaudeDesktopProfile(
   validPort(adapterPort, "adapterPort");
   if (source.port === adapterPort) fail("Existing gateway port conflicts with the private desktop adapter port");
   const upstream = safeLoopbackUpstream(options.upstream ?? `http://127.0.0.1:${source.port}`, adapterPort);
-  const primaryId = options.primaryClaudeProvider ?? "claude";
-  const modelDefault = options.defaultModel ?? defaultModelName;
+  const { entries, models: adapterModels } = buildClaudeDesktopRoutes(source.providers, catalog, existingProfile, {
+    primaryClaudeProvider: options.primaryClaudeProvider, defaultModel: options.defaultModel, nativeModelMetadata: options.nativeModelMetadata,
+  });
+
+  const profile: Record<string, unknown> = structuredClone(existingProfile);
+  profile.inferenceGatewayBaseUrl = `http://127.0.0.1:${adapterPort}`;
+  profile.modelDiscoveryEnabled = false;
+  profile.alwaysStartWithDefaultModel = true;
+  profile.inferenceModels = entries;
+  applyCredentialHelper(profile, options.credentialHelper, options.tokenFile);
+  const adapterConfig: ClaudeDesktopAdapterConfig = {
+    listenPort: adapterPort, endpoint: upstream, upstream, tokenFile: options.tokenFile,
+    auditFile: join(options.adapterRoot, "route-audit.jsonl"), models: adapterModels,
+  };
+  return { profile, adapterConfig };
+}
+
+export function applyCredentialHelper(profile: Record<string, unknown>, helper: CredentialHelper | undefined, tokenFile: string): void {
+  if (!helper) return;
+  if (!nonEmptyString(helper.command) || !Array.isArray(helper.args) || helper.args.some(argument => typeof argument !== "string")) fail("credentialHelper must contain a command and string args");
+  profile.inferenceCredentialHelper = helper.command;
+  profile.inferenceCredentialHelperArgs = credentialHelperArgs(helper.args, tokenFile);
+}
+
+export interface ClaudeDesktopRouteOptions {
+  /** The provider whose models keep their native Claude IDs. `null`: no provider does. Defaults to `claude`. */
+  primaryClaudeProvider?: string | null;
+  /** The primary model listed first, which that provider must offer. `null`: no model is required. */
+  defaultModel?: string | null;
+  nativeModelMetadata?: boolean;
+  /** False for a caller that lists rows itself (direct serving), where hidden rows never reach the picker. */
+  rowLimit?: boolean;
+  /** False leaves out the hidden effort and speed aliases. */
+  variants?: boolean;
+}
+
+/** One picker row and the facts a caller needs to describe it. */
+export interface ClaudeDesktopRouteRow {
+  /** The profile row, as the picker gets it. */
+  entry: Record<string, unknown>;
+  alias: string;
+  efforts: VariantEffort[];
+  /** A primary Claude model under its own ID. */
+  native: boolean;
+  /** The other ID a saved chat may name for this route (opaque or bridge), when it has one. */
+  compatId?: string;
+}
+
+export interface ClaudeDesktopRoutes {
+  entries: Record<string, unknown>[];
+  rows: ClaudeDesktopRouteRow[];
+  models: ClaudeDesktopAdapterModel[];
+}
+
+/**
+ * The picker rows and every model ID that resolves to a gateway alias, derived only from the
+ * provider list and the catalog. The profile builder and the gateway's own Claude surface share
+ * it, so a profile row always names an ID the serving side accepts.
+ */
+export function buildClaudeDesktopRoutes(
+  providers: ClaudeDesktopProvider[],
+  catalog: ClaudeDesktopCatalog,
+  existingProfile: Record<string, unknown>,
+  options: ClaudeDesktopRouteOptions = {},
+): ClaudeDesktopRoutes {
+  const primaryId = options.primaryClaudeProvider === undefined ? "claude" : options.primaryClaudeProvider;
+  const modelDefault = options.defaultModel === undefined ? defaultModelName : options.defaultModel;
   const catalogModels = catalogByAlias(catalog);
-  const { aliases, primary } = sourceAliases(source, primaryId);
+  const { aliases, primary } = sourceAliases(providers, primaryId);
   for (const alias of catalogModels.keys()) if (!aliases.has(alias)) fail(`Gateway catalog alias ${alias} is not owned by a configured provider`);
   for (const alias of aliases.keys()) if (!catalogModels.has(alias)) fail(`Configured gateway alias ${alias} is absent from the model catalog`);
 
   const routes = primaryRoutes(primary);
-  if (!routes.some(route => route.native === modelDefault)) fail(`Primary Claude subscription must explicitly provide ${modelDefault}`);
+  if (primaryId !== null && modelDefault !== null && !routes.some(route => route.native === modelDefault)) fail(`Primary Claude subscription must explicitly provide ${modelDefault}`);
   const orderedRoutes = [...routes].sort((left, right) => Number(left.native !== modelDefault) - Number(right.native !== modelDefault) || left.native.localeCompare(right.native));
   const oldMetadata = existingModelMetadata(existingProfile);
   const primaryEntries = orderedRoutes.map(route => {
@@ -376,11 +442,11 @@ export function buildClaudeDesktopProfile(
     const efforts = effortsWithin(primaryEntries[index]!.maxEffort, variantEfforts(row));
     return { alias: route.alias, row, keepOptionalToolArguments: false, primary: true, efforts, tiers: variantTiers(row, aliases.get(route.alias)!.providerType) };
   });
+  const rows: ClaudeDesktopRouteRow[] = orderedRoutes.map((route, index) => ({ entry: primaryEntries[index]!, alias: route.alias, efforts: variantEfforts(catalogModels.get(route.alias)!), native: true }));
   const usedIds = new Set(primaryEntries.map(entry => String(entry.name)));
   // Adapter-only IDs from earlier profiles: they keep saved chats working but are never
   // visible rows, so they must not count toward Claude Desktop's picker limit.
   const hiddenIds = new Set<string>();
-  const extras: Record<string, unknown>[] = [];
   const hiddenCompat: ClaudeDesktopAdapterModel[] = [];
   const nativeMetadata = options.nativeModelMetadata === true;
   for (const alias of [...aliases.keys()].filter(alias => !primary.has(alias)).sort()) {
@@ -403,7 +469,7 @@ export function buildClaudeDesktopProfile(
       if (maxEffort !== undefined) entry.maxEffort = maxEffort;
       if (nativeMetadata) entry.behavesAs = bridgeRouteBase;
     } else if (supportsHigh(row)) entry.maxEffort = "high";
-    extras.push(entry);
+    rows.push({ entry, alias, efforts, native: false, ...(efforts.length ? { compatId: nativeMetadata ? bridgeId : compatId } : {}) });
     const owner = aliases.get(alias)!;
     const keepOptional = owner.providerType === "codex-subscription" || owner.providerType === "responses-api";
     if (efforts.length) {
@@ -418,13 +484,13 @@ export function buildClaudeDesktopProfile(
   }
 
   // The picker lists one row per model, so only these rows count toward Claude Desktop's limit.
-  if (usedIds.size > maxProfileModelRows) {
+  if (options.rowLimit !== false && usedIds.size > maxProfileModelRows) {
     fail(`Claude Desktop allows at most ${maxProfileModelRows} model rows, but this gateway needs ${usedIds.size}; remove models from the gateway configuration`);
   }
 
   // Backend-only aliases, appended after every original adapter route and never written to the
   // profile. Each carries an explicit effort and/or tier and no family identity.
-  for (const { base, spec } of selectVariants(variantBases)) {
+  for (const { base, spec } of options.variants === false ? [] : selectVariants(variantBases)) {
     const routeId = variantRouteId(base.alias, spec.effort, spec.tier?.id);
     if (usedIds.has(routeId) || hiddenIds.has(routeId)) fail(`Variant route ID collision for ${base.alias}: ${routeId}`);
     usedIds.add(routeId);
@@ -437,20 +503,5 @@ export function buildClaudeDesktopProfile(
   }
   // Saved chats can still name the pre-bridge opaque ID of a route that now has a native slider.
   adapterModels.push(...hiddenCompat);
-
-  const profile: Record<string, unknown> = structuredClone(existingProfile);
-  profile.inferenceGatewayBaseUrl = `http://127.0.0.1:${adapterPort}`;
-  profile.modelDiscoveryEnabled = false;
-  profile.alwaysStartWithDefaultModel = true;
-  profile.inferenceModels = [...primaryEntries, ...extras];
-  if (options.credentialHelper) {
-    if (!nonEmptyString(options.credentialHelper.command) || !Array.isArray(options.credentialHelper.args) || options.credentialHelper.args.some(argument => typeof argument !== "string")) fail("credentialHelper must contain a command and string args");
-    profile.inferenceCredentialHelper = options.credentialHelper.command;
-    profile.inferenceCredentialHelperArgs = credentialHelperArgs(options.credentialHelper.args, options.tokenFile);
-  }
-  const adapterConfig: ClaudeDesktopAdapterConfig = {
-    listenPort: adapterPort, endpoint: upstream, upstream, tokenFile: options.tokenFile,
-    auditFile: join(options.adapterRoot, "route-audit.jsonl"), models: adapterModels,
-  };
-  return { profile, adapterConfig };
+  return { entries: rows.map(row => row.entry), rows, models: adapterModels };
 }
