@@ -1,19 +1,20 @@
 ---
-summary: 'Opt-in Claude Desktop model aliases, isolated account catalogs, setup, and tested limits.'
+summary: 'The earlier Claude Desktop adapter profile (port 3467): how existing installations work, retiring it, and behavior shared with the direct setup.'
 read_when:
-  - Adding Claude Desktop as a gateway client.
-  - Showing multiple GPT accounts or local models in Claude's model picker.
-  - Installing or updating the Claude-only adapter without changing Codex.
+  - Maintaining or retiring an existing Claude Desktop adapter profile
+  - Changing Claude Desktop behavior shared by the adapter and the direct profile (tools, Auto review, context recovery)
 ---
 
-# Claude Desktop
+# Claude Desktop adapter (earlier setup)
 
-The gateway can now serve Claude Desktop itself, with no adapter process and
-no second gateway: see [Claude Desktop, served directly](claude-desktop-direct.md).
-Prefer that for a new setup. This page describes the adapter profile, which
-stays supported, and the behavior both share.
-Code sessions on another machine over SSH need a direct profile on a Tailscale
-address: see [SSH environments](claude-desktop-direct.md#ssh-environments).
+**For a new setup, use [the Claude app guide](claude-desktop-direct.md).** The gateway
+serves the Claude app itself; this page describes the separate adapter that earlier
+installations used, and behavior both setups share.
+
+To move off the adapter, apply a direct profile. Nothing connects to the adapter
+afterwards. There is no retire command yet: the `claude-adapter` component (and any
+`claude-inference` tunnel) stays in `state/service-plan.json` until it is removed there,
+and then stops at the next idle service restart.
 
 Claude Desktop rejects model IDs that name GPT or Qwen. The optional Claude
 adapter exposes stable opaque route IDs while retaining the actual provider and

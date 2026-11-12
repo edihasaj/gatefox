@@ -1,87 +1,71 @@
 ---
-summary: 'Share one gateway catalog across trusted SSH-connected machines.'
+summary: 'Use GateFox across several Macs: share one Mac''s accounts with others, or work on another Mac over SSH from the Codex app or the Claude app.'
 read_when:
-  - Connecting a MacBook or remote Codex client to a gateway on another host
+  - Adding a second Mac to GateFox, or connecting a MacBook to the main Mac
+  - Working on another Mac over SSH from the Codex app or the Claude app
+  - Changing client-only configurations, tunnels or remote SSH registration
 ---
 
-# Remote gateway
+# Other Macs
 
-Run `gateway serve` on the inference host. Keep its provider registrations and
-native Claude account directories there. Use one authoritative host when you
-want every client to see the same configured models.
+There are two separate things you may want, and they combine:
 
-Keep model selection on that authoritative host. For example, load only these
-four Copilot models while preserving the other providers:
+| Goal | How | Who runs the model call |
+| --- | --- | --- |
+| **Use the main Mac's accounts on a laptop** | The laptop gets a client token and a tunnel | The main Mac's gateway |
+| **Work in a project on another Mac** (files, terminal, tools there) | Codex app: SSH connection · Claude app: SSH environment | See below |
 
-```sh
-gateway discover copilot \
-  --select gpt-6.1-sol,gpt-5.6-terra,claude-sonnet-5,claude-opus-5.5 --load
-```
+## Share one Mac's accounts
 
-GPT-5.6-Terra was the latest Terra offered by the registered Copilot account on
-11 October 2026. Discovery without `--load` does not change the selection.
-Include the selection when loading again; an unrestricted `--load` loads the
-provider's full offered catalog.
-
-The desktop and SSH adapters fetch this shared selection. Each device can also
-generate an opt-in CLI configuration in a separate home:
+Keep every account on one Mac. Each other Mac gets only a client token and an SSH
+tunnel; no account credentials are copied. On the other Mac, after installing GateFox:
 
 ```sh
-gateway_client_root="$HOME/.config/harness-gateway/clients"
-gateway_codex_home="$gateway_client_root/codex"
-mkdir -p "$gateway_codex_home"
-gateway codex-config --model codex/gpt-6.1-sol \
-  > "$gateway_codex_home/config.toml"
-CODEX_HOME="$gateway_codex_home" codex
+umask 077; mkdir -p ~/.local/state/gatefox-client
+ssh you@main-mac 'gateway token' > ~/.local/state/gatefox-client/client-token
+gateway setup --client --port 3459 --token-file ~/.local/state/gatefox-client/client-token
+gateway tunnel install --tunnel-id main --host you@main-mac --port 3459 --remote-port 3457
+gateway desktop register && gateway doctor
 ```
 
-Regenerate the CLI snapshot after changing the host's selection. This separate
-home uses the secondary subscription routes and has its own settings and history.
-The generated file is a complete configuration, not a named profile. The primary
-`config.toml` stays unchanged.
-An obsolete repo-local `gateway.local.json` overrides the installed configuration
-when running development commands. Retire that file after migrating to the
-installed configuration to keep one model-selection source.
+The tunnel runs inside the existing GateFox service; nothing else starts at login. The
+client token unlocks every account on the main Mac, so keep it owner-only and give it
+only to your own devices. The main Mac must stay awake and reachable.
 
-Open an SSH forward from the client:
+Model selection stays on the main Mac: run `gateway discover … --load` there, and
+every client sees the change.
+
+## Work on another Mac over SSH
+
+| | Codex app | Claude app |
+| --- | --- | --- |
+| Add the host | Settings → SSH connections, using an alias from `~/.ssh/config` | **New environment → SSH → Add SSH connection…** |
+| Prepare the host | `gateway ssh register --codex ORIGINAL_PATH` on the host | Nothing; the host needs no GateFox |
+| Prepare this Mac | Nothing | `tailnetListener` and `configure --direct --tailnet --ssh-host …` ([steps](claude-desktop-direct.md#ssh-environments)) |
+| Models in that session | The host's own gateway | This Mac's gateway, over Tailscale HTTPS |
+| Network | Only SSH | SSH, plus Tailscale with HTTPS Certificates on |
+
+In both apps, files, the terminal and tools run on the host, while the chat stays in
+this Mac's window.
+
+## A separate Codex CLI home
+
+To try gateway models in the Codex CLI without touching your main settings, generate a
+complete configuration in its own home:
 
 ```sh
-ssh -N -L 127.0.0.1:3458:127.0.0.1:3457 \
-  -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 user@host
+mkdir -p ~/.config/gatefox/clients/codex
+gateway codex-config --model codex/gpt-6.1-sol > ~/.config/gatefox/clients/codex/config.toml
+CODEX_HOME=~/.config/gatefox/clients/codex codex
 ```
 
-Install the gateway CLI on the client. Transfer only the gateway's client token
-over authenticated SSH into an owner-only file. Do not transfer provider tokens:
+On a client-only Mac add `--endpoint http://127.0.0.1:3459/v1 --token-file
+~/.local/state/gatefox-client/client-token`. The command saves a public catalog next to
+the token; run it again after the main Mac changes its model selection. The Codex
+client owns its workspace and runs tools locally; moving inference to another Mac does
+not move file edits there.
 
-```sh
-umask 077
-mkdir -p .state
-ssh user@host 'gateway token' \
-  > .state/remote-client-token
-```
-
-Fetch the host's catalog and generate client settings:
-
-```sh
-gateway codex-config --model claude-sonnet-4-6 \
-  --endpoint http://127.0.0.1:3458/v1 \
-  --token-file .state/remote-client-token > gateway.codex.toml
-```
-
-This command needs no local provider configuration or upstream login. It saves a
-public catalog next to the token and writes TOML containing a credential-helper
-command. Repeat it after the host changes its model selection, then restart Codex.
-Use `--catalog PATH` to choose a different snapshot path. The token grants access
-to all accounts configured on that daemon; issue it only to trusted machines.
-
-The Codex client owns its workspace and executes tools locally. Moving inference
-to Studio does not move file edits to Studio. When Codex itself runs on Studio,
-its tools operate on Studio's workspace instead.
-
-The MacBook-to-Studio Claude Max path has been tested with native Codex file
-reads, free-form patches, follow-up history, cancellation, and recovery. Studio
-has not yet registered a separate gateway Codex OAuth account. MacBook Pro 2 also passed the Claude/Codex 2 tool loop. Its authenticated reverse
-SSH forward is supervised by a user LaunchAgent on the inference host.
+## Details
 
 For the desktop adapter, set the client configuration port to the forwarded
 loopback port. Use an absolute client state directory containing the private
@@ -111,7 +95,7 @@ Register the backend that owns the chat's workspace. Sharing the catalog does
 not transfer local workspace files or automatically configure an SSH execution
 backend that bypasses the desktop adapter.
 
-For desktop SSH projects, run `gateway ssh register --codex ORIGINAL_PATH` on
+For desktop SSH projects in the Codex app, run `gateway ssh register --codex ORIGINAL_PATH` on
 the remote Mac. Then add its existing host alias under the client's SSH connection
 settings. Those rows are native SSH connections: the desktop runs Codex on the
 remote Mac, so the gateway models available in them come from that Mac's own

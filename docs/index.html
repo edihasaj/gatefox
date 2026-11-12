@@ -22,11 +22,12 @@
       <a href="#overview">01 <span>What it is</span></a>
       <a href="#setup">02 <span>Set up this Mac</span></a>
       <a href="#use">03 <span>Use it</span></a>
-      <a href="#models">04 <span>Choose models</span></a>
-      <a href="#machines">05 <span>Add another Mac</span></a>
-      <a href="#clients">06 <span>Other apps</span></a>
-      <a href="#service">07 <span>Keep it running</span></a>
-      <a href="#troubleshooting">08 <span>Fix a problem</span></a>
+      <a href="#claude">04 <span>Claude app</span></a>
+      <a href="#models">05 <span>Choose models</span></a>
+      <a href="#machines">06 <span>Other Macs</span></a>
+      <a href="#clients">07 <span>Other apps</span></a>
+      <a href="#service">08 <span>Keep it running</span></a>
+      <a href="#troubleshooting">09 <span>Fix a problem</span></a>
       <a class="page-link" href="reference.html">→ <span>All docs</span></a>
       <a class="page-link" href="changelog.html">→ <span>Changelog</span></a>
       <a class="page-link first" href="roadmap.html">→ <span>Roadmap · help wanted</span></a>
@@ -61,7 +62,7 @@
       </aside>
       <!-- /release-summary -->
       <div class="route" aria-label="Your app talks to the gateway on this Mac, which talks to your accounts">
-        <span>Codex · Claude Code</span><b aria-hidden="true">→</b><span>Gateway on this Mac</span><b aria-hidden="true">→</b><span>Your accounts</span>
+        <span>Codex · Claude app · Claude Code</span><b aria-hidden="true">→</b><span>Gateway on this Mac</span><b aria-hidden="true">→</b><span>Your accounts</span>
       </div>
       <div class="split">
         <div><h2>The gateway does</h2><ul><li>Sign in to each account the official way</li><li>Add its models to your app's picker</li><li>Translate requests and stream answers back</li></ul></div>
@@ -135,8 +136,23 @@ gateway doctor</code></pre></details>
       </tbody></table></div>
     </section>
 
+    <section id="claude" data-section>
+      <div class="section-number">04 / CLAUDE APP</div>
+      <h2>Use it in the Claude app.</h2>
+      <p>The Claude app (Claude Desktop) can list every GateFox model too: your Claude accounts first, then Codex, local and API models. It talks to the gateway on this Mac; nothing else is installed.</p>
+      <ol>
+        <li><b>Once:</b> in the Claude app, open <strong>Developer → Configure Third-Party Inference…</strong>, set the provider to <strong>Gateway</strong> and the base URL to <code>http://127.0.0.1:3457</code>, name the configuration <code>GateFox</code> and apply it.</li>
+        <li>Quit the Claude app (⌘Q), then run the command below.</li>
+        <li>Open the Claude app. The account menu reads <strong>you · GateFox</strong> and the picker shows <strong>Claude · Opus 5.5</strong>, <strong>Codex · GPT-6.1-Sol</strong> and the rest.</li>
+      </ol>
+      <pre><code>gateway claude-desktop configure --direct --native-model-metadata --apply</code></pre>
+      <p>Run it again after you add or remove models. To go back to another configuration, use the account menu → <strong>Inference configuration</strong>. Each run keeps a backup of the previous profile.</p>
+      <p>To run Claude app sessions on another Mac over SSH, see <a href="#machines">Other Macs</a>. The Claude mobile app has no setting for a custom gateway; use Codex in the ChatGPT app on your phone instead.</p>
+      <p>More: <a href="claude-desktop-direct.html">the Claude app guide</a>.</p>
+    </section>
+
     <section id="models" data-section>
-      <div class="section-number">04 / MODEL LIST</div>
+      <div class="section-number">05 / MODEL LIST</div>
       <h2>Load the models your account offers.</h2>
       <p>Discovery reads each account's current model list. <code>--load</code> saves it; <code>--select</code> keeps a smaller list.</p>
       <pre><code>gateway discover claude --load
@@ -146,19 +162,19 @@ gateway catalog</code></pre>
     </section>
 
     <section id="machines" data-section>
-      <div class="section-number">05 / OPTIONAL</div>
-      <h2>Add another Mac.</h2>
+      <div class="section-number">06 / OTHER MACS</div>
+      <h2>Use more than one Mac.</h2>
       <p>Skip this if you use one Mac. To use the same models on a laptop, keep the accounts on your first Mac and let the others connect to it. Each extra Mac gets only a client token and an SSH tunnel; no account credentials are copied.</p>
       <div class="route" aria-label="An extra Mac reaches the main Mac through an SSH tunnel">
         <span>Extra Mac</span><b aria-hidden="true">— SSH tunnel →</b><span>Main Mac: accounts + gateway</span><b aria-hidden="true">→</b><span>Providers</span>
       </div>
       <p>On the extra Mac, install the gateway as in step 1, then:</p>
       <pre><code>umask 077
-mkdir -p ~/.local/state/harness-gateway-client
+mkdir -p ~/.local/state/gatefox-client
 ssh you@main-mac 'gateway token' \
-  &gt; ~/.local/state/harness-gateway-client/client-token
+  &gt; ~/.local/state/gatefox-client/client-token
 gateway setup --client --port 3459 \
-  --token-file ~/.local/state/harness-gateway-client/client-token
+  --token-file ~/.local/state/gatefox-client/client-token
 gateway tunnel install --tunnel-id main --host you@main-mac \
   --port 3459 --remote-port 3457
 gateway desktop register
@@ -167,25 +183,33 @@ gateway doctor</code></pre>
       <details><summary>Use an existing Codex “Control other devices” connection instead</summary><p>The experimental native relay reuses that connection, so there is no separate SSH entry. Finish open chats and quit ChatGPT normally on that Mac first.</p><pre><code>gateway native install
 gateway desktop register
 gateway native status</code></pre><p>Read <a href="native-remote.html">the native relay requirements</a>.</p></details>
-      <p>More detail: <a href="remote.html">remote clients</a>.</p>
+      <h3>Work in a project on another Mac</h3>
+      <p>Both apps can run a chat's files, terminal and tools on another Mac over SSH, while the chat stays on this one. Check that <code>ssh that-mac</code> works from a terminal first.</p>
+      <div class="table-wrap"><table><thead><tr><th></th><th>Codex app</th><th>Claude app</th></tr></thead><tbody>
+        <tr><td>On the other Mac</td><td><code>gateway ssh register --codex PATH</code></td><td>Nothing</td></tr>
+        <tr><td>On this Mac</td><td>Nothing</td><td>Turn on <code>"tailnetListener": true</code>, then quit the Claude app and run <code>gateway claude-desktop configure --direct --tailnet --ssh-host that-mac --ssh-host ITS-IP --apply</code></td></tr>
+        <tr><td>Add it in the app</td><td>Settings → SSH connections</td><td>New environment → SSH → Add SSH connection…</td></tr>
+        <tr><td>Needs</td><td>SSH</td><td>SSH and Tailscale, with HTTPS Certificates on</td></tr>
+      </tbody></table></div>
+      <p>More detail: <a href="remote.html">other Macs</a> and <a href="claude-desktop-direct.html#ssh-environments">Claude app SSH environments</a>.</p>
     </section>
 
     <section id="clients" data-section>
-      <div class="section-number">06 / OTHER APPS</div>
+      <div class="section-number">07 / OTHER APPS</div>
       <h2>Use it beyond the Codex app.</h2>
       <div class="cards">
         <a class="card" href="messages.html"><strong>Claude Code</strong><span>Point Claude Code at the gateway and use GPT, Claude and local models through its native Messages API.</span></a>
-        <a class="card" href="claude-desktop.html"><strong>Claude Desktop</strong><span>Show your other accounts and local models in Claude's model picker, without changing Codex.</span></a>
+        <a class="card" href="claude-desktop-direct.html"><strong>Claude app</strong><span>Every GateFox model in the Claude app's picker, Claude accounts first, without changing Codex.</span></a>
         <a class="card" href="cli.html"><strong>Codex CLI</strong><span>Generate a separate CLI home with <code>gateway codex-config</code> so your main settings stay untouched.</span></a>
       </div>
-      <pre><code>mkdir -p ~/.config/harness-gateway/clients/codex
+      <pre><code>mkdir -p ~/.config/gatefox/clients/codex
 gateway codex-config --model codex/gpt-6.1-sol \
-  &gt; ~/.config/harness-gateway/clients/codex/config.toml
-CODEX_HOME=~/.config/harness-gateway/clients/codex codex</code></pre>
+  &gt; ~/.config/gatefox/clients/codex/config.toml
+CODEX_HOME=~/.config/gatefox/clients/codex codex</code></pre>
     </section>
 
     <section id="service" data-section>
-      <div class="section-number">07 / OPERATIONS</div>
+      <div class="section-number">08 / OPERATIONS</div>
       <h2>Keep it running.</h2>
       <p>One background service starts the gateway at login and restarts it after a crash. Closing the app or the terminal leaves it running. New releases are picked up when the gateway is idle, without stopping your chats.</p>
       <pre><code>gateway service status
@@ -197,7 +221,7 @@ gateway versions --check</code></pre>
     </section>
 
     <section id="troubleshooting" data-section>
-      <div class="section-number">08 / RECOVERY</div>
+      <div class="section-number">09 / RECOVERY</div>
       <h2>Find where it stopped.</h2>
       <p>Start with <code>gateway doctor</code> on the Mac that has the problem. It checks the configuration, accounts, service, tunnel and Codex registration in turn.</p>
       <div class="table-wrap"><table><thead><tr><th>Symptom</th><th>Next step</th></tr></thead><tbody>
@@ -205,7 +229,10 @@ gateway versions --check</code></pre>
         <tr><td>“Model not supported with a ChatGPT account”</td><td>Start a new chat with the gateway model selected. An existing native chat cannot switch to it.</td></tr>
         <tr><td>Model provider <code>gatefox</code> (or <code>subscription_gateway</code>) not found</td><td>Run <code>gateway desktop register</code> on the Mac that owns the chat's project, then reopen the chat. It registers both of the gateway's ids.</td></tr>
         <tr><td>An extra Mac sees no models</td><td>Check that the main Mac is awake, then run <code>gateway doctor</code> on the extra Mac to test the tunnel.</td></tr>
-        <tr><td>An answer stops early</td><td>Check <code>gateway service status</code>. Keep the chat and logs; the gateway does not retry on another account.</td></tr>
+        <tr><td>The Claude app still says Harness Gateway, or shows no GateFox models</td><td>Quit the Claude app with ⌘Q and run <code>gateway claude-desktop configure --direct --apply</code> again; it refuses to write while the app is open.</td></tr>
+          <tr><td>Claude app: “Some saved settings can't be used as written: inferenceGatewayBaseUrl”</td><td>Choose <strong>Cancel</strong>, not Save. Quit the app, update GateFox and run the configure command again; the app accepts <code>http://</code> only on this Mac.</td></tr>
+          <tr><td>Claude app: “SSH host … is not allowed by your organization's managed settings”</td><td>Add that address with another <code>--ssh-host</code> in the configure command. The app checks the address the SSH alias resolves to.</td></tr>
+          <tr><td>An answer stops early</td><td>Check <code>gateway service status</code>. Keep the chat and logs; the gateway does not retry on another account.</td></tr>
       </tbody></table></div>
       <p>When asking for help, share versions, timestamps and error messages. Never share client tokens, account tokens or request bodies.</p>
       <p class="notice"><strong>Everything else</strong> is in <a href="reference.html">All docs</a>, a searchable list of every topic with when to read it. Want to help, including with Linux and Windows? See the <a href="roadmap.html">roadmap</a>.</p>

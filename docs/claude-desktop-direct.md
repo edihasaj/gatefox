@@ -1,13 +1,18 @@
 ---
-summary: 'Claude Desktop served by the gateway itself: no adapter port, no second gateway, and picker rows from the gateway model list.'
+summary: 'Set up the Claude app (Claude Desktop) with GateFox: first setup, switching configurations, SSH environments on other Macs, and what the gateway does for it.'
 read_when:
+  - Setting up the Claude app with GateFox for the first time
   - Connecting Claude Desktop to GateFox without the separate adapter and private inference process
   - Changing the Claude-safe model IDs, the Anthropic model list, or `claude-desktop configure --direct`
   - Moving an adapter profile to direct serving
   - Starting Claude Desktop Code sessions on another Mac over SSH, or changing the tailnet listener
 ---
 
-# Claude Desktop, served directly
+# Claude Desktop (the Claude app)
+
+GateFox shows every model it serves in the Claude app's model picker: your Claude
+accounts first, then Codex accounts, local models and API models. The app talks to
+the gateway on this Mac directly; nothing else is installed.
 
 Claude Desktop refuses a model ID that names GPT or Qwen, so it cannot name
 gateway aliases such as `codex/gpt-6.1-sol`. Until now a separate loopback
@@ -20,23 +25,34 @@ before   Claude Desktop → adapter :3467 → (private inference) → gateway �
 direct   Claude Desktop ──────────────────────────────────────→ gateway → providers
 ```
 
-Nothing else is installed. There is no adapter process, no second gateway
-configuration, no extra port, and no LiteLLM-style proxy. Every model the
-gateway's catalog shows becomes one picker row with its real provider and
-model label: Claude accounts, GPT accounts, local models, and API models such
-as DeepSeek through OpenRouter.
+There is no adapter process, no second gateway configuration, no extra port and
+no LiteLLM-style proxy. Every model the gateway's catalog shows becomes one picker
+row with its real provider and model label, such as **Claude · Opus 5.5**,
+**Claude 2 · Opus 5.5** or **Codex · GPT-6.1-Sol**.
 
 ## Set it up
 
-The Claude Desktop configuration library must already contain one selected
-profile named `GateFox`, as for the [adapter profile](claude-desktop.md#prepare-the-desktop-profile).
-With the gateway running:
+You need GateFox running on this Mac (`gateway doctor` passes) and the Claude app
+installed.
 
-```sh
-gateway claude-desktop configure --direct
-```
+1. **Create a configuration named GateFox in the Claude app, once.** Open the
+   app's third-party configuration window (**Developer → Configure Third-Party
+   Inference…**; see Anthropic's
+   [in-app configuration guide](https://claude.com/docs/third-party/claude-desktop/in-app-configuration)).
+   Set **Inference provider** to **Gateway**, the gateway base URL to
+   `http://127.0.0.1:3457`, name the configuration `GateFox`, and apply it. The next
+   step fills in everything else. A configuration still named `Harness Gateway` is
+   also accepted and renamed.
+2. **Quit the Claude app** (⌘Q), then write the GateFox settings:
 
-This reads the gateway's model list and writes a candidate profile to
+   ```sh
+   gateway claude-desktop configure --direct --apply
+   ```
+
+3. **Open the Claude app.** The account menu at the bottom left reads
+   **you · GateFox**, and the model picker lists your Claude accounts first.
+
+Without `--apply` the command only writes a candidate for review. It reads the gateway's model list and writes a candidate profile to
 `~/Library/Application Support/Claude-3p/alias-trial/candidate/desktop-profile.json`.
 Review it, finish Claude work, quit the app, and apply:
 
@@ -64,6 +80,18 @@ refused with `--direct`.
 
 Rows are listed Claude accounts first: the primary Claude account, then the
 other Claude accounts, then every other provider in the gateway's catalog order.
+
+On a Claude app that reads native model metadata (5.1231 or later was checked), add
+`--native-model-metadata` so Codex and other reasoning rows show the app's own effort
+control.
+
+### Switch configurations
+
+The Claude app keeps third-party configurations and their chats separately from your
+normal Claude sign-in, under `~/Library/Application Support/Claude-3p`. Switch between
+configurations from the account menu: **Inference configuration**, choose one, then
+**Apply Changes**. Every `--apply` keeps the previous profile in
+`Claude-3p/setup-backups`.
 
 ## SSH environments
 
@@ -107,18 +135,36 @@ Codex SSH chat does.
 
 ### Set it up
 
+You need Tailscale on this Mac and on the host, with MagicDNS and **HTTPS
+Certificates** turned on for the tailnet (Tailscale admin console → **DNS**). Both the
+standalone and the App Store build of Tailscale work. Check that `ssh HOST` already
+works from a terminal on this Mac.
+
 1. Add `"tailnetListener": true` to the gateway configuration. The running gateway
    fetches its certificate and starts listening within about a minute, without a
    restart, on the same port.
-2. With Claude quit, write the profile:
+2. Quit the Claude app, then write the profile. Name each host both by the alias you
+   type in the app and by the address that alias resolves to (`ssh -G HOST | grep
+   '^hostname'`), because the app checks the resolved address:
 
    ```sh
-   gateway claude-desktop configure --direct --tailnet --ssh-host macbook-server --apply
+   gateway claude-desktop configure --direct --tailnet \
+     --ssh-host macbook-server --ssh-host 100.73.86.17 --apply
    ```
 
-3. Open Claude, choose the environment selector under the prompt box, then **New
-   environment** → **SSH** → **Host** → **Add SSH connection…**, and enter the host and a
-   folder there.
+3. Open the Claude app. Choose the environment selector under the prompt box, then
+   **New environment** → **SSH** → **Host** → **Add SSH connection…**:
+
+   | Field | Value |
+   | --- | --- |
+   | Host | the alias from `~/.ssh/config`, such as `macbook-server` |
+   | User | your user on the host, or blank when the SSH config sets it |
+   | SSH key | the `IdentityFile` that `ssh -G HOST` prints. Press ⌘⇧. in the file picker to show `.ssh` |
+
+   Accept the host key, choose a folder on the host and select **Create
+   environment**.
+
+To add a host later, run step 2 again with every host listed.
 
 The host needs the Claude Code engine's own requirements and a route to this Mac over
 Tailscale; it needs no GateFox. `--ssh-host` entries are hostnames, `*.domain`
@@ -218,6 +264,16 @@ setup for Claude Code. They list the gateway aliases themselves and declare
 the launch model's context window and default effort. A discovered row is an
 ID Claude Code does not know, so it assumes a 200K window for it.
 
+### When it does not connect
+
+| Message in the app | Cause | Fix |
+| --- | --- | --- |
+| New environment shows no **SSH** tab | The profile has no `sshHostAllowlist` | Run step 2 with `--ssh-host` |
+| "SSH host "100.x.y.z" is not allowed by your organization's managed settings" | Only the alias, not its resolved address, is listed | Add the address with another `--ssh-host` |
+| "Some saved settings can't be used as written: inferenceGatewayBaseUrl" | The profile has a non-loopback `http://` endpoint, written by 1.9.3 | Choose **Cancel**, not Save; quit the app and run step 2 again on 1.9.6 or later |
+| "SSH sessions can't use your model provider settings" | The profile still names `127.0.0.1` | Run step 2; it needs `--tailnet` |
+| `configure` says the gateway does not answer on `https://…` | The tailnet listener has no certificate yet | Check HTTPS Certificates in the tailnet, then wait a minute; `gateway diagnostics` shows `tailnet_listener` `certificate_unavailable` meanwhile |
+
 ## Moving from the adapter
 
 Apply a direct profile as shown above. The adapter configuration on disk and
@@ -262,9 +318,16 @@ npm run build
 node scripts/e2e-claude-direct.mjs --claude /absolute/path/to/claude
 ```
 
-This check uses no account and no paid inference. The rendered Claude Desktop
-picker against a direct profile, the `/model` picker after discovery, a real
-provider turn selected in the app, and Auto mode through a direct profile
-have not been verified yet.
+This check uses no account and no paid inference.
 
-Return to the [Claude Desktop guide](claude-desktop.md).
+In the app, on 11 and 12 November 2026 (Claude Desktop 4.23118 and 5.1231.2): the
+picker listed the direct profile's rows with Claude accounts first, and a real Claude
+Opus 5.5 turn sent from the app window completed. Real turns on Claude, Claude 2 and
+Codex rows completed through the same endpoint. With `tailnetListener`, another Mac
+reached the HTTPS endpoint with certificate verification, was refused without the
+client token, and could not reach plain HTTP there. A complete turn in an SSH
+environment, the `/model` picker after discovery, and Auto mode through a direct
+profile have not been recorded yet.
+
+The [adapter profile](claude-desktop.md) is the earlier setup; it stays supported for
+existing installations.

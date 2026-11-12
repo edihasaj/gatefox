@@ -46,12 +46,10 @@ Claude Code for a Claude subscription).
 app to Applications and open it. The setup wizard connects your accounts, picks
 models and starts the background service.
 
-**Option B: the command line.** The [guide](https://gatefox.dev/#setup) has
-copyable commands for the latest complete app release. For the published version
-shown here:
+**Option B: the command line.** In a new, empty folder:
 
 ```sh
-VERSION=1.8.3
+VERSION=$(gh release view -R edihasaj/gatefox --json tagName -q .tagName | sed 's/^v//')
 gh release download "v$VERSION" -R edihasaj/gatefox \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 --ignore-missing -c SHA256SUMS
@@ -68,6 +66,12 @@ gateway doctor                     # check everything
 
 Quit Codex once and reopen it. New models appear after the native ones, with
 labels such as **Claude · Opus 5.5**.
+
+**The Claude app.** Create a third-party configuration named `GateFox` once in the
+Claude app (**Developer → Configure Third-Party Inference…**, provider **Gateway**,
+base URL `http://127.0.0.1:3457`), quit it, then run
+`gateway claude-desktop configure --direct --apply`. The picker then lists your Claude
+accounts first, then every other model. See [the Claude app guide](docs/claude-desktop-direct.md).
 
 ## Add another Mac (optional)
 
@@ -87,7 +91,8 @@ gateway tunnel install --tunnel-id main --host you@main-mac --port 3459 --remote
 gateway desktop register && gateway doctor
 ```
 
-See [remote clients](docs/remote.md) for details and the native connected-machine option.
+To work in a project on another Mac over SSH from the Codex app or the Claude app, see
+[other Macs](docs/remote.md#work-on-another-mac-over-ssh).
 
 ## Documentation
 
@@ -95,7 +100,7 @@ See [remote clients](docs/remote.md) for details and the native connected-machin
 |---|---|
 | [Guide](https://gatefox.dev): set up, use, add Macs, fix problems | [All docs](https://gatefox.dev/reference.html): searchable index of every topic |
 | [Commands and providers](docs/cli.md) | [Architecture](docs/architecture.md) |
-| [Claude Code](docs/messages.md) · [Claude Desktop](docs/claude-desktop.md) | [API providers](docs/api-providers.md) · [Remote Macs](docs/remote.md) |
+| [Claude Code](docs/messages.md) · [Claude app](docs/claude-desktop-direct.md) | [API providers](docs/api-providers.md) · [Other Macs](docs/remote.md) |
 
 ## Development
 
