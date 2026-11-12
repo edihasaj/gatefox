@@ -14,6 +14,7 @@ import { claudeLive } from '../dist/providers/claude-live.js';
 import { sessionRegistry } from '../dist/providers/claude-session-registry.js';
 import { providerCommand } from '../dist/provider-tool-runtime.js';
 import { installClaudeFixture } from '../dist/tests/claude-cli-fixture.js';
+import { configureTelemetry, flushTelemetry, readTelemetry } from '../dist/telemetry.js';
 
 const { values } = parseArgs({ options: { sdk: { type: 'string' }, catalog: { type: 'string' }, root: { type: 'string' },
   'tool-recovery': { type: 'boolean' }, 'legacy-package': { type: 'string' } } });
@@ -22,6 +23,7 @@ const root = resolve(values.root), sdk = resolve(values.sdk);
 assert.ok(root.startsWith('/tmp/'), 'Use a task-specific /tmp evidence directory');
 await mkdir(root, { mode: 0o700 }); // A reused evidence directory is refused.
 process.env.TMPDIR = root;
+configureTelemetry(join(root, 'telemetry'), 'test');
 const home = join(root, 'native'), work = join(root, 'work');
 for (const dir of [home, work]) await mkdir(dir, { mode: 0o700 });
 const catalog = JSON.parse(await readFile(resolve(values.catalog), 'utf8'));
@@ -107,12 +109,16 @@ try {
     assert.equal(sessionRegistry().sessions.size, 0);
     assert.equal(sessionRegistry().replayUntil.size, 0);
     assert.equal((await fixture.capture()).filter(entry => entry.start).length, 4, 'the failed native turn does not replay itself');
+    await flushTelemetry();
+    const rejected = (await readTelemetry(join(root, 'telemetry'), 0)).filter(row => row.event === 'claude_tool_rejected');
+    assert.equal(rejected.length, 1, 'the per-request observer runs before an adopted legacy guard rejects the name');
+    assert.equal(rejected[0].reason, 'unrecognized_name');
     await turn('Retry on this new caller message.');
     assert.equal(sessionRegistry().sessions.size, 1);
     assert.notEqual([...sessionRegistry().sessions.values()][0], parent);
     assert.equal((await fixture.capture()).filter(entry => entry.start).length, 5);
     receipt.toolRecovery = { rejectedTurnFailed: true, crashHold: false, automaticReplay: false, nextCallerTurnCompleted: true,
-      adoptedLegacySession: !!values['legacy-package'] };
+      adoptedLegacySession: !!values['legacy-package'], diagnosticCategory: rejected[0].reason };
   }
   await writeFile(join(root, 'receipt.json'), JSON.stringify(receipt, null, 2));
   console.log(JSON.stringify(receipt));

@@ -32,6 +32,16 @@ names without altering arguments, IDs, results, or message content. Native tool
 events can also use an exact caller alias or an unambiguous caller-local name;
 ambiguous names, stale numeric aliases, and foreign tools are rejected.
 
+Exact aliases apply to translated call parsing and historical replay. A live
+Claude CLI must actually address its registered virtual MCP tool. Its early
+confinement guard therefore still rejects non-gateway native names, even when
+they resemble a caller alias. `scripts/probe-claude-tool-identities.mjs` verified
+with CLI 2.1.299 and a synthetic API that only the registered
+`mcp__gateway__…` name delivered the virtual relay result; bare native names and
+qualified/local caller aliases produced internal CLI tool errors instead. The
+probe executes no caller tool and uses no account or paid inference. Run it with
+`--claude /absolute/claude --root /tmp/fresh-tool-identity-probe`.
+
 ## Chat Completions tool-call shapes
 
 Chat Completions providers accept `finish_reason: "stop"` with tool calls only

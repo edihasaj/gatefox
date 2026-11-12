@@ -20,6 +20,17 @@ Older `unexpected_output` records do not identify the frame that triggered them.
 
 ## Responses tool identity failures
 
+`claude_tool_rejected` records a fixed name category before the live CLI reader
+can discard the frame. It distinguishes declared caller aliases, ambiguous
+aliases, retired numeric names, native file-search/command/agent helpers,
+parallel wrappers, missing names and otherwise unrecognised names. It records
+transport, block source, catalog/call counts and the existing hashed chat key;
+it never records the rejected name, arguments, instructions or response content.
+The per-request stream observer also works with adopted older live sessions.
+These observations appear in recent CLI problems and do not change validation,
+tool execution, permissions or retry behavior. Earlier `unknown_tool` events
+cannot be assigned a detailed category after the original frame was discarded.
+
 Claude's `claude.tool_use` failures carry fixed reasons such as `unknown_tool`,
 `unavailable_gateway_tool`, `native_builtin_tool`, `duplicate_tool_id` and
 `malformed_tool_call`. The client explanation now distinguishes these reasons

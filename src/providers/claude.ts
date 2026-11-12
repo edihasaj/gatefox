@@ -245,7 +245,7 @@ export class ClaudeSubscription implements Provider {
           env: claudeEnv(this.config?.authDirectory, true, run.requestedEffort, mcpCatalog), mcpCatalog, systemPrompt },
         render: from => from === 0 ? renderConversation(conversation, images, format) : renderItems(conversation, images, from, format),
         renderAt: indices => renderSelected(conversation, images, indices, format),
-        newStream: () => new ClaudeMessageStream({ tools, summaryVisible }),
+        newStream: () => new ClaudeMessageStream({ tools, summaryVisible, nativeMcpOnly: true, threadKey: run.threadKey }),
         onUsage: async limit => { await this.onUsage?.(limit).catch(() => {}); },
         onContextWindow: (name, window) => this.onContextWindow?.(name, window),
       }, signal);
@@ -273,7 +273,7 @@ export class ClaudeSubscription implements Provider {
       { cwd: directory, stdio: ["pipe", "pipe", "pipe"], env: claudeEnv(this.config?.authDirectory, false, run.requestedEffort, catalog) });
     // Fast waits for the result: only it reports the tier served, since a refused or throttled fast request
     // drops to standard speed without a stream line. The result follows end_turn within milliseconds.
-    const stream = new ClaudeMessageStream({ tools: run.tools, summaryVisible: run.summaryVisible, endTurn: !run.fast });
+    const stream = new ClaudeMessageStream({ tools: run.tools, summaryVisible: run.summaryVisible, endTurn: !run.fast, threadKey: run.threadKey });
     let failure: Error | undefined; let refused = false; let exitCode: number | null = null; let fastState: string | undefined; let interrupted = false; let settle: NodeJS.Timeout | undefined;
     let end: ClaudeStreamEnd | undefined; let resultSubtype: string | undefined; let resultError = false; let tokens: ClaudeTokens | undefined; const began = Date.now();
     // Report the tier Claude actually served: Fast only while fast mode stayed on.

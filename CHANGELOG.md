@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.2 — 2026-11-12
+
+- Claude tool-name failures now record a content-free category before the live
+  reader rejects the frame, including on adopted sessions. Diagnostics can
+  distinguish caller aliases, native helpers and malformed names without
+  recording tool names or arguments. Tool validation and retry behavior remain
+  unchanged.
+
 ## 2.0.1 — 2026-11-12
 
 - GateFox checks for app updates when opened or activated and every five minutes

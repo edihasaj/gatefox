@@ -6,6 +6,9 @@ import { claudeFailure, claudeRateLimit } from "./claude-errors.js";
 import { claudeAuthenticationFailure } from "./claude-auth.js";
 import { claudeContextFailure } from "./context-errors.js";
 import { claudeUsageEvent, type ClaudeLimit } from "./claude-usage.js";
+import { claudeToolNameCategory } from "./claude-tool-rejection.js";
+import { claudeNativeToolName } from "./claude-tool-names.js";
+import { telemetry } from "../telemetry.js";
 
 /** Native token counts of one API message. */
 export interface ClaudeTokens { input?: number; cacheRead?: number; cacheWrite?: number; output: number }
@@ -88,10 +91,17 @@ export class ClaudeMessageStream {
   private readonly bindings: Map<string, OpenAITool | undefined>;
   private message?: Message; private last?: ClaudeTokens; private limit?: ClaudeLimit; private raw = "";
   private measured?: Partial<ClaudeTokens>;
+  private readonly nativeMcpOnly: boolean;
+  private readonly nativeNames: Set<string>;
+  private readonly threadKey?: string;
+  private rejectionReported = false;
   /** A non-text block started after text was streamed, so the next text begins a new paragraph. */
   private split = false;
-  constructor({ tools, summaryVisible, endTurn = false }: { tools: OpenAITool[]; summaryVisible: boolean; endTurn?: boolean }) {
+  constructor({ tools, summaryVisible, endTurn = false, nativeMcpOnly = false, threadKey }: {
+    tools: OpenAITool[]; summaryVisible: boolean; endTurn?: boolean; nativeMcpOnly?: boolean; threadKey?: string;
+  }) {
     this.tools = tools; this.summaryVisible = summaryVisible; this.endTurn = endTurn; this.bindings = claudeToolBindings(tools);
+    this.nativeMcpOnly = nativeMcpOnly; this.nativeNames = new Set(tools.map(claudeNativeToolName)); this.threadKey = threadKey;
   }
   /** Text streamed so far, for the final result's consistency check. */
   get text(): string { return this.raw; }
@@ -102,6 +112,7 @@ export class ClaudeMessageStream {
   /** Idempotent, content-free observation before a live transport rejects a foreign tool. */
   observeUsage(message: Record<string, unknown>): void {
     const event = message.type === "stream_event" ? message.event as Record<string, unknown> | undefined : undefined;
+    this.observeRejectedName(message, event);
     const native = event?.type === "message_start" ? event.message as Record<string, unknown> | undefined
       : message.type === "assistant" ? message.message as Record<string, unknown> | undefined : undefined;
     const usage = native?.usage ?? (event?.type === "message_delta" ? event.usage : message.type === "result" && !this.measured ? message.usage : undefined);
@@ -110,6 +121,21 @@ export class ClaudeMessageStream {
     const next = tokensOf(usage, { ...base, output: base?.output ?? 0 });
     const output = count((usage as NativeUsage).output_tokens) ?? base?.output;
     this.measured = { input: next.input, cacheRead: next.cacheRead, cacheWrite: next.cacheWrite, ...(output === undefined ? {} : { output }) };
+  }
+
+  /** Runs before even an adopted older CLI reader rejects the frame. Observing never changes validation. */
+  private observeRejectedName(message: Record<string, unknown>, event?: Record<string, unknown>): void {
+    if (this.rejectionReported) return;
+    const content = message.type === "assistant" ? (message.message as { content?: unknown } | undefined)?.content : undefined;
+    const candidates = event?.type === "content_block_start" ? [event.content_block] : Array.isArray(content) ? content : [];
+    const uses = candidates.filter(block => block && typeof block === "object" && (block as { type?: unknown }).type === "tool_use") as Array<{ name?: unknown }>;
+    const rejected = uses.find(block => typeof block.name !== "string" ||
+      !(this.nativeMcpOnly ? this.nativeNames.has(block.name) : this.bindings.get(block.name)));
+    if (!rejected) return;
+    this.rejectionReported = true;
+    telemetry("claude_tool_rejected", { reason: claudeToolNameCategory(rejected.name, this.tools),
+      transport: this.nativeMcpOnly ? "live" : "oneshot", source: event?.type === "content_block_start" ? "block_start" : "assistant",
+      catalogTools: this.tools.length, callCount: uses.length, threadKey: this.threadKey });
   }
 
   accept(message: Record<string, unknown>): ClaudeStreamStep {
