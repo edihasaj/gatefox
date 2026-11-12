@@ -15,9 +15,10 @@ import { sessionRegistry } from '../dist/providers/claude-session-registry.js';
 import { providerCommand } from '../dist/provider-tool-runtime.js';
 import { installClaudeFixture } from '../dist/tests/claude-cli-fixture.js';
 import { configureTelemetry, flushTelemetry, readTelemetry } from '../dist/telemetry.js';
+import { claudeRecoveryPath } from '../dist/claude-session-recovery.js';
 
 const { values } = parseArgs({ options: { sdk: { type: 'string' }, catalog: { type: 'string' }, root: { type: 'string' },
-  'tool-recovery': { type: 'boolean' }, 'legacy-package': { type: 'string' } } });
+  'tool-recovery': { type: 'boolean' }, 'malformed-tool-recovery': { type: 'boolean' }, 'held-recovery': { type: 'boolean' }, 'legacy-package': { type: 'string' } } });
 for (const name of ['sdk', 'catalog', 'root']) assert.ok(values[name], `Pass --${name}`);
 const root = resolve(values.root), sdk = resolve(values.sdk);
 assert.ok(root.startsWith('/tmp/'), 'Use a task-specific /tmp evidence directory');
@@ -43,10 +44,15 @@ if (values['legacy-package']) {
   assert.equal(await legacy.providerCommand('claude'), 'claude', 'Use a private HOME without legacy managed tools');
 }
 let switchBackend;
+const recoveryTool = 'gatefox_recovery_probe';
 const gateway = await startGateway(config, provider => {
   let subscription = new Backend(provider);
   switchBackend = () => { subscription = new ClaudeSubscription(provider); };
   return { async *infer(request, signal, context) {
+    // This provider fixture owns one synthetic declaration. No caller action can
+    // reach the SDK: the malformed reply is rejected before any tool is forwarded.
+    if (values['malformed-tool-recovery'] || values['held-recovery']) request = { ...request,
+      tools: [{ type: 'function', name: recoveryTool, parameters: { type: 'object', properties: {} } }], tool_choice: 'auto' };
     sources.push(context?.threadSource ?? null);
     yield* subscription.infer(request, signal, context);
   } };
@@ -102,23 +108,35 @@ try {
   assert.deepEqual(sources.slice(1, 4), ['composer_predictions', 'composer_predictions', 'composer_predictions']);
   assert.ok([null, 'user'].includes(sources[0]) && [null, 'user'].includes(sources[4]));
   const receipt = { passed: true, samples: 3, poolLimit: 1, retainedSessions: 1, parentContinued: true, sources, starts };
-  if (values['tool-recovery']) {
-    switchBackend(); // An old CLI remains adopted even though the provider implementation moves.
-    await fixture.setScenario({ replies: [{ foreign: 'unregistered-fixture-tool' }, { text: 'RECOVERED' }] });
+  if (values['tool-recovery'] || values['malformed-tool-recovery'] || values['held-recovery']) {
+    const malformed = values['malformed-tool-recovery'] || values['held-recovery'];
+    const mode = sessionRegistry().toolNameModes?.get(parent.key) ?? 'legacy';
+    if (!values['held-recovery']) switchBackend(); // Keep an adopted old CLI while changing handlers.
+    await fixture.setScenario({ replies: [malformed ? { calls: [{ tool: recoveryTool, input: null }] } : { foreign: 'unregistered-fixture-tool' }, { text: 'RECOVERED' }] });
     await turn('Exercise the synthetic tool rejection.', 'failed');
     assert.equal(sessionRegistry().sessions.size, 0);
+    if (values['held-recovery']) {
+      assert.equal(sessionRegistry().replayUntil.size, 1, 'The older handler must reproduce the existing stuck state');
+      const url = `http://127.0.0.1:${gateway.address().port}${claudeRecoveryPath}`, headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+      const snapshot = await (await fetch(url, { headers })).json();
+      const hold = snapshot.holds.find(row => row.threadKey === parent.key.slice(0, 8)); assert.ok(hold);
+      const applied = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ ...hold, toolNameMode: mode }) });
+      assert.equal(applied.status, 200); assert.equal((await applied.json()).inferenceStarted, false);
+      switchBackend();
+    }
     assert.equal(sessionRegistry().replayUntil.size, 0);
     assert.equal((await fixture.capture()).filter(entry => entry.start).length, 4, 'the failed native turn does not replay itself');
     await flushTelemetry();
     const rejected = (await readTelemetry(join(root, 'telemetry'), 0)).filter(row => row.event === 'claude_tool_rejected');
-    assert.equal(rejected.length, 1, 'the per-request observer runs before an adopted legacy guard rejects the name');
-    assert.equal(rejected[0].reason, 'unrecognized_name');
+    assert.equal(rejected.length, malformed ? 0 : 1);
+    if (!malformed) assert.equal(rejected[0].reason, 'unrecognized_name');
     await turn('Retry on this new caller message.');
     assert.equal(sessionRegistry().sessions.size, 1);
     assert.notEqual([...sessionRegistry().sessions.values()][0], parent);
     assert.equal((await fixture.capture()).filter(entry => entry.start).length, 5);
     receipt.toolRecovery = { rejectedTurnFailed: true, crashHold: false, automaticReplay: false, nextCallerTurnCompleted: true,
-      adoptedLegacySession: !!values['legacy-package'], diagnosticCategory: rejected[0].reason };
+      adoptedLegacySession: !!values['legacy-package'], diagnosticCategory: malformed ? 'malformed_tool_call' : rejected[0].reason,
+      explicitHoldRecovery: !!values['held-recovery'] };
   }
   await writeFile(join(root, 'receipt.json'), JSON.stringify(receipt, null, 2));
   console.log(JSON.stringify(receipt));

@@ -11,13 +11,13 @@ import { ProviderError, providerRefusal, providerConversationId, type Provider, 
 import { claudeSessionSettings, type ProviderConfig } from "../config.js";
 import { rejectedClaudeTool, validateForcedChoice } from "./claude-calls.js";
 import { imageConversation } from "../protocol/images.js";
-import { claudeWireToolName as claudeToolName, claudeToolHistory, keepLegacyClaudeToolNames } from "./claude-tool-names.js";
+import { claudeWireToolName as claudeToolName, claudeToolHistory } from "./claude-tool-names.js";
 import { claudeUsageEvent, systemPrefixOnly, type ClaudeLimit } from "./claude-usage.js";
 import { claudeCliModel } from "./claude-models.js";
 import { claudeCliArgs, claudeEnv, claudeMcpCatalog, claudeSystemPrompt, userLine } from "./claude-control.js";
 import { ClaudeMessageStream, resultWindows, type ClaudeStreamEnd, type ClaudeTokens } from "./claude-stream.js";
 import { choiceBlock, leadingInstructions, markCustomCalls, renderConversation, renderItems, renderSelected, type ClaudeConversation, type ClaudeImages, type ReplayFormat } from "./claude-render.js";
-import { compactionCheckpoint, retireScope, refusalHoldRelease, claudeToolNameMode } from "./claude-session-registry.js";
+import { compactionCheckpoint, retireScope, refusalHoldRelease, prepareClaudeToolNames } from "./claude-session-registry.js";
 import { isReplaySafeAuthentication } from "./claude-auth.js";
 import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveModule, type ClaudeLiveOutcome } from "./claude-live-contract.js";
 import { telemetry } from "../telemetry.js";
@@ -106,8 +106,7 @@ export class ClaudeSubscription implements Provider {
     const choice = normalized.tool_choice;
     // The catalog stays whole for forced choices: a changed tool list breaks the prompt cache.
     const tools = choice === "none" ? [] : normalized.tools || [];
-    const toolNameMode = conversationId ? claudeToolNameMode(this.scope(), conversationId) : "readable";
-    if (toolNameMode === "legacy") keepLegacyClaudeToolNames(tools);
+    const toolNameMode = conversationId ? await prepareClaudeToolNames(this.scope(), conversationId, tools) : "readable";
     if (new Set(tools.map(claudeToolName)).size !== tools.length) throw new ProviderError("invalid_request", "Caller tool identities collide in Claude's native namespace", 400);
     const settings = claudeSessionSettings(this.config || {});
     // Native thread/sample destroys its temporary thread after the request. A large

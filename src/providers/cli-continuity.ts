@@ -8,7 +8,7 @@ export class CliContinuityUnavailable extends ProviderError {
       : provider === "Claude" && reason === "capacity"
       ? "GateFox's local Claude live-session pool is full (capacity). Increase claudeSessions.max or wait for parked sessions to expire. Finishing a turn or starting a fresh chat does not free a parked slot. Gateway stopped without automatically replaying the conversation."
       : provider === "Claude" && reason === "session_dead"
-      ? "Claude session continuation is unavailable (session_dead). Gateway stopped without automatically replaying the conversation. Compact this conversation to recover, or start a fresh chat. Waiting instead requires one uninterrupted idle hour; retrying restarts that wait."
+      ? "Claude session continuation is unavailable (session_dead). Gateway stopped without automatically replaying the conversation. Recover this chat with gatefox claude-sessions recover, compact it, or start a fresh chat. The crash hold expires one hour after failure; blocked retries do not extend it."
       : `${provider} session continuation is unavailable (${reason}). Gateway stopped without automatically replaying the conversation. Retry after the provider is available, finish the other active turn, or start a fresh chat.`,
       400, { code: "session_continuity_unavailable", event: "gateway.session" });
   }

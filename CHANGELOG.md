@@ -8,6 +8,16 @@
   records ownership for rollback, and preserves the original storage, executor
   identity, preferences, saved chats and macOS security identities.
 
+## 2.0.4 — 2026-11-13
+
+- A malformed Claude tool call stops its failed response without imposing a
+  crash hold on the chat. This includes sessions adopted from older releases.
+  Failed responses are never automatically replayed.
+- Crash holds expire against a fixed deadline; blocked retries no longer restart
+  the one-hour timer. Explicit local `gatefox claude-sessions recover` can release
+  one unchanged, stopped crash hold without starting inference or resetting the
+  cache budget. Existing healthy sessions and saved histories stay intact.
+
 ## 2.0.3 — 2026-11-12
 
 - Claude's private MCP catalog uses readable, stable tool names for ordinary

@@ -76,6 +76,20 @@ test("recovery after a rejected tool does not repeat an earlier caller tool resu
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await fixture.restore(); }
 });
 
+test("a truncated registered tool call fails once without a crash hold, then a new caller message can continue", { timeout: 30000 }, async () => {
+  const fixture = await installClaudeFixture({ replies: [{ calls: [{ tool: "read", input: null as never }] }, { text: "RECOVERED" }] });
+  try {
+    const events: InferenceEvent[] = [], subscription = provider();
+    await assert.rejects(turn(subscription, [user("first")], events), /malformed_tool_call/);
+    assert.equal(events.some(event => event.type === "tool"), false);
+    assert.equal(sessionRegistry().replayUntil.size, 0);
+    assert.equal((await fixture.capture()).filter(entry => entry.start).length, 1);
+    const output = await turn(subscription, [user("first"), user("try again")]);
+    assert.ok(JSON.stringify(output).includes("RECOVERED"));
+    assert.equal((await fixture.capture()).filter(entry => entry.start).length, 2);
+  } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await fixture.restore(); }
+});
+
 test("an upgraded handler keeps an existing hashed catalog and its pending caller output on the same CLI", { timeout: 30000 }, async () => {
   const fixture = await installClaudeFixture({ replies: [{ calls: [{ tool: "read", input: {} }] }, { text: "CONTINUED" }, { text: "ADOPTED" }] });
   try {

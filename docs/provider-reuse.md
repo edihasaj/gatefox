@@ -38,11 +38,20 @@ diagnostic class and charged usage, but use final client errors across Responses
 Messages and nonstreaming HTTP. Transient availability/throttle recovery keeps its
 existing behavior.
 
-A Claude tool-name rejection deliberately closes its confined CLI without a
+A Claude tool-name or malformed tool-call rejection deliberately closes its confined CLI without a
 crash hold. The failed response still ends without replay; only a later caller
 request may replace the process, through the existing cache budget. This applies
 to fixed unknown/unavailable tool and forbidden native-helper reasons, not to
-arbitrary CLI crashes or malformed transport failures.
+arbitrary CLI crashes or malformed transport failures. A truncated call is never
+forwarded or repaired. A later caller request may continue the saved chat through
+the normal cache budget.
+
+Crash holds have a fixed one-hour deadline; blocked retries do not extend it.
+For an existing stopped crash hold, `gatefox claude-sessions status --json` and
+`gatefox claude-sessions recover --thread-key KEY --apply` provide explicit,
+local authenticated recovery. Recovery compares a revision from the status
+snapshot, refuses active or changed sessions and history-mismatch holds, and starts
+no inference. It does not reset the cache guard. See [Claude sessions](claude-sessions.md).
 
 Claude and Copilot keep usable sessions when a history or pending-tool mismatch
 cannot safely continue. Corrected history can use the same session. Copilot closes

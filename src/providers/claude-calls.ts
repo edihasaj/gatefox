@@ -12,7 +12,7 @@ export function rejectedClaudeTool(error: unknown): ProviderError | undefined {
   try {
     const upstream = own(error, "upstream"), reason = own(upstream, "code");
     if (!(error instanceof Error) || own(error, "code") !== "invalid_tool_call" || own(upstream, "event") !== "claude.tool_use" ||
-      typeof reason !== "string" || !["unknown_tool", "native_builtin_tool", "native_tool_search", "native_mcp_wait", "unavailable_gateway_tool"].includes(reason)) return;
+      typeof reason !== "string" || !["unknown_tool", "native_builtin_tool", "native_tool_search", "native_mcp_wait", "unavailable_gateway_tool", "malformed_tool_call"].includes(reason)) return;
     return callFailure(reason);
   } catch { return; }
 }

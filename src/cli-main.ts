@@ -50,8 +50,10 @@ import { runAutoLatestCli } from "./auto-latest-cli.js";
 import { availabilityCommand } from "./availability/cli.js";
 import { activityCommand } from "./activity-cli.js";
 import { gatefoxMigrateCommand } from "./gatefox-migrate.js";
+import { claudeSessionsCommand } from "./claude-session-recovery-cli.js";
 
 const help = `GateFox — local subscription and API inference
+  gatefox claude-sessions status|recover [--thread-key KEY --apply] [--legacy-catalog] [--json]
 
   gatefox migrate [--apply] [--revert] [--json]   Preview or explicitly publish canonical paths; never starts or stops a service
   gatefox init [--config PATH]
@@ -105,6 +107,7 @@ const defaults: GatewayConfig = { version: 1, port: 3457, stateDirectory: ".stat
 ] };
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
+  if (argv[0] === "claude-sessions") return claudeSessionsCommand(argv.slice(1));
   if (argv[0] === "codex-shim") return codexShim(argv.slice(1));
   if (argv[0] === "claude-desktop") return runClaudeDesktopCommand(argv.slice(1));
   if (argv[0] === "versions") { process.exitCode = await versionsCommand(argv.slice(1)); return; }
