@@ -7,6 +7,8 @@ read_when:
 
 # Claude Desktop adapter (earlier setup)
 
+<a id="claude-desktop"></a>
+
 **For a new setup, use [the Claude app guide](claude-desktop-direct.md).** The gateway
 serves the Claude app itself; this page describes the separate adapter that earlier
 installations used, and behavior both setups share.
