@@ -120,6 +120,11 @@ finishes normally, then the session closes instead of remaining parked in replay
   content.
 - **Standalone requests:** explicitly identified compaction, prewarm, memory and
   Claude Code side requests, first questions without a conversation ID, and configured warmup.
+  Codex's explicit `thread_source: "composer_predictions"` and `"thread_sample"`
+  metadata also select standalone execution. These requests belong to temporary
+  threads that the client destroys after sampling; even a large inherited history
+  must not leave a parked CLI or consume a live-session slot. Their ordinary cache
+  safety budget still applies. Other thread sources keep normal live continuity.
   Anonymous historical conversations require an ID instead of repeated replay.
 - **Continuity refusal:** capacity, concurrent requests, failed startup or an
   unavailable live adapter stop before one-shot replay. The CLI and its tool server
@@ -327,6 +332,13 @@ least 20 tool uses. A session idle 60 minutes or more is therefore reseeded rath
 than continued, so Claude's history always matches what Codex sent.
 
 ## Measured
+
+The isolated `scripts/e2e-claude-sampling.mjs` check uses a real app-server SDK
+and synthetic Claude CLI replies. With a one-slot pool already held by the
+parent chat, three `thread/sample` composer predictions must each finish without
+parking another CLI, then the parent must continue on its original session.
+Run it after building, with `--sdk /absolute/sdk --catalog /absolute/models_cache.json
+--root /tmp/fresh-sampling-proof`. It uses private homes and no paid inference.
 
 On 1 November 2026, native Claude Code 2.1.299 and the installed Codex app-server
 SDK each completed a three-request tool loop using one backend process through an

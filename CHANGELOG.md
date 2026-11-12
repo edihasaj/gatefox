@@ -1,11 +1,18 @@
 # Changelog
 
-## 1.9.8 — 2026-11-12
+## 1.9.9 — 2026-11-12
+
+- Composer predictions and explicitly marked thread samples no longer park a
+  Claude CLI after their temporary client thread closes. Their large inherited
+  histories previously bypassed warmup and could fill the pool with abandoned
+  sessions for an hour. Normal chats retain their live session and prompt cache.
 
 - Claude live-session pools accept any positive safe integer instead of rejecting
   values above 32. Operators can raise the shared pool to 64 without closing
   active sessions. Capacity errors now identify the local pool and explain that
   finishing a turn or opening another chat does not free a parked slot.
+
+## 1.9.8 — 2026-11-12
 
 - An unused phone connection no longer blocks updates. The native relay kept each remote
   stream's engine running until the stream closed, and while its cloud connection failed with

@@ -32,6 +32,8 @@ export interface InferenceContext {
   /** The provider rebuilt its cache because the caller changed tools, instructions, thinking or Fast. Count-only. */
   observeClientRebuild?: () => void;
   sessionId?: string; threadId?: string; turnId?: string; windowId?: string; requestKind?: InferenceRequestKind;
+  /** Caller-declared feature source; explicit sampling sources do not own a durable conversation. */
+  threadSource?: string;
   clientProtocol?: "responses" | "messages"; adaptiveThinking?: boolean;
   /** Opaque sticky-routing token that Codex echoes for the rest of a turn. */
   turnState?: string;
@@ -58,15 +60,16 @@ const windowId = (value: unknown): string | undefined =>
 const turnState = (value: unknown): string | undefined =>
   typeof value === "string" && value.length <= maxTurnStateLength && /^[\x21-\x7e]+$/.test(value) ? value : undefined;
 
-/** Reads only turn_id and request_kind from Codex's turn metadata JSON. */
-function turnMetadata(value: unknown, limit: number): { turnId?: string; requestKind?: InferenceRequestKind } {
+/** Reads bounded routing fields from Codex's turn metadata JSON, never prompt text. */
+function turnMetadata(value: unknown, limit: number): { turnId?: string; requestKind?: InferenceRequestKind; threadSource?: string } {
   if (typeof value !== "string" || Buffer.byteLength(value) > limit) return {};
   try {
     const parsed = JSON.parse(value) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const { turn_id: turn, request_kind: kind } = parsed as Record<string, unknown>;
+    const { turn_id: turn, request_kind: kind, thread_source: source } = parsed as Record<string, unknown>;
     const turnId = routingId(turn); const requestKind = requestKinds.has(kind) ? kind as InferenceRequestKind : undefined;
-    return { ...(turnId ? { turnId } : {}), ...(requestKind ? { requestKind } : {}) };
+    const threadSource = routingId(source);
+    return { ...(turnId ? { turnId } : {}), ...(requestKind ? { requestKind } : {}), ...(threadSource ? { threadSource } : {}) };
   } catch { return {}; }
 }
 
@@ -88,7 +91,7 @@ export function inferenceContext(headers: Headers, body?: unknown): InferenceCon
   try {
     const metadata = clientMetadata(body);
     const header = turnMetadata(headers["x-codex-turn-metadata"], 16 * 1024);
-    const fromBody = header.turnId && header.requestKind ? {} : turnMetadata(metadata["x-codex-turn-metadata"], 1024 * 1024);
+    const fromBody = turnMetadata(metadata["x-codex-turn-metadata"], 1024 * 1024);
     const context: InferenceContext = {
       ...(headers["x-harness-cache-recovery"] === "1" ? { cacheRecovery: true as const } : {}),
       sessionId: routingId(headers["session-id"]) ?? routingId(headers["session_id"]) ?? routingId(headers["x-opencode-session"]) ?? routingId(metadata.session_id),
@@ -96,6 +99,7 @@ export function inferenceContext(headers: Headers, body?: unknown): InferenceCon
       turnId: header.turnId ?? routingId(metadata.turn_id) ?? fromBody.turnId,
       windowId: windowId(headers["x-codex-window-id"]) ?? windowId(metadata["x-codex-window-id"]),
       requestKind: header.requestKind ?? fromBody.requestKind,
+      threadSource: header.threadSource ?? fromBody.threadSource,
       turnState: turnState(headers["x-codex-turn-state"]),
     };
     return Object.fromEntries(Object.entries(context).filter(([, value]) => value !== undefined)) as InferenceContext;

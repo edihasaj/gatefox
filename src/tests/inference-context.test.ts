@@ -4,6 +4,17 @@ import { inferenceContext, maxTurnStateLength } from "../providers/provider.js";
 
 const metadata = (fields: Record<string, unknown>) => JSON.stringify(fields);
 
+test("feature thread sources survive header and body projections without overriding headers", () => {
+  const body = { client_metadata: { "x-codex-turn-metadata": metadata({ thread_source: "composer_predictions" }) } };
+  const complete = { turn_id: "turn", request_kind: "turn" };
+  assert.equal(inferenceContext({}, body).threadSource, "composer_predictions");
+  assert.equal(inferenceContext({ "x-codex-turn-metadata": metadata(complete) }, body).threadSource, "composer_predictions");
+  assert.equal(inferenceContext({ "x-codex-turn-metadata": metadata({ ...complete, thread_source: "user" }) }, body).threadSource, "user");
+  for (const thread_source of [null, 1, {}, [], "x".repeat(129), "has spaces"]) {
+    assert.equal(inferenceContext({ "x-codex-turn-metadata": metadata({ thread_source }) }).threadSource, undefined);
+  }
+});
+
 test("Codex routing headers fill every context field", () => {
   assert.deepEqual(inferenceContext({
     "session-id": "019a-session", "thread-id": "019a-thread", "x-codex-window-id": "019a-thread:3",

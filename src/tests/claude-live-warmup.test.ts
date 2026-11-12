@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { ClaudeSubscription } from "../providers/claude.js";
 import { claudeLive } from "../providers/claude-live.js";
 import { pinReplay, sessionRegistry, recordWarmupCompletion, warmupCompletions, warmupLimit, warmupMs } from "../providers/claude-session-registry.js";
-import { ProviderError, type InferenceContext } from "../providers/provider.js";
+import { inferenceContext, ProviderError, type InferenceContext } from "../providers/provider.js";
 import { ResponsesWriter } from "../protocol/responses.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { installClaudeFixture, type ClaudeFixture, type FixtureScenario } from "./claude-cli-fixture.js";
@@ -84,6 +84,30 @@ test("warmup zero restores immediate live-session spawning", { timeout: 30000 },
   try {
     await turn(provider({ warmup: 0 }), [user("one")], { threadId: "thread" });
     assert.deepEqual(await starts(fixture), ["live"]);
+  } finally { await teardown(fixture); }
+});
+
+test("large composer samples never park a CLI even when the live pool is full", { timeout: 30000 }, async () => {
+  const { fixture, since } = await setup({ replies: [{ text: "parent" }, { text: "sample" }, { text: "sample" }, { text: "sample" }] });
+  try {
+    const subscription = provider({ max: 1, warmup: 0 });
+    await turn(subscription, [user("parent")], { threadId: "parent" });
+    const parent = sessionRegistry().sessions.get(key("parent"));
+    assert.ok(parent);
+    for (const [index, thread_source] of ["composer_predictions", "thread_sample", "composer_predictions"].entries()) {
+      const context = inferenceContext({}, { client_metadata: { thread_id: `sample-${index}`,
+        "x-codex-turn-metadata": JSON.stringify({ request_kind: "turn", turn_id: `turn-${index}`, thread_source }) } });
+      const result = await turn(subscription, [user("x".repeat(300_000))], context);
+      assert.ok(result.events.some(event => event.type === "done"));
+      assert.equal(sessionRegistry().sessions.size, 1);
+      assert.equal(sessionRegistry().sessions.get(key("parent")), parent);
+    }
+    await assert.rejects(turn(subscription, [user("ordinary fork")], { threadId: "ordinary", threadSource: "user" }),
+      (error: unknown) => error instanceof ProviderError && error.upstream?.code === "session_continuity_unavailable");
+    assert.deepEqual(await starts(fixture), ["live", "oneshot", "oneshot", "oneshot"]);
+    await flushTelemetry();
+    const transient = (await readTelemetry(fixture.directory, since)).filter(event => event.event === "claude_session" && event.missReason === "transient");
+    assert.equal(transient.length, 3);
   } finally { await teardown(fixture); }
 });
 

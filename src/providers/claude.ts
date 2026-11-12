@@ -107,11 +107,15 @@ export class ClaudeSubscription implements Provider {
     const tools = choice === "none" ? [] : normalized.tools || [];
     if (new Set(tools.map(claudeToolName)).size !== tools.length) throw new ProviderError("invalid_request", "Caller tool identities collide in Claude's native namespace", 400);
     const settings = claudeSessionSettings(this.config || {});
+    // Native thread/sample destroys its temporary thread after the request. A large
+    // inherited history must not promote its CLI into an hour-long parked session.
+    const transient = context.threadSource === "composer_predictions" || context.threadSource === "thread_sample";
+    const standalone = oneShotKinds.has(context.requestKind) || transient;
     const history = markCustomCalls(claudeToolHistory(normalized.messages, normalized.tools || []), normalized.tools || []);
     // The caller's leading system and developer content is the CLI's system prompt, as in Claude Code; the rest stays history.
     const leading = leadingInstructions(history);
     const { conversation, images } = imageConversation(history.slice(leading));
-    if (settings.mode === "live" && !conversationId && !oneShotKinds.has(context.requestKind) && unidentifiedCliHistory(conversation)) throw new CliContinuityUnavailable("Claude", "conversation_id_required");
+    if (settings.mode === "live" && !conversationId && !standalone && unidentifiedCliHistory(conversation)) throw new CliContinuityUnavailable("Claude", "conversation_id_required");
     const run: Run = { alias: request.model, model: claudeCliModel(request.model), effort: claudeEffort(this.config, request), fast: claudeFastMode(this.config, request),
       summaryVisible: (request.reasoning as { summary?: string } | undefined)?.summary !== "none", requestedEffort: (request.reasoning as { effort?: string } | undefined)?.effort,
       format: settings.replayFormat, tools, choice, conversation, images, systemPrompt: claudeSystemPrompt(history.slice(0, leading).map(message => message.content ?? "")), leading,
@@ -153,7 +157,8 @@ export class ClaudeSubscription implements Provider {
         telemetry("claude_credential_recovery", { reason: recovery?.upstream?.reason, attempt: 2, outcome: "recovered" });
       }
     };
-    if (settings.mode === "live" && conversationId && !oneShotKinds.has(context.requestKind)) {
+    if (settings.mode === "live" && transient) telemetry("claude_session", { outcome: "standalone", missReason: "transient", threadKey: run.threadKey, threadSource: context.threadSource });
+    if (settings.mode === "live" && conversationId && !standalone) {
       const live = await this.live(run, request, context, settings, signal, conversationId);
       completed = live?.complete;
       if (!live || live.outcome.kind === "fallback" && !standaloneCliReasons.has(live.outcome.reason)) {
