@@ -16,6 +16,10 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+/// An unused remote stream is released after this much silence, so it cannot
+/// pin an old engine release and block rollouts. See docs/native-remote-setup.md.
+pub const IDLE_RELEASE_MS: u64 = 10 * 60 * 1000;
+
 async fn forward(
     writer: &mpsc::Sender<QueuedOutgoingMessage>,
     auth: &ConnectionAuth,
@@ -96,6 +100,9 @@ pub async fn run(
                         return Cause::AuthScopeChanged;
                     }
                     diagnostics::emit(&diagnostics.snapshot());
+                    if diagnostics.idle_expired(diagnostics::now_ms(), IDLE_RELEASE_MS) {
+                        return Cause::IdleReleased;
+                    }
                 }
                 SessionEvent::Frame(frame) => {
                     let frame = match frame {
@@ -128,7 +135,7 @@ pub async fn run(
                     if !auth.is_current() {
                         return Cause::AuthScopeChanged;
                     }
-                    diagnostics.received();
+                    diagnostics.received(&message);
                     let reply = if let Some(reply) = control::network_guard(&message) {
                         Some(reply)
                     } else {

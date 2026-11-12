@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- An unused phone connection no longer blocks updates. The native relay kept each remote
+  stream's engine running until the stream closed, and while its cloud connection failed with
+  `409 Conflict` the SDK's idle sweep never closed it, so one stream on macbook-server held an
+  old release for more than eight hours and left the rollout at `process_version_pending`. The
+  relay now ends a session after 10 minutes with no traffic, no running turn and no request or
+  approval waiting (`idle_released`). The phone reconnects on its next use.
+
 ## 1.9.7 — 2026-11-12
 
 - The tailnet listener now works with the App Store build of Tailscale. That build is sandboxed
