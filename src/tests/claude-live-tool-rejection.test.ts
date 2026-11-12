@@ -8,6 +8,9 @@ import { ResponsesWriter } from "../protocol/responses.js";
 import { installClaudeFixture } from "./claude-cli-fixture.js";
 import type { InferenceEvent, ResponsesInputItem } from "../protocol/types.js";
 import { rejectedClaudeTool } from "../providers/claude-calls.js";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const user = (text: string): ResponsesInputItem => ({ role: "user", content: text });
 const tools = [{ type: "function" as const, name: "read", parameters: { type: "object", properties: {} } }];
@@ -70,6 +73,50 @@ test("recovery after a rejected tool does not repeat an earlier caller tool resu
     const capture = await fixture.capture();
     assert.equal(capture.filter(entry => entry.toolResult !== undefined).length, 1);
     assert.equal(capture.filter(entry => entry.start).length, 2);
+  } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await fixture.restore(); }
+});
+
+test("an upgraded handler keeps an existing hashed catalog and its pending caller output on the same CLI", { timeout: 30000 }, async () => {
+  const fixture = await installClaudeFixture({ replies: [{ calls: [{ tool: "read", input: {} }] }, { text: "CONTINUED" }, { text: "ADOPTED" }] });
+  try {
+    const modulePath = join(fixture.directory, "legacy-profile.mjs");
+    const live = new URL("../providers/claude-live.js", import.meta.url).href;
+    const names = new URL("../providers/claude-tool-names.js", import.meta.url).href;
+    const control = new URL("../providers/claude-control.js", import.meta.url).href;
+    await writeFile(modulePath, `import {createHash} from 'node:crypto';
+import {claudeLive as real} from ${JSON.stringify(live)};
+import {keepLegacyClaudeToolNames} from ${JSON.stringify(names)};
+import {claudeMcpCatalog} from ${JSON.stringify(control)};
+export function claudeLive(settings){const delegate=real(settings);return {...delegate,attach(input,signal){
+keepLegacyClaudeToolNames(input.tools);input.spawn.mcpCatalog=claudeMcpCatalog(input.tools);
+input.toolsDigest=createHash('sha256').update(JSON.stringify(input.spawn.mcpCatalog)).digest('hex');input.toolNameMode='legacy';
+return delegate.attach(input,signal);}};}`, { mode: 0o600 });
+    const config = { id: `tool-rejection-${process.pid}`, type: "claude-subscription" as const,
+      models: { fixture: "fixture" }, claudeSessions: { warmup: 0 } };
+    const old = new ClaudeSubscription(config, undefined, undefined, pathToFileURL(modulePath).href);
+    const first = [user("read")], output = await turn(old, first);
+    const session = [...sessionRegistry().sessions.values()][0], pid = session.pid;
+    const results: ResponsesInputItem[] = output.flatMap(item => item.type === "function_call"
+      ? [{ type: "function_call_output", call_id: item.call_id, output: "caller executed once" }] : []);
+    const history = [...first, ...output, ...results];
+    const continued = await turn(provider(), history);
+    assert.ok(JSON.stringify(continued).includes("CONTINUED"));
+    sessionRegistry().toolNameModes?.delete(session.key); // An adopted older release has no naming-mode field.
+    await turn(provider(), [...history, ...continued, user("again")]);
+    assert.equal([...sessionRegistry().sessions.values()][0].pid, pid);
+    const capture = await fixture.capture();
+    assert.equal(capture.filter(entry => entry.start).length, 1);
+    assert.equal(capture.filter(entry => entry.toolResult !== undefined).length, 1);
+  } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await fixture.restore(); }
+});
+
+test("an unavailable tool beside a valid sibling forwards neither call", { timeout: 30000 }, async () => {
+  const fixture = await installClaudeFixture({ replies: [{ calls: [{ tool: "read", input: {} }, { tool: "missing", input: {} }] }] });
+  try {
+    const events: InferenceEvent[] = [];
+    await assert.rejects(turn(provider(), [user("read")], events), /unavailable_gateway_tool/);
+    assert.equal(events.some(event => event.type === "tool"), false);
+    assert.equal((await fixture.capture()).filter(entry => entry.toolResult !== undefined).length, 0);
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await fixture.restore(); }
 });
 

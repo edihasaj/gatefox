@@ -15,7 +15,7 @@ import type { ClaudeMessageStream, ClaudeStreamEnd, ClaudeTokens } from "./claud
 import type { ContentBlock } from "./claude-render.js";
 import { nativeClaudeCalls, rejectedClaudeTool, validateForcedChoice } from "./claude-calls.js";
 import { claudeUsageEvent, type ClaudeLimit } from "./claude-usage.js";
-import { claudeToolName } from "./claude-tool-names.js";
+import { claudeWireToolName as claudeToolName } from "./claude-tool-names.js";
 import { ClaudeRelay, type RelayContent } from "./claude-relay.js";
 import { echoDigests, partialDigest, type LedgerState } from "./claude-ledger.js";
 import { providerCommand } from "../provider-tool-runtime.js";

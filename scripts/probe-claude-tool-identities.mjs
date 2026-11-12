@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { ClaudeRelay } from '../dist/providers/claude-relay.js';
 import { claudeCliArgs, claudeMcpCatalog, gatewaySystemPrompt } from '../dist/providers/claude-control.js';
-import { claudeNativeToolName, claudeToolName } from '../dist/providers/claude-tool-names.js';
+import { claudeNativeToolName, claudeWireToolName as claudeToolName, legacyClaudeToolName } from '../dist/providers/claude-tool-names.js';
 
 const { values } = parseArgs({ options: { claude: { type: 'string' }, root: { type: 'string' } } });
 assert.ok(values.claude && values.root, 'Pass --claude EXECUTABLE --root FRESH_TMP_DIRECTORY');
@@ -21,16 +21,23 @@ const version = execFileSync(values.claude, ['--version'], { encoding: 'utf8' })
 const tool = { type: 'function', function: { name: 'probe_read', parameters: { type: 'object', properties: {} },
   responseTool: { type: 'function', name: 'probe_read', namespace: 'functions' } } };
 const canonical = claudeNativeToolName(tool), marker = 'SYNTHETIC_RELAY_RESULT';
-const cases = [['canonical_mcp', canonical], ['bare_native_name', claudeToolName(tool)],
-  ['qualified_caller_alias', 'functions.probe_read'], ['local_caller_alias', 'probe_read']];
+const namespaced = { ...tool, function: { ...tool.function, name: 'files.probe_read', responseTool: { type: 'function', name: 'probe_read', namespace: 'files' } } };
+const long = { ...tool, function: { ...tool.function, name: 'probe_' + 'long_'.repeat(16), responseTool: undefined } };
+const tools = [tool, namespaced, long, ...Array.from({ length: 93 }, (_, index) => ({ ...tool,
+  function: { ...tool.function, name: `fixture_${index}`, responseTool: undefined } }))];
+const nativeNames = new Set(tools.map(claudeNativeToolName));
+const cases = [['canonical_mcp', canonical, tool], ['namespaced_mcp', claudeNativeToolName(namespaced), namespaced],
+  ['bounded_fallback_mcp', claudeNativeToolName(long), long], ['legacy_native_name', `mcp__gateway__${legacyClaudeToolName(tool)}`, tool],
+  ['unavailable_gateway_name', 'mcp__gateway__missing', tool], ['bare_native_name', claudeToolName(tool), tool],
+  ['qualified_caller_alias', 'functions.probe_read', tool], ['local_caller_alias', 'probe_read', tool]];
 const results = [];
 
-for (const [index, [label, name]] of cases.entries()) {
+for (const [index, [label, name, selectedTool]] of cases.entries()) {
   const directory = join(root, String(index)); await mkdir(directory, { mode: 0o700 });
   const callId = 'toolu_fixture_' + index, socket = join(directory, 'r.sock');
   const key = randomBytes(32).toString('hex');
   const relay = new ClaudeRelay(key, () => {}); await relay.listen(socket);
-  relay.expect([{ id: callId, name: claudeToolName(tool) }]);
+  relay.expect([{ id: callId, name: claudeToolName(selectedTool) }]);
   relay.deliver(new Map([[callId, [{ type: 'text', text: marker }]]]));
   let requests = 0, relayResultSeen = false, declarationPresent = false, nonGatewayTools = 0, nativeSearchTools = 0;
   const server = createServer(async (req, res) => {
@@ -39,7 +46,7 @@ for (const [index, [label, name]] of cases.entries()) {
     if (!req.url.includes('/messages')) { res.setHeader('content-type', 'application/json'); res.end('{}'); return; }
     const body = JSON.parse(Buffer.concat(chunks).toString());
     declarationPresent ||= body.tools?.some(tool => tool.name === canonical) === true;
-    nonGatewayTools = Math.max(nonGatewayTools, (body.tools ?? []).filter(tool => tool.name !== canonical).length);
+    nonGatewayTools = Math.max(nonGatewayTools, (body.tools ?? []).filter(tool => !nativeNames.has(tool.name)).length);
     nativeSearchTools = Math.max(nativeSearchTools, (body.tools ?? []).filter(tool => ['Glob', 'Grep', 'LS'].includes(tool.name)).length);
     relayResultSeen ||= (body.messages ?? []).some(message => Array.isArray(message.content) && message.content.some(block =>
       block.type === 'tool_result' && block.tool_use_id === callId && JSON.stringify(block.content).includes(marker)));
@@ -60,7 +67,7 @@ for (const [index, [label, name]] of cases.entries()) {
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const catalog = join(directory, 'tools.json'), relayFile = join(directory, 'relay.json'), mcp = join(directory, 'mcp.json'), system = join(directory, 'system.md');
-  await writeFile(catalog, JSON.stringify(claudeMcpCatalog([tool])), { mode: 0o600 });
+  await writeFile(catalog, JSON.stringify(claudeMcpCatalog(tools)), { mode: 0o600 });
   await writeFile(relayFile, JSON.stringify({ socket, key }), { mode: 0o600 });
   await writeFile(mcp, JSON.stringify({ mcpServers: { gateway: { command: process.execPath,
     args: [fileURLToPath(new URL('../dist/providers/claude-tools.js', import.meta.url)), catalog, relayFile], alwaysLoad: true } } }), { mode: 0o600 });
@@ -92,6 +99,8 @@ for (const [index, [label, name]] of cases.entries()) {
     relay.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   }
 }
-const report = { version, noPaidInference: true, results };
+const report = { version, catalogTools: tools.length, noPaidInference: true, results };
 await writeFile(join(root, 'receipt.json'), JSON.stringify(report, null, 2));
 assert.ok(results[0].declarationPresent && results[0].relayResultSeen, 'Canonical control must reach the virtual MCP relay');
+assert.ok(results.slice(0, 3).every(result => result.relayResultSeen && !result.timedOut && result.nonGatewayTools === 0), 'Every registered name shape must reach only the virtual MCP relay');
+assert.ok(results.slice(3).every(result => !result.relayResultSeen && !result.timedOut), 'Unregistered names must not reach the relay');

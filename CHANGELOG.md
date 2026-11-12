@@ -1,13 +1,21 @@
 # Changelog
 
 ## Unreleased
-
 - GateFox is the canonical command in help, setup examples, managed launcher
   migrations and app runtime messages. Historical launchers remain supported.
 - `gatefox migrate` previews reversible canonical path aliases for existing
   installations. Explicit application requires stopped clients and services,
   records ownership for rollback, and preserves the original storage, executor
   identity, preferences, saved chats and macOS security identities.
+
+## 2.0.3 — 2026-11-12
+
+- Claude's private MCP catalog uses readable, stable tool names for ordinary
+  caller actions, with namespace-safe and length-bounded fallback names. Historical
+  hashed calls remain translatable in replay; live calls must match the actual
+  registration. Undeclared calls still stop before any tool is forwarded.
+- Existing live Claude sessions retain their registered naming mode and pending
+  tool results during adoption. The new names do not force a session restart.
 
 ## 2.0.2 — 2026-11-12
 

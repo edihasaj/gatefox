@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { OpenAITool } from "../protocol/types.js";
 import { claudeEnvironment } from "./claude-environment.js";
-import { claudeToolName } from "./claude-tool-names.js";
+import { claudeWireToolName as claudeToolName, legacyClaudeToolName } from "./claude-tool-names.js";
 import { canonicalSchema } from "./tool-catalog.js";
 
 /** Part of the prompt-cache identity: any change rewrites every Claude chat's cache once. */
@@ -63,9 +63,9 @@ export function claudeEnv(authDirectory: string | undefined, live = false, reque
 
 export interface ClaudeMcpTool { name: string; description: string; inputSchema: Record<string, unknown> }
 /** The private MCP catalog. Its bytes depend only on the caller catalog, so forced choices keep the cached tool prefix. */
-export function claudeMcpCatalog(tools: OpenAITool[]): ClaudeMcpTool[] {
+export function claudeMcpCatalog(tools: OpenAITool[], legacy = false): ClaudeMcpTool[] {
   return tools.map(tool => ({
-    name: claudeToolName(tool), description: `Caller tool ${tool.function.name}. ${tool.function.description || ""}`,
+    name: legacy ? legacyClaudeToolName(tool) : claudeToolName(tool), description: `Caller tool ${tool.function.name}. ${tool.function.description || ""}`,
     inputSchema: canonicalSchema(tool.function.parameters || { type: "object", properties: {} }) as Record<string, unknown>,
   })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 }

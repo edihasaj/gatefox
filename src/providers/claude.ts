@@ -11,13 +11,13 @@ import { ProviderError, providerRefusal, providerConversationId, type Provider, 
 import { claudeSessionSettings, type ProviderConfig } from "../config.js";
 import { rejectedClaudeTool, validateForcedChoice } from "./claude-calls.js";
 import { imageConversation } from "../protocol/images.js";
-import { claudeToolName, claudeToolHistory } from "./claude-tool-names.js";
+import { claudeWireToolName as claudeToolName, claudeToolHistory, keepLegacyClaudeToolNames } from "./claude-tool-names.js";
 import { claudeUsageEvent, systemPrefixOnly, type ClaudeLimit } from "./claude-usage.js";
 import { claudeCliModel } from "./claude-models.js";
 import { claudeCliArgs, claudeEnv, claudeMcpCatalog, claudeSystemPrompt, userLine } from "./claude-control.js";
 import { ClaudeMessageStream, resultWindows, type ClaudeStreamEnd, type ClaudeTokens } from "./claude-stream.js";
 import { choiceBlock, leadingInstructions, markCustomCalls, renderConversation, renderItems, renderSelected, type ClaudeConversation, type ClaudeImages, type ReplayFormat } from "./claude-render.js";
-import { compactionCheckpoint, retireScope, refusalHoldRelease } from "./claude-session-registry.js";
+import { compactionCheckpoint, retireScope, refusalHoldRelease, claudeToolNameMode } from "./claude-session-registry.js";
 import { isReplaySafeAuthentication } from "./claude-auth.js";
 import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveModule, type ClaudeLiveOutcome } from "./claude-live-contract.js";
 import { telemetry } from "../telemetry.js";
@@ -52,6 +52,7 @@ export function claudeFastMode(config: ProviderConfig | undefined, request: Resp
 }
 
 interface Run {
+  toolNameMode: "legacy" | "readable";
   replayBudget?: ClaudeReplayBudget;
   /** The caller's model alias, for telemetry. */
   alias: string; model: string; effort?: string; fast: boolean; summaryVisible: boolean; requestedEffort?: unknown; format: ReplayFormat;
@@ -105,6 +106,8 @@ export class ClaudeSubscription implements Provider {
     const choice = normalized.tool_choice;
     // The catalog stays whole for forced choices: a changed tool list breaks the prompt cache.
     const tools = choice === "none" ? [] : normalized.tools || [];
+    const toolNameMode = conversationId ? claudeToolNameMode(this.scope(), conversationId) : "readable";
+    if (toolNameMode === "legacy") keepLegacyClaudeToolNames(tools);
     if (new Set(tools.map(claudeToolName)).size !== tools.length) throw new ProviderError("invalid_request", "Caller tool identities collide in Claude's native namespace", 400);
     const settings = claudeSessionSettings(this.config || {});
     // Native thread/sample destroys its temporary thread after the request. A large
@@ -118,7 +121,7 @@ export class ClaudeSubscription implements Provider {
     if (settings.mode === "live" && !conversationId && !standalone && unidentifiedCliHistory(conversation)) throw new CliContinuityUnavailable("Claude", "conversation_id_required");
     const run: Run = { alias: request.model, model: claudeCliModel(request.model), effort: claudeEffort(this.config, request), fast: claudeFastMode(this.config, request),
       summaryVisible: (request.reasoning as { summary?: string } | undefined)?.summary !== "none", requestedEffort: (request.reasoning as { effort?: string } | undefined)?.effort,
-      format: settings.replayFormat, tools, choice, conversation, images, systemPrompt: claudeSystemPrompt(history.slice(0, leading).map(message => message.content ?? "")), leading,
+      format: settings.replayFormat, tools, choice, conversation, images, toolNameMode, systemPrompt: claudeSystemPrompt(history.slice(0, leading).map(message => message.content ?? "")), leading,
       // The same key the live registry derives, so one thread's one-shot and live events line up.
       ...(conversationId ? { threadKey: sessionKey(this.scope(), conversationId).slice(0, 8) } : {}) };
     {
@@ -236,6 +239,7 @@ export class ClaudeSubscription implements Provider {
       outcome = await live.attach({
         replayBudget: run.replayBudget,
         scope: this.scope(), threadId: conversationId, windowId: context.windowId, turnId: context.turnId,
+        toolNameMode: run.toolNameMode,
         callerHistoryReplacement: context.clientProtocol === "messages" && !context.threadId && !!context.sessionId
           && (request.client_metadata as { session_id?: unknown } | undefined)?.session_id === context.sessionId,
         model, effort, fast, summaryVisible, instructionsDigest: digest(systemPrompt), leading,

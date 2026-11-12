@@ -29,7 +29,7 @@ export function nativeClaudeReasoning(event: { type?: string; delta?: { type?: s
 /** Native tool-use objects are authoritative. Plain model text is never parsed as an action. */
 export function nativeClaudeCalls(blocks: Array<{ id?: string; name?: string; input?: unknown }>, tools: OpenAITool[]): OpenAIToolCall[] {
   const ids = new Set<string>();
-  const bindings = claudeToolBindings(tools);
+  const bindings = claudeToolBindings(tools, true);
   return blocks.map(call => {
     const definition = typeof call.name === "string" ? bindings.get(call.name)?.function : undefined;
     const failure = callFailure;

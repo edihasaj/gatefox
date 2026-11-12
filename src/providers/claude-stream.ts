@@ -97,10 +97,18 @@ export class ClaudeMessageStream {
   private rejectionReported = false;
   /** A non-text block started after text was streamed, so the next text begins a new paragraph. */
   private split = false;
+  /** Historical aliases are for replay; live calls must address this CLI's actual registered catalog. */
+  private validateName(name: unknown): void {
+    if (this.nativeMcpOnly && (typeof name !== "string" || !this.nativeNames.has(name))) {
+      nativeClaudeCalls([{ name: typeof name === "string" ? name : undefined, id: "rejected", input: {} }], []);
+    }
+    if (typeof name !== "string" || !this.bindings.get(name))
+      nativeClaudeCalls([{ name: typeof name === "string" ? name : undefined, id: "rejected", input: {} }], this.tools);
+  }
   constructor({ tools, summaryVisible, endTurn = false, nativeMcpOnly = false, threadKey }: {
     tools: OpenAITool[]; summaryVisible: boolean; endTurn?: boolean; nativeMcpOnly?: boolean; threadKey?: string;
   }) {
-    this.tools = tools; this.summaryVisible = summaryVisible; this.endTurn = endTurn; this.bindings = claudeToolBindings(tools);
+    this.tools = tools; this.summaryVisible = summaryVisible; this.endTurn = endTurn; this.bindings = claudeToolBindings(tools, true);
     this.nativeMcpOnly = nativeMcpOnly; this.nativeNames = new Set(tools.map(claudeNativeToolName)); this.threadKey = threadKey;
   }
   /** Text streamed so far, for the final result's consistency check. */
@@ -164,7 +172,7 @@ export class ClaudeMessageStream {
       if (block.type !== "text" && this.raw) this.split = true;
       if (block.type !== "tool_use" || !message || message.ended) return;
       // A foreign tool fails at once, before the CLI can act on it.
-      if (typeof block.name !== "string" || !this.bindings.get(block.name)) nativeClaudeCalls([{ id: String(block.id), name: block.name as string, input: {} }], this.tools);
+      this.validateName(block.name);
       message.blocks.set(Number(event.index), { id: String(block.id), name: block.name as string, json: "" });
     } else if (event.type === "content_block_delta") {
       const delta = (event.delta || {}) as { type?: unknown; text?: unknown; partial_json?: unknown };
@@ -199,10 +207,10 @@ export class ClaudeMessageStream {
     if (!uses.length) return;
     const message = this.message; const orphans: typeof uses = [];
     for (const use of uses) {
+      this.validateName(use.name);
       const block = message && !message.ended ? [...message.blocks.values()].find(block => block.id === use.id) : undefined;
       if (block) block.input = use.input;
       else if (message && !message.ended) {
-        if (typeof use.name !== "string" || !this.bindings.get(use.name)) nativeClaudeCalls([use as { id?: string; name?: string; input?: unknown }], this.tools);
         message.blocks.set(Math.max(-1, ...message.blocks.keys()) + 1, { id: String(use.id), name: use.name as string, json: "", input: use.input });
       } else orphans.push(use);
     }
