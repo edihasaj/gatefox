@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.9.8 — 2026-11-12
 
 - An unused phone connection no longer blocks updates. The native relay kept each remote
   stream's engine running until the stream closed, and while its cloud connection failed with
