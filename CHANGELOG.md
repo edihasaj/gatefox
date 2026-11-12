@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.1 — 2026-11-12
+
+- GateFox checks for app updates when opened or activated and every five minutes
+  while active. Available updates appear above every page and in the sidebar,
+  with an install action and a clear quit-to-finish action after staging. Failed
+  checks show a retry action. The existing signed updater preserves running chats.
+
 ## 2.0.0 — 2026-11-12
 
 - A deliberately blocked Claude tool name no longer counts as a CLI crash that

@@ -7,12 +7,23 @@ read_when:
 
 # macOS app updates
 
-The installed app checks the `app-vVERSION` GitHub releases daily. It
+The installed app checks for app releases when it opens or becomes active, and
+every five minutes while active. Repeated foreground events within five minutes
+share the previous check. The existing background service also checks daily. It
 uses the GitHub CLI's existing login to read `edihasaj/harness-gateway`, the
 repository's former name, which GitHub redirects to `edihasaj/gatefox`;
 the updater never asks for, stores, or prints a token. A release provides one
 notarized app ZIP, its matching gateway backend archive, `app-update.json`, and
 `SHA256SUMS`.
+
+An update notice appears above every app page, with **Install Update**, and the
+sidebar shows **Update available**. After staging, **Quit & Finish Update** closes
+the control panel through its normal cleanup; running chats continue. Failed
+checks are visible with **Check Again**, instead of silently hiding update status.
+Settings retains manual checks and the automatic-install preference. The existing
+signed updater handles downloads and activation; no separate updater job or
+Sparkle dependency is added. A CLI-only release or prerelease does not announce
+an app update: the full signed app release must be published.
 
 ## Release tags and names
 

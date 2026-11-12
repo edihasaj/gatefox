@@ -63,7 +63,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Harness updates")
+                        Text("App updates")
                             .font(GatewayTheme.display(24))
                             .foregroundStyle(GatewayTheme.charcoal)
                         Text("Current version \(updates.currentVersion)")

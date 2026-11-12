@@ -4,6 +4,78 @@ import XCTest
 
 @MainActor
 final class GatewayUpdatesTests: XCTestCase {
+    func testForegroundDiscoversAnUpdateWithoutOpeningSettingsAndThrottlesReactivation() async {
+        let runner = UpdateRunner(responses: [.success(current: "2.0.0"),
+            .success(current: "2.0.0", latest: "2.0.1", available: true),
+            .success(current: "2.0.0", latest: "2.0.2", available: true)])
+        let model = GatewayUpdatesModel(runner: runner)
+        let now = Date(timeIntervalSince1970: 1_000)
+        await model.refreshForForeground(configPath: "/tmp/gateway.json", now: now)
+        XCTAssertTrue(model.showsUpdateNotice)
+        XCTAssertEqual(model.latestVersion, "2.0.1")
+        await model.refreshForForeground(configPath: "/tmp/gateway.json", now: now.addingTimeInterval(299))
+        let before = await runner.requests()
+        XCTAssertEqual(before.map(\.operation), ["status", "check"])
+        await model.refreshForForeground(configPath: "/tmp/gateway.json", now: now.addingTimeInterval(300))
+        let after = await runner.requests()
+        XCTAssertEqual(after.map(\.operation), ["status", "check", "check"])
+        XCTAssertEqual(model.latestVersion, "2.0.2")
+    }
+
+    func testForegroundCheckDoesNotReplaceAnInstallAndShowsStagedNotice() async {
+        let runner = DelayedUpdateRunner()
+        let model = GatewayUpdatesModel(runner: runner)
+        let configured = Task { await model.configure(configPath: "/tmp/gateway.json") }
+        await runner.waitForRequest(count: 1)
+        await runner.finishNext(.success(current: "2.0.0"))
+        await configured.value
+        let install = Task { await model.install() }
+        await runner.waitForRequest(count: 2)
+        await model.refreshForForeground(configPath: "/tmp/gateway.json")
+        let requests = await runner.requests()
+        XCTAssertEqual(requests.map(\.operation), ["status", "install"])
+        await runner.finishNext(.success(current: "2.0.0", phase: "waiting_for_app_exit"))
+        await install.value
+        XCTAssertTrue(model.showsUpdateNotice)
+        await model.refreshForForeground(configPath: "/tmp/gateway.json")
+        let stagedRequests = await runner.requests()
+        XCTAssertEqual(stagedRequests.map(\.operation), ["status", "install"])
+    }
+
+    func testForegroundConfigurationChangeCancelsOldCheckBeforeCheckingNewTarget() async {
+        let runner = DelayedUpdateRunner()
+        let model = GatewayUpdatesModel(runner: runner)
+        let first = Task { await model.refreshForForeground(configPath: "/tmp/first.json") }
+        await runner.waitForRequest(count: 1)
+        await runner.finishNext(.success(current: "2.0.0"))
+        await runner.waitForRequest(count: 2)
+        let second = Task { await model.refreshForForeground(configPath: "/tmp/second.json") }
+        await runner.waitForCancellation(count: 1)
+        await runner.finishCancellation()
+        await runner.waitForRequest(count: 3)
+        await runner.finishNext(.success(current: "2.0.0"))
+        await runner.waitForRequest(count: 4)
+        await runner.finishNext(.success(current: "2.0.0", latest: "2.0.1", available: true))
+        await first.value
+        await second.value
+        let requests = await runner.requests()
+        XCTAssertEqual(requests.suffix(2).map(\.configPath), ["/tmp/second.json", "/tmp/second.json"])
+        XCTAssertTrue(model.available)
+    }
+
+    func testForegroundFailureIsVisibleAndANewConfigurationChecksImmediately() async {
+        let runner = UpdateRunner(responses: [.success(current: "2.0.0"), .failure("auth_required"),
+            .success(current: "2.0.0"), .success(current: "2.0.0", latest: "2.0.1", available: true)])
+        let model = GatewayUpdatesModel(runner: runner)
+        let now = Date(timeIntervalSince1970: 1_000)
+        await model.refreshForForeground(configPath: "/tmp/first.json", now: now)
+        XCTAssertEqual(model.phase, "unavailable")
+        XCTAssertTrue(model.showsUpdateNotice)
+        await model.refreshForForeground(configPath: "/tmp/second.json", now: now)
+        XCTAssertTrue(model.available)
+        XCTAssertEqual(model.latestVersion, "2.0.1")
+    }
+
     func testCheckUsesSelectedAbsoluteJSONPathAndRejectsDuplicateOperation() async {
         let runner = DelayedUpdateRunner()
         let model = GatewayUpdatesModel(runner: runner)

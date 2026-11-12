@@ -37,8 +37,8 @@ const xcodeDeveloper = '/Applications/Xcode.app/Contents/Developer';
 if (!buildEnvironment.DEVELOPER_DIR && existsSync(xcodeDeveloper)) buildEnvironment.DEVELOPER_DIR = xcodeDeveloper;
 const run = (command, args) => execFileSync(command, args, { cwd: root, env: buildEnvironment, stdio: 'inherit' });
 run('npm', ['run', 'build']);
-run('swift', ['build', '--package-path', 'native/macos', '-c', 'release']);
-const binaryDirectory = execFileSync('swift', ['build', '--package-path', 'native/macos',
+run('swift', ['build', '--build-system', 'native', '--package-path', 'native/macos', '-c', 'release']);
+const binaryDirectory = execFileSync('swift', ['build', '--build-system', 'native', '--package-path', 'native/macos',
   '-c', 'release', '--show-bin-path'], { cwd: root, env: buildEnvironment, encoding: 'utf8' }).trim();
 const output = join(root, '.state/macos-app');
 mkdirSync(output, { recursive: true });

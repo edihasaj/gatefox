@@ -6,26 +6,31 @@ struct GatewayView: View {
     @ObservedObject var connections: GatewayConnectionsModel
     @EnvironmentObject private var navigation: GatewayNavigation
     @EnvironmentObject private var permissions: GatewayPermissions
+    @EnvironmentObject private var updates: GatewayUpdatesModel
 
     var body: some View {
         NavigationSplitView {
             sidebar
         } detail: {
-            Group {
-                switch navigation.selection ?? .overview {
-                case .overview:
-                    OverviewView(model: model)
-                case .activity:
-                    GatewayActivityView(gateway: model)
-                case .diagnostics:
-                    GatewayDiagnosticsView(gateway: model)
-                case .connections:
-                    ConnectionsView(gateway: model, connections: connections) {
-                        navigation.showSetup = true
+            VStack(spacing: 0) {
+                if model.hasConfig && updates.showsUpdateNotice { GatewayUpdateNotice() }
+                Group {
+                    switch navigation.selection ?? .overview {
+                    case .overview:
+                        OverviewView(model: model)
+                    case .activity:
+                        GatewayActivityView(gateway: model)
+                    case .diagnostics:
+                        GatewayDiagnosticsView(gateway: model)
+                    case .connections:
+                        ConnectionsView(gateway: model, connections: connections) {
+                            navigation.showSetup = true
+                        }
+                    case .settings:
+                        SettingsView(model: model)
                     }
-                case .settings:
-                    SettingsView(model: model)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(GatewayTheme.parchment)
@@ -95,6 +100,16 @@ struct GatewayView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
+                Button {
+                    navigation.openUpdates()
+                } label: {
+                    Label(updates.available ? "Update available" : "Check for Updates…",
+                          systemImage: updates.available ? "arrow.down.circle.fill" : "arrow.triangle.2.circlepath")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(updates.available ? GatewayTheme.vermilion : GatewayTheme.charcoal.opacity(0.65))
+                .accessibilityLabel(updates.available ? "Update available" : "Check for Updates")
+                .accessibilityIdentifier("sidebar.updates")
                 Link("Submit an issue", destination: URL(string: "https://zapfeed.io/?board=gatefox")!)
                     .font(GatewayTheme.body(12))
                     .accessibilityIdentifier("sidebar.submit-issue")

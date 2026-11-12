@@ -110,6 +110,11 @@ Do not re-sign the Codex desktop app.
 
 ## Updates
 
+Opening or activating GateFox checks for an app update, throttled to once per
+five minutes. An available update has a notice on every page and a sidebar
+indicator. Use **Install Update**, then **Quit & Finish Update** when staging is
+complete. A failed check also appears in the app, with a retry action.
+
 Signed production builds publish through standard GitHub releases. The app
 checks daily, waits for its GUI to close before activation, preserves the
 existing gateway service and active work, and retains the prior bundle for

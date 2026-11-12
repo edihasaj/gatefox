@@ -10,6 +10,7 @@ struct GateFoxApp: App {
     @StateObject private var updates: GatewayUpdatesModel
     @StateObject private var permissions: GatewayPermissions
     @StateObject private var navigation = GatewayNavigation()
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         guard let launch = try? GatewayLaunchConfiguration.read() else {
@@ -62,6 +63,23 @@ struct GateFoxApp: App {
                 }
                 .onChange(of: model.configPath) { _, _ in
                     Task { await connections.configurationDidChange() }
+                }
+                .onChange(of: scenePhase) { _, phase in
+                    guard phase == .active, model.hasConfig else { return }
+                    Task { await updates.refreshForForeground(configPath: model.configPath) }
+                }
+                .task(id: model.configPath) {
+                    guard model.hasConfig else {
+                        await updates.configure(configPath: "")
+                        return
+                    }
+                    await updates.refreshForForeground(configPath: model.configPath)
+                    while !Task.isCancelled {
+                        do { try await Task.sleep(for: .seconds(300)) }
+                        catch { break }
+                        guard scenePhase == .active else { continue }
+                        await updates.refreshForForeground(configPath: model.configPath)
+                    }
                 }
                 .task {
                     if !model.hasConfig { navigation.showSetup = true }
