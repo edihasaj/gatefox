@@ -17,9 +17,9 @@ default browser.
 
 On first launch, the app finds the configuration named by the managed gateway
 LaunchAgent. If there is none, a fresh installation uses
-`~/Library/Application Support/GateFox/gateway.json`. An installation created
-before 1.8.0 keeps its existing
-`~/Library/Application Support/Subscription Gateway/gateway.json`. Settings lets
+`~/Library/Application Support/GateFox/gateway.json`. When only the older
+`~/Library/Application Support/Subscription Gateway/gateway.json` exists, the
+app keeps that file. Settings lets
 you choose a different existing JSON file. The app remembers that path locally;
 it does not copy your provider registrations or change your model choices.
 
@@ -83,7 +83,7 @@ open "$HOME/Applications/GateFox.app"
 
 If `--backend` is omitted, the builder uses the current installed gateway release
 under `~/.local/share/gatefox/current`, or `~/.local/share/subscription-gateway/current`
-on a Mac installed before 1.8.0. It verifies every payload
+when that is the existing installation. It verifies every payload
 file against its checksum manifest, rejects symlinks and unlisted payload files,
 and copies only the release payload. The bundled Node license and all gateway
 component license files travel with it. Account files and local configuration
@@ -115,8 +115,8 @@ five minutes. An available update has a notice on every page and a sidebar
 indicator. Use **Install Update**, then **Quit & Finish Update** when staging is
 complete. A failed check also appears in the app, with a retry action.
 
-Signed production builds publish through standard GitHub releases. The app
-checks daily, waits for its GUI to close before activation, preserves the
+Signed production builds publish through standard GitHub releases. The background
+updater also checks daily. Activation waits for the GUI to close, preserves the
 existing gateway service and active work, and retains the prior bundle for
 rollback. See [macOS app updates](macos-updates.md).
 

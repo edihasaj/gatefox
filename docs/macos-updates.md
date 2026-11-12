@@ -1,5 +1,5 @@
 ---
-summary: 'Daily signed macOS app updates from standard GateFox GitHub releases.'
+summary: 'Foreground and background signed app updates from standard GateFox GitHub releases.'
 read_when:
   - Changing the macOS app updater or app release assets
   - Investigating an unavailable, deferred, or rolled-back app update
@@ -10,9 +10,8 @@ read_when:
 The installed app checks for app releases when it opens or becomes active, and
 every five minutes while active. Repeated foreground events within five minutes
 share the previous check. The existing background service also checks daily. It
-uses the GitHub CLI's existing login to read `edihasaj/harness-gateway`, the
-repository's former name, which GitHub redirects to `edihasaj/gatefox`;
-the updater never asks for, stores, or prints a token. A release provides one
+uses the GitHub CLI's existing login to read GateFox releases; the updater never
+asks for, stores, or prints a token. A release provides one
 notarized app ZIP, its matching gateway backend archive, `app-update.json`, and
 `SHA256SUMS`.
 
@@ -27,26 +26,23 @@ an app update: the full signed app release must be published.
 
 ## Release tags and names
 
-From 1.7.6 the updater accepts two tag forms and two name sets. A release counts
-as an app update only when it carries `app-update.json`, so a command-line-only
-`vVERSION` release is ignored.
+Current app releases use `vVERSION` and count as updates only when they carry
+`app-update.json` and its complete asset set. A command-line-only release is ignored.
 
-| Release | Tag | App ZIP (app inside) | Backend archive |
-| --- | --- | --- | --- |
-| Through 1.7.6 | `app-vVERSION`, read by 1.7.5 and older | `Harness-Gateway-VERSION-macos-arm64.zip` (`Harness Gateway.app`) | `harness-gateway-VERSION-macos-arm64.tar.gz` |
-| 1.7.6 | also the standard `vVERSION`, same files | as above | as above |
-| 1.8.0 and later | `vVERSION` only | `GateFox-VERSION-macos-arm64.zip` (`GateFox.app`) | `gatefox-VERSION-macos-arm64.tar.gz` |
+| Tag | App ZIP (app inside) | Backend archive |
+| --- | --- | --- |
+| `vVERSION` | `GateFox-VERSION-macos-arm64.zip` (`GateFox.app`) | `gatefox-VERSION-macos-arm64.tar.gz` |
 
 A set is accepted only whole: a GateFox ZIP must hold `GateFox.app` and its
-archive must unpack to `gatefox-VERSION-macos-arm64`. 1.7.6 is the bridge: every
-Mac must run it before 1.8.0 is published, because 1.7.5 and older updaters read
-only `app-vVERSION` tags and the Harness Gateway names. The rules live in
-`src/app-updates/names.ts`.
+archive must unpack to `gatefox-VERSION-macos-arm64`. Historical `app-vVERSION`
+tags and Harness Gateway asset names remain recognised for existing installations
+and recovery. They are not the publication format for new releases. The rules
+live in `src/app-updates/names.ts`.
 
 ### Renaming the installed app to GateFox.app
 
-An updater swaps a release into the app's existing path, so a Mac updated from
-1.7.x still has the 1.8.0 app at `Harness Gateway.app`. At its next launch the app
+An updater swaps a release into the app's existing path. If that path is still
+`Harness Gateway.app`, at its next launch the app
 renames itself to `GateFox.app` in the same folder, leaves `Harness Gateway.app`
 as a link to it, and relaunches from there (`AppRelocation.swift`). The link is
 required: launchd keeps the loaded job's old program path until the next login,
@@ -65,7 +61,7 @@ instead. If the relaunch fails, the app moves back and keeps running. The servic
 keeps running throughout; the new `Program` applies at its next start.
 
 ```text
-GitHub draft → signed ZIP + signed policy → daily check
+GitHub draft → signed ZIP + signed policy → update check
                                                ↓
                                     checksum and receipt validation
                                                ↓
@@ -122,8 +118,9 @@ still prevents pruning; it never establishes that an old release is unused.
 
 The updater sees an app release only after its draft assets have all uploaded,
 their GitHub-reported sizes and SHA-256 digests match local files, and the draft
-is published. App releases are private. GitHub authentication is therefore a
-deployment prerequisite, not an app setup flow.
+is published. The current updater uses the GitHub CLI's saved login for release
+discovery and downloads. Configure that login as a deployment prerequisite;
+the app does not provide a separate GitHub sign-in flow.
 
 Use the local production release command described in
 [Release](RELEASING.md#macos-app-distribution). It does not dispatch, enable, or

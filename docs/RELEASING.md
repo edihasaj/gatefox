@@ -21,24 +21,25 @@ shipping a Developer ID signed app and its startup launcher.
 
 ## Standard GitHub release
 
-Every version is one standard release, `vVERSION`, marked **Latest**. It holds the
+A stable app version is one standard release, `vVERSION`, marked **Latest**. It holds the
 notarized app ZIP, the command-line archive, `app-update.json` and one
 `SHA256SUMS` for all of them, with notes taken from the version's `CHANGELOG.md`
 section. The README and the gatefox.dev download button link to it.
 
-| Version | Also publish | App ZIP | Command-line archive |
-| --- | --- | --- | --- |
-| 1.7.6 | `app-v1.7.6` (by `release-macos-app.mjs --publish`, for 1.7.5 and older updaters) | `Harness-Gateway-1.7.6-macos-arm64.zip` | `harness-gateway-1.7.6-macos-arm64.tar.gz` |
-| 1.8.0 and later | nothing else | `GateFox-VERSION-macos-arm64.zip` | `gatefox-VERSION-macos-arm64.tar.gz` |
+| Asset | Name |
+| --- | --- |
+| Signed app | `GateFox-VERSION-macos-arm64.zip` |
+| Command-line archive | `gatefox-VERSION-macos-arm64.tar.gz` |
+| Update manifest | `app-update.json` |
+| Combined checksums | `SHA256SUMS` |
 
-From 1.8.0 the app publisher creates `vVERSION` itself: it pushes nothing, so push
+The app publisher creates `vVERSION` itself: it pushes nothing, so push
 the `vVERSION` tag at the release commit first, then run it with `--publish`. It
 uploads the app ZIP, the archive, `app-update.json` and `SHA256SUMS` to a draft,
 verifies every GitHub digest, publishes it as Latest and takes the notes from the
-version's `CHANGELOG.md` section. 1.7.6 to 1.7.8 used `app-vVERSION` from the
-publisher plus a hand-made `vVERSION` with the same files. Publish 1.8.0 only after every Mac
-runs 1.7.6, the first updater that reads `vVERSION` tags and GateFox names; see
-[macOS app updates](macos-updates.md#release-tags-and-names).
+version's `CHANGELOG.md` section. Selected-machine trials use prereleases,
+as described below. Historical tags remain readable for compatibility; new
+releases use only `vVERSION`.
 
 ## macOS app distribution
 
@@ -66,8 +67,8 @@ then writes immutable release assets under `.state/app-release/VERSION`.
 The signed runtime fixture declares its own JavaScript module type so unrelated
 files in the temporary directory cannot change the synthetic CLI semantics.
 
-Publishing requires `origin/production` and the release tag (`vVERSION` from 1.8.0,
-`app-vVERSION` before) to resolve exactly to the current HEAD, creates the release as a draft, uploads the ZIP, backend archive, `app-update.json`,
+Publishing requires `origin/production` and the `vVERSION` release tag
+to resolve exactly to the current HEAD, creates the release as a draft, uploads the ZIP, backend archive, `app-update.json`,
 and `SHA256SUMS`, verifies every GitHub-reported digest and size, then publishes
 the draft. An existing release or any failed draft verification is left
 untouched. This command never enables or dispatches GitHub Actions; follow the
@@ -87,7 +88,7 @@ It leaves the versioned stage in place and deliberately cannot resume it as a
 later publication. For an actual distribution, rerun only after moving that
 failed or inspection-only stage to Trash, then use the one-pass command above.
 `--publish` uses `~/Applications/GateFox.app` (or a `Harness Gateway.app` not yet renamed) and
-`~/.local/share/gatefox/current` (or the pre-1.8.0 `share/subscription-gateway`) by default for the updater fixture;
+`~/.local/share/gatefox/current` (or an existing `share/subscription-gateway`) by default for the updater fixture;
 pass absolute `--previous-app` and `--installed-release` paths to select the
 intended existing signed app and CLI release.
 

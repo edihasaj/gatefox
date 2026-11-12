@@ -1,5 +1,5 @@
 ---
-summary: 'How gateway chats identify themselves to each harness: Codex records them as gatefox by default (subscription_gateway before 1.8.0, still read) and as openai on an opted-in Mac, Claude Code stores no provider, and the checklist for adding another harness.'
+summary: 'Gateway chat identities, saved-provider compatibility, opt-in OpenAI identity and the checklist for adding another harness.'
 read_when:
   - Changing which provider id gateway chats are saved with, or the chatIdentity setting
   - Changing the gateway SDK patch, the executor marker, or the executor launch settings
@@ -19,22 +19,24 @@ is the contract for each harness, and the checklist for a new one.
 
 ## Codex: `gatefox` by default, `openai` as an opt-in
 
-### Two ids for the gateway (1.8.0)
+<a id="two-ids-for-the-gateway-180"></a>
 
-Since 1.8.0, new gateway chats are saved with the provider id `gatefox`. Chats saved
-before 1.8.0 carry `subscription_gateway`, and that id keeps working: every engine the
+### Current and existing gateway ids
+
+New gateway chats are saved with the provider id `gatefox`. Existing chats can
+carry `subscription_gateway`, and that id keeps working: every engine the
 gateway starts registers both ids, `gateway desktop register` publishes a row for each in
 the native `config.toml`, the router lists chats under both, and the patched SDK
 (`gateway-executor-v4`) treats both as the gateway. A chat is never rewritten by a resume.
 
-| Id | Written by | Read by |
-| --- | --- | --- |
-| `gatefox` | New gateway chats since 1.8.0 | 1.8.0 and later |
-| `subscription_gateway` | Every release before 1.8.0; also a new chat on an engine an older release started | Every release |
+| Id | Purpose |
+| --- | --- |
+| `gatefox` | Default for new gateway chats |
+| `subscription_gateway` | Compatibility identity for existing chats and older running executors |
 
-The executor marker is `GATEFOX_EXECUTOR` since 1.8.0. Executors also get the older
+The executor marker is `GATEFOX_EXECUTOR`. Executors also get the compatible
 `HARNESS_GATEWAY_EXECUTOR`, and the SDK reads either, so an SDK of either generation sees
-the same state. `gatefox chats migrate` (see [the rename plan](gatefox-rename.md)) moves
+the same state. `gatefox chats migrate` (see [saved-chat compatibility](gatefox-rename.md#saved-chats)) moves
 saved chats from `subscription_gateway` to `gatefox`. Both ids stay registered, so a chat a
 Mac has not migrated yet, or one another device still records with the old id, keeps opening.
 
@@ -64,8 +66,8 @@ account separation, and model switching with the real signed SDK and mock infere
 Its adapter scenario reproduces a refreshed picker advertising an alias absent
 from a loaded executor, then verifies switching through the stable picker aliases.
 
-Releases 0.4.7 to 1.7.x record new gateway chats with the provider id
-`subscription_gateway`; 1.8.0 records them as `gatefox`. A Mac can opt in to the native
+Gateway chats default to `gatefox`, with `subscription_gateway` retained for
+existing chats. A Mac can opt in to the native
 identity, `openai`, with `"chatIdentity": "openai"` in its gateway configuration.
 
 The phone is why the choice matters. The ChatGPT app's Codex list, and a stock Codex
