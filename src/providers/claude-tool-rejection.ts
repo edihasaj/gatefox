@@ -7,7 +7,7 @@ export function claudeToolNameCategory(name: unknown, tools: OpenAITool[]): stri
   if (typeof name !== "string") return "nonstring_name";
   if (!name) return "empty_name";
   if (tools.some(tool => claudeNativeToolName(tool) === name)) return "registered_native_name";
-  const bindings = claudeToolBindings(tools);
+  const bindings = claudeToolBindings(tools, true);
   if (bindings.get(name)) return "declared_caller_alias";
   if (bindings.has(name)) return "ambiguous_caller_alias";
   if (/^(?:mcp__gateway__)?tool_\d+$/.test(name)) return "retired_numeric_alias";

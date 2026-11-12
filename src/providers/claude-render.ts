@@ -62,7 +62,7 @@ export function choiceBlock(choice: ChatToolSelection | undefined, tools: OpenAI
 
 /** Marks replayed calls of custom caller tools, so text replay shows their raw input instead of a JSON wrapper. */
 export function markCustomCalls(messages: OpenAIChatMessage[], tools: OpenAITool[]): OpenAIChatMessage[] {
-  const bindings = claudeToolBindings(tools);
+  const bindings = claudeToolBindings(tools, true);
   return messages.map(message => !message.tool_calls ? message : { ...message, tool_calls: message.tool_calls.map(call => {
     const source = bindings.get(call.function.name)?.function.responseTool;
     return source?.type === "custom" ? { ...call, responseTool: source } : call;

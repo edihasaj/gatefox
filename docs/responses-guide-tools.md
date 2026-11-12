@@ -32,6 +32,18 @@ names without altering arguments, IDs, results, or message content. Native tool
 events can also use an exact caller alias or an unambiguous caller-local name;
 ambiguous names, stale numeric aliases, and foreign tools are rejected.
 
+Ordinary tools retain readable local names on the private MCP server. Namespaced
+tools include a length-prefixed namespace so separator collisions cannot bind two
+actions together. Unsafe, reserved or long identities use a bounded hash fallback;
+the complete native name stays within 64 characters. Historical hashed names
+translate during replay, but are not advertised as extra tools or accepted on a
+live stream unless they are the current registered name. This avoids opaque hashes
+on ordinary model-selected actions while preserving exact validation. Gateway does
+not guess a replacement for an unavailable tool or automatically replay a failed turn.
+Running CLIs keep their already registered naming mode, including adopted older
+sessions. The readable catalog applies when a new session starts; installing this
+change does not force a naming-related reseed of an active chat.
+
 Exact aliases apply to translated call parsing and historical replay. A live
 Claude CLI must actually address its registered virtual MCP tool. Its early
 confinement guard therefore still rejects non-gateway native names, even when

@@ -129,7 +129,7 @@ export class GrokSubscription implements Provider {
     if (live) {
       // A live session continues the conversation's process; it never replays history, and it has no one-shot fallback.
       const input: GrokLiveInput = { scope: this.config.id, home, conversationId, model: request.model, effort, command: await grokCommand(), system, builtinTools: grokBuiltinTools,
-        env: catalogPath => grokEnv(home, catalogPath), tools, allTools: normalized.tools || [], catalog: claudeMcpCatalog(tools), choice, forced, request, conversation, images,
+        env: catalogPath => grokEnv(home, catalogPath), tools, allTools: normalized.tools || [], catalog: claudeMcpCatalog(tools, true), choice, forced, request, conversation, images,
         leading, summaryVisible, observe: usage => context.observeCacheUsage?.(usage) };
       yield* await grokLive(settings).attach(input, signal);
       return;
@@ -138,7 +138,7 @@ export class GrokSubscription implements Provider {
 
     const directory = await mkdtemp(join(tmpdir(), "gateway-grok-"));
     const catalogPath = join(directory, "tools.json"); const promptPath = join(directory, "prompt.md");
-    await writeFile(catalogPath, JSON.stringify(claudeMcpCatalog(tools)), { mode: 0o600 });
+    await writeFile(catalogPath, JSON.stringify(claudeMcpCatalog(tools, true)), { mode: 0o600 });
     await writeFile(promptPath, prompt, { mode: 0o600 });
     const command = await grokCommand();
     const child = spawn(command, grokArgs(promptPath, system, request.model, effort), { cwd: directory, env: grokEnv(home, catalogPath), stdio: ["ignore", "pipe", "pipe"], detached: true });

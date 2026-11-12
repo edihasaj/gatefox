@@ -2,12 +2,37 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { responsesToChatRequest } from "../protocol/request.js";
 import { nativeClaudeCalls } from "../providers/claude-calls.js";
-import { claudeNativeToolName, claudeToolName, claudeToolHistory } from "../providers/claude-tool-names.js";
+import { claudeNativeToolName, claudeWireToolName as claudeToolName, claudeToolHistory, legacyClaudeToolName } from "../providers/claude-tool-names.js";
+import { ClaudeMessageStream } from "../providers/claude-stream.js";
 
 const catalog = () => responsesToChatRequest({ model: "test", input: "fixture", tools: [
   { type: "namespace", name: "files", tools: [{ type: "function", name: "read" }, { type: "custom", name: "patch" }] },
   { type: "namespace", name: "network", tools: [{ type: "function", name: "read" }] },
 ] }).tools!;
+
+test("ordinary native tool names are readable, namespace-safe and bounded", () => {
+  const plain = responsesToChatRequest({ model: "test", input: "fixture", tools: [{ type: "function", name: "exec_command" }] }).tools![0];
+  assert.equal(claudeNativeToolName(plain), "mcp__gateway__exec_command");
+  const tools = responsesToChatRequest({ model: "test", input: "fixture", tools: [
+    { type: "namespace", name: "a__b", tools: [{ type: "function", name: "c" }] },
+    { type: "namespace", name: "a", tools: [{ type: "function", name: "b__c" }] },
+    { type: "function", name: "n4_a__b_c" }, { type: "function", name: "tool_reserved" },
+    { type: "function", name: "long_" + "x".repeat(90) }, { type: "function", name: "unsafe.name" },
+  ] }).tools!;
+  const names = tools.map(claudeNativeToolName);
+  assert.equal(new Set(names).size, tools.length);
+  for (const name of names) { assert.match(name, /^mcp__gateway__[A-Za-z0-9_]+$/); assert.ok(name.length <= 64); }
+});
+
+test("historical hashed calls translate to today's registration without admitting them as live tools", () => {
+  const tool = catalog()[0], legacy = `mcp__gateway__${legacyClaudeToolName(tool)}`;
+  const messages = [{ role: "assistant" as const, content: null, tool_calls: [{ id: "old", type: "function" as const, function: { name: legacy, arguments: "{}" } }] }];
+  assert.equal(claudeToolHistory(messages, [tool])[0].tool_calls![0].function.name, claudeNativeToolName(tool));
+  const stream = new ClaudeMessageStream({ tools: [tool], summaryVisible: false, nativeMcpOnly: true });
+  stream.accept({ type: "stream_event", event: { type: "message_start", message: { id: "message", usage: {} } } });
+  assert.throws(() => stream.accept({ type: "stream_event", event: { type: "content_block_start", index: 0,
+    content_block: { type: "tool_use", id: "not-advertised", name: legacy } } }), /unavailable_gateway_tool/);
+});
 
 test("Claude native names retain caller identity when catalogs reorder, shrink or grow", () => {
   const tools = catalog(); const name = claudeNativeToolName(tools[1]);

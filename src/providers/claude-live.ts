@@ -155,7 +155,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
       input.replayBudget?.beforeRequest("seed");
       if (signal.aborted) throw cancelled();
       const dropped = session;
-      registry.sessions.delete(key); session = undefined;
+      registry.sessions.delete(key); registry.toolNameModes?.delete(key); session = undefined;
       void dropped.close("closed", reason);
     }
   } else {
@@ -173,7 +173,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
       const victim = evictable(registry);
       // Nothing has gone cold yet: a warm session is worth more parked than its cache is worth rewriting.
       if (!victim) return { kind: "fallback", reason: "capacity" };
-      registry.sessions.delete(victim.key); void victim.close("evicted");
+      registry.sessions.delete(victim.key); registry.toolNameModes?.delete(victim.key); void victim.close("evicted");
     }
     try {
       session = await ClaudeSession.start({
@@ -185,6 +185,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
       return { kind: "fallback", reason: error instanceof SessionStartFailure ? error.reason : "spawn_failed" };
     }
     registry.sessions.set(key, session); registry.ended.delete(key); registry.replayUntil.delete(key); sessionParts.set(session, parts);
+    (registry.toolNameModes ??= new Map()).set(key, input.toolNameMode ?? "readable");
     plan = { kind: "seed" }; parkedMs = undefined;
   }
   // A continued session records its scope too: a registry adopted from an earlier release had none,
@@ -226,7 +227,7 @@ function start(registry: SessionRegistry, settings: Settings, session: ClaudeSes
 }
 
 function ended(registry: SessionRegistry, session: ClaudeSession, outcome: SessionEnd, reason?: string): void {
-  if (registry.sessions.get(session.key) === session) registry.sessions.delete(session.key);
+  if (registry.sessions.get(session.key) === session) { registry.sessions.delete(session.key); registry.toolNameModes?.delete(session.key); }
   if (!registry.sessions.has(session.key) && !registry.starting.has(session.key)) registry.scopes.delete(session.key);
   // A crash says the CLI died on us; another process would only die on the same cache write, so hold the thread.
   if (outcome === "crashed") pinReplay(registry, session.key, session.lastUse, outcome);

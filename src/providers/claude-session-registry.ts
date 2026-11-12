@@ -2,6 +2,12 @@ import { registerActivityProbe, registerShutdownHook } from "../runtime-activity
 import type { ClaudeSession } from "./claude-session.js";
 import { sessionKey } from "./claude-live-contract.js";
 
+/** Older live CLIs have no mode receipt; all of them registered historical hashed names. */
+export function claudeToolNameMode(scope: string, threadId: string): "legacy" | "readable" {
+  const registry = adopt(), key = sessionKey(scope, threadId), session = registry?.sessions.get(key);
+  return session && session.state !== "closed" ? registry?.toolNameModes?.get(key) ?? "legacy" : "readable";
+}
+
 /** A failed/cancelled compaction or a concurrently replaced session grants no reset. */
 export function compactionCheckpoint(scope: string, threadId: string): (() => void) | undefined {
   const registry = adopt();
@@ -32,6 +38,7 @@ export function compactionCheckpoint(scope: string, threadId: string): (() => vo
  * the symbol version; the old version's sessions are then left to their own park timers.
  */
 export interface SessionRegistry {
+  toolNameModes?: Map<string, "legacy" | "readable">;
   interfaceVersion: 1;
   sessions: Map<string, ClaudeSession>;
   /** Keys with an attach in progress: deciding, applying effort or starting a process. */

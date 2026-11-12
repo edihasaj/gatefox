@@ -29,6 +29,7 @@ export type ClaudeMissReason = "unavailable" | "no_thread" | "request_kind" | "c
 
 /** Everything a live session needs for one request; claude.ts builds it after validation. */
 export interface ClaudeLiveInput {
+  toolNameMode?: "legacy" | "readable";
   replayBudget?: ClaudeReplayBudget;
   /** Provider identity; a session never crosses it. */
   scope: string;
