@@ -28,7 +28,7 @@ finishes normally, then the session closes instead of remaining parked in replay
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `mode` | `live` | `live` keeps a session per conversation; explicit `replay` uses standalone requests |
-| `max` | 10% of RAM | Live sessions in the whole process (1–32). The default is `clamp(floor(0.10 × totalmem / 300 MB), 6, 32)`: 6 up to 20 GiB, 21 on 64 GiB, 32 from about 94 GiB. A session being started counts toward it |
+| `max` | 10% of RAM | Live sessions in the whole process. An explicit positive safe integer has no fixed upper ceiling; use `64` to double a 32-slot pool. The default remains `clamp(floor(0.10 × totalmem / 300 MB), 6, 32)`: 6 up to 20 GiB, 21 on 64 GiB, 32 from about 94 GiB. A session being started counts toward it |
 | `parkMinutes` | 60 | Idle time before a session closes (5–240), per session |
 | `warmup` | 1 | Completed requests a thread needs before its first live session may start (0–5). `0` restores immediate spawning. |
 | `replayFormat` | `text` | Item encoding for one-shot requests and session seeds; `json` restores the old one |
@@ -199,6 +199,14 @@ concurrent attaches can never run more processes than the cap. Telemetry records
 `claude_session` events with `fallback` or `blocked` and the thread's `threadKey`. A promoted spawn has
 `afterWarmup: true`, so diagnostics records its cache cost; see
 [diagnostics](diagnostics.md).
+
+The limit is shared across Claude accounts in one inference process; it is not
+an Anthropic quota or the number of currently running turns. A finished turn
+keeps its parked slot until expiry. Increasing `max` applies on configuration
+reload without closing existing sessions. Set the same value on each Claude
+provider because the provider admitting a new session applies its setting to
+the shared pool. There is no fixed ceiling for an explicit value. Each additional
+session consumes local memory; the memory-derived default remains conservative.
 
 The system prompt is the gateway's fixed text plus the caller's instructions and
 the system and developer messages before the first other message, as on the

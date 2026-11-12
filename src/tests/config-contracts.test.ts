@@ -67,7 +67,10 @@ test("claudeSessions is optional, defaulted, limited and only valid on Claude su
   const live = config([claude({ claudeSessions: { mode: "live", max: 16, parkMinutes: 5, warmup: 2, replayFormat: "json" } })]).providers[0];
   assert.deepEqual(claudeSessionSettings(live), { mode: "live", max: 16, parkMinutes: 5, warmup: 2, replayFormat: "json" });
   assert.deepEqual(claudeSessionSettings(config([claude({ claudeSessions: { max: 1, parkMinutes: 240 } })]).providers[0]), { mode: "live", max: 1, parkMinutes: 240, warmup: 1, replayFormat: "text" });
-  for (const claudeSessions of [{ mode: "live-ish" }, { max: 0 }, { max: 33 }, { max: 2.5 }, { parkMinutes: 4 }, { parkMinutes: 241 }, { warmup: -1 }, { warmup: 6 }, { warmup: 1.5 }, { warmup: "1" }, { replayFormat: "yaml" }, [], null, "live"]) {
+  for (const max of [33, 64, 128, Number.MAX_SAFE_INTEGER]) {
+    assert.equal(claudeSessionSettings(config([claude({ claudeSessions: { max } })]).providers[0]).max, max);
+  }
+  for (const claudeSessions of [{ mode: "live-ish" }, { max: 0 }, { max: -1 }, { max: Number.MAX_SAFE_INTEGER + 1 }, { max: Infinity }, { max: NaN }, { max: "64" }, { max: 2.5 }, { parkMinutes: 4 }, { parkMinutes: 241 }, { warmup: -1 }, { warmup: 6 }, { warmup: 1.5 }, { warmup: "1" }, { replayFormat: "yaml" }, [], null, "live"]) {
     assert.throws(() => config([claude({ claudeSessions: claudeSessions as ProviderConfig["claudeSessions"] })]), /claudeSessions/, JSON.stringify(claudeSessions));
   }
   assert.throws(() => config([codex({ claudeSessions: { mode: "live" } })]), /only valid for claude-subscription/);

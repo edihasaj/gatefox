@@ -313,7 +313,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (provider.type !== "claude-subscription") throw new Error(`${provider.id}: claudeSessions is only valid for claude-subscription providers`);
       if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) throw new Error(`${provider.id}: claudeSessions must be an object`);
       if ((sessions.mode !== undefined && !["replay", "live"].includes(sessions.mode)) || (sessions.replayFormat !== undefined && !["text", "json"].includes(sessions.replayFormat))) throw new Error(`${provider.id}: claudeSessions mode must be replay or live and replayFormat text or json`);
-      if (sessions.max !== undefined && !integerIn(sessions.max, 1, 32)) throw new Error(`${provider.id}: claudeSessions max must be 1 through 32`);
+      if (sessions.max !== undefined && (!Number.isSafeInteger(sessions.max) || sessions.max < 1)) throw new Error(`${provider.id}: claudeSessions max must be a positive safe integer`);
       if (sessions.parkMinutes !== undefined && !integerIn(sessions.parkMinutes, 5, 240)) throw new Error(`${provider.id}: claudeSessions parkMinutes must be 5 through 240`);
       if (sessions.warmup !== undefined && !integerIn(sessions.warmup, 0, 5)) throw new Error(`${provider.id}: claudeSessions warmup must be 0 through 5`);
     }

@@ -5,6 +5,8 @@ export class CliContinuityUnavailable extends ProviderError {
   constructor(provider: "Claude" | "Copilot" | "Grok", reason: string) {
     super("invalid_request", provider === "Grok" && reason === "persistent_session_unqualified"
       ? "Grok's one-shot mode (grokSessions.mode: oneshot) supports standalone requests only. Gateway stopped before replaying this conversation. Set grokSessions.mode to live (the default) to continue a conversation with tools, or select another model."
+      : provider === "Claude" && reason === "capacity"
+      ? "GateFox's local Claude live-session pool is full (capacity). Increase claudeSessions.max or wait for parked sessions to expire. Finishing a turn or starting a fresh chat does not free a parked slot. Gateway stopped without automatically replaying the conversation."
       : provider === "Claude" && reason === "session_dead"
       ? "Claude session continuation is unavailable (session_dead). Gateway stopped without automatically replaying the conversation. Compact this conversation to recover, or start a fresh chat. Waiting instead requires one uninterrupted idle hour; retrying restarts that wait."
       : `${provider} session continuation is unavailable (${reason}). Gateway stopped without automatically replaying the conversation. Retry after the provider is available, finish the other active turn, or start a fresh chat.`,

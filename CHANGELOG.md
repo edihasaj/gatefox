@@ -2,6 +2,11 @@
 
 ## 1.9.8 — 2026-11-12
 
+- Claude live-session pools accept any positive safe integer instead of rejecting
+  values above 32. Operators can raise the shared pool to 64 without closing
+  active sessions. Capacity errors now identify the local pool and explain that
+  finishing a turn or opening another chat does not free a parked slot.
+
 - An unused phone connection no longer blocks updates. The native relay kept each remote
   stream's engine running until the stream closed, and while its cloud connection failed with
   `409 Conflict` the SDK's idle sweep never closed it, so one stream on macbook-server held an
