@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.9.5 — 2026-11-12
+
+- The tailnet listener serves HTTPS. Claude Desktop accepts a plain `http://` gateway only on
+  loopback, and its configuration window drops any other `http://` URL when it saves, so the
+  1.9.3 endpoint could not be used. The gateway now serves the tailnet with this Mac's own
+  Tailscale certificate (Let's Encrypt, from `tailscale cert`), fetches and renews it itself,
+  and stays closed on the tailnet without one. `gateway claude-desktop configure --direct
+  --tailnet` writes the `https://NAME.ts.net:PORT` endpoint. The tailnet must allow HTTPS
+  certificates.
+
 ## 1.9.4 — 2026-11-12
 
 - The phone reaches a Mac again after ChatGPT 26.1106.51428, and that Mac shares its native
