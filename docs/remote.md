@@ -39,16 +39,87 @@ every client sees the change.
 
 ## Work on another Mac over SSH
 
+In both apps the chat stays in this Mac's window, while files, the terminal and tools
+run on the other Mac (the **host**).
+
 | | Codex app | Claude app |
 | --- | --- | --- |
-| Add the host | Settings → SSH connections, using an alias from `~/.ssh/config` | **New environment → SSH → Add SSH connection…** |
-| Prepare the host | `gateway ssh register --codex ORIGINAL_PATH` on the host | Nothing; the host needs no GateFox |
-| Prepare this Mac | Nothing | `tailnetListener` and `configure --direct --tailnet --ssh-host …` ([steps](claude-desktop-direct.md#ssh-environments)) |
-| Models in that session | The host's own gateway | This Mac's gateway, over Tailscale HTTPS |
-| Network | Only SSH | SSH, plus Tailscale with HTTPS Certificates on |
+| On the host | GateFox and the Codex CLI, then `gateway ssh register` | Nothing; no GateFox needed |
+| On this Mac | Nothing beyond SSH | `tailnetListener` and `configure --direct --tailnet --ssh-host …` |
+| Add the host in the app | The app's SSH connection settings, by the alias from `~/.ssh/config` | **New environment → SSH → Add SSH connection…** |
+| Which gateway answers | The host's own gateway | This Mac's gateway, over Tailscale HTTPS |
+| Network | SSH | SSH, plus Tailscale with HTTPS Certificates on |
 
-In both apps, files, the terminal and tools run on the host, while the chat stays in
-this Mac's window.
+### 1. Make `ssh HOST` work (both apps)
+
+Both apps use your normal OpenSSH setup, so get a password-free login working in a
+terminal first. With Tailscale on both Macs, use the host's Tailscale address:
+
+```sh
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_studio       # once, no passphrase or one in your agent
+ssh-copy-id -i ~/.ssh/id_ed25519_studio.pub edi@100.124.102.126
+```
+
+Then give it a short name in `~/.ssh/config`:
+
+```text
+Host studio
+  HostName 100.124.102.126
+  User edi
+  IdentityFile ~/.ssh/id_ed25519_studio
+  IdentitiesOnly yes
+```
+
+`ssh studio hostname` must print the host's name without asking for anything. Accept
+its host key there once.
+
+### 2a. Codex app
+
+On the host, install GateFox (the [setup](https://gatefox.dev/#setup)) and the Codex
+CLI, connect its accounts, then route the Codex command through the gateway:
+
+```sh
+gateway ssh register --codex "$(command -v codex)"
+gateway ssh status        # {"registered":true,"command":"…/.local/bin/codex"}
+```
+
+`--codex` names the original Codex CLI; GateFox puts a managed `~/.local/bin/codex` in
+front of it, which must come first on the host's `PATH` for SSH logins. On this Mac, add
+`studio` in the Codex app's SSH connection settings and open a project there. Its
+picker shows the models of the host's gateway. A host that should use another Mac's
+accounts is a client of that Mac ([above](#share-one-macs-accounts)).
+
+### 2b. Claude app
+
+On this Mac, with the Claude app quit:
+
+```sh
+# once: "tailnetListener": true in this Mac's gateway configuration
+gateway claude-desktop configure --direct --tailnet \
+  --ssh-host studio --ssh-host 100.124.102.126 --apply
+```
+
+List both the alias and the address it resolves to (`ssh -G studio | grep
+'^hostname'`). Open the Claude app → **New environment → SSH → Add SSH connection…**,
+enter Host `studio`, your user and the `IdentityFile`, pick a folder and create the
+environment. See [Claude app SSH environments](claude-desktop-direct.md#ssh-environments)
+for the errors you may see.
+
+### Example: three Macs
+
+```text
+MacBook (own accounts)        Studio (own accounts)        macbook-server
+──────────────────────        ─────────────────────        ──────────────────────
+Codex app  ══SSH═════════════════════════════════════════► GateFox + Codex CLI
+Claude app ══SSH═════════════════════════════════════════► nothing to install
+   └─ model calls ◄── Tailscale HTTPS ─────────────────────┘
+Claude app ══SSH══════════════► Studio
+```
+
+Repeat step 1 for every pair of Macs you connect, and step 2 for each app you use. A
+client-only Mac ([shared accounts](#share-one-macs-accounts)) works in both apps
+locally and for Codex over SSH, but cannot serve Claude app SSH sessions:
+`tailnetListener` needs a gateway with its own accounts.
 
 ## A separate Codex CLI home
 

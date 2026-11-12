@@ -186,12 +186,13 @@ gateway native status</code></pre><p>Read <a href="native-remote.html">the nativ
       <h3>Work in a project on another Mac</h3>
       <p>Both apps can run a chat's files, terminal and tools on another Mac over SSH, while the chat stays on this one. Check that <code>ssh that-mac</code> works from a terminal first.</p>
       <div class="table-wrap"><table><thead><tr><th></th><th>Codex app</th><th>Claude app</th></tr></thead><tbody>
-        <tr><td>On the other Mac</td><td><code>gateway ssh register --codex PATH</code></td><td>Nothing</td></tr>
+        <tr><td>First, on both</td><td colspan="2"><code>ssh that-mac</code> works without a password (key in <code>~/.ssh/config</code>)</td></tr>
+        <tr><td>On the other Mac</td><td>GateFox and the Codex CLI, then <code>gateway ssh register --codex "$(command -v codex)"</code></td><td>Nothing</td></tr>
         <tr><td>On this Mac</td><td>Nothing</td><td>Turn on <code>"tailnetListener": true</code>, then quit the Claude app and run <code>gateway claude-desktop configure --direct --tailnet --ssh-host that-mac --ssh-host ITS-IP --apply</code></td></tr>
         <tr><td>Add it in the app</td><td>Settings → SSH connections</td><td>New environment → SSH → Add SSH connection…</td></tr>
         <tr><td>Needs</td><td>SSH</td><td>SSH and Tailscale, with HTTPS Certificates on</td></tr>
       </tbody></table></div>
-      <p>More detail: <a href="remote.html">other Macs</a> and <a href="claude-desktop-direct.html#ssh-environments">Claude app SSH environments</a>.</p>
+      <p>Step by step, with a three-Mac example: <a href="remote.html#work-on-another-mac-over-ssh">other Macs</a>, and <a href="claude-desktop-direct.html#ssh-environments">Claude app SSH environments</a>.</p>
     </section>
 
     <section id="clients" data-section>
