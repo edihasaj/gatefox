@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GateFox · Claude, ChatGPT and Copilot in your coding app</title>
+  <meta name="description" content="Use Claude, ChatGPT, Copilot and local models from Codex, Claude Code and Claude Desktop. Open source, runs on your Mac, sets up in minutes.">
+  <link rel="canonical" href="https://gatefox.dev/">
+  <meta name="robots" content="index, follow, max-image-preview:large">
+  <meta property="og:site_name" content="GateFox">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://gatefox.dev/">
+  <meta property="og:title" content="GateFox · Claude, ChatGPT and Copilot in your coding app">
+  <meta property="og:description" content="Use Claude, ChatGPT, Copilot and local models from Codex, Claude Code and Claude Desktop. Open source, runs on your Mac, sets up in minutes.">
+  <meta property="og:image" content="https://gatefox.dev/assets/og/index.jpg">
+  <meta property="og:image:type" content="image/jpeg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="GateFox · Claude, ChatGPT and Copilot in your coding app: GateFox">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="GateFox · Claude, ChatGPT and Copilot in your coding app">
+  <meta name="twitter:description" content="Use Claude, ChatGPT, Copilot and local models from Codex, Claude Code and Claude Desktop. Open source, runs on your Mac, sets up in minutes.">
+  <meta name="twitter:image" content="https://gatefox.dev/assets/og/index.jpg">
+  <meta name="twitter:image:alt" content="GateFox · Claude, ChatGPT and Copilot in your coding app: GateFox">
+  <meta name="msvalidate.01" content="CB0CFB524B8FF8EF17339F367EA1FA7D">
+  <meta name="theme-color" content="#ba3c19">
+  <link rel="manifest" href="site.webmanifest">
+  <link rel="apple-touch-icon" href="assets/logo.png">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"GateFox","url":"https://gatefox.dev/","applicationCategory":"DeveloperApplication","operatingSystem":"macOS (Apple silicon)","description":"A local gateway that adds Claude, ChatGPT, Copilot and local models to Codex, Claude Code and Claude Desktop.","image":"https://gatefox.dev/assets/og/index.jpg","license":"https://opensource.org/licenses/MIT","isAccessibleForFree":true,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"codeRepository":"https://github.com/edihasaj/gatefox","downloadUrl":"https://github.com/edihasaj/gatefox/releases/download/v2.0.1/GateFox-2.0.1-macos-arm64.zip","author":{"@type":"Person","name":"Edi Hasaj","url":"https://edihasaj.com"},"softwareVersion":"2.0.1","datePublished":"2026-11-12T16:47:11.000Z"}</script>
+  <link rel="icon" type="image/png" href="assets/favicon.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+  <script src="releases.js" type="module" defer></script>
+</head>
+<body>
+  <a class="skip" href="#guide">Skip to guide</a>
+  <aside class="sidebar" aria-label="Guide navigation">
+    <a class="brand" href="#overview"><img src="assets/logo.png" width="56" height="56" alt="GateFox fox"><span>GateFox</span></a>
+    <div class="edition">GUIDE <span data-release-version>2.0.1</span></div>
+    <label class="search-label" for="search">Find in this guide</label>
+    <input id="search" type="search" placeholder="Models, tunnel, service…" autocomplete="off">
+    <nav>
+      <a href="#overview">01 <span>What it is</span></a>
+      <a href="#setup">02 <span>Set up this Mac</span></a>
+      <a href="#use">03 <span>ChatGPT app (Codex)</span></a>
+      <a href="#claude">04 <span>Claude app</span></a>
+      <a href="#models">05 <span>Choose models</span></a>
+      <a href="#machines">06 <span>Other Macs</span></a>
+      <a href="#clients">07 <span>Other apps</span></a>
+      <a href="#service">08 <span>Keep it running</span></a>
+      <a href="#troubleshooting">09 <span>Fix a problem</span></a>
+      <a class="page-link" href="reference.html">→ <span>All docs</span></a>
+      <a class="page-link" href="changelog.html">→ <span>Changelog</span></a>
+      <a class="page-link first" href="roadmap.html">→ <span>Roadmap · help wanted</span></a>
+    </nav>
+    <p class="sidebar-note">Your coding app.<br>Your accounts.<br>One model list.</p>
+    <a class="source" href="https://github.com/edihasaj/gatefox">Source on GitHub ↗</a>
+  </aside>
+
+  <main id="guide">
+    <header class="hero" id="overview" data-section>
+      <div class="eyebrow">A SMALL BRIDGE FOR YOUR AI ACCOUNTS</div>
+      <img class="hero-fox" src="assets/logo.png" width="192" height="192" alt="" aria-hidden="true">
+      <h1>All your models.<br>One picker.</h1>
+      <p class="lead">Use Claude, ChatGPT, Copilot and local models from the coding app you already use, on your Mac and from your phone.</p>
+      <a class="primary" href="#setup">Set up this Mac <span aria-hidden="true">↓</span></a>
+      <aside class="release-summary" aria-label="Latest release">
+        <div class="release-meta"><span class="release-channel">Latest release</span><a class="release-version" data-release-version href="changelog.html#v2-0-1">2.0.1</a><time data-release-date datetime="2026-11-12T16:47:11.000Z">12 November 2026</time></div>
+        <div class="release-preview" data-release-summary data-release-notes><ul>
+<li>GateFox checks for app updates when opened or activated and every five minutes
+while active. Available updates appear above every page and in the sidebar,
+with an install action and a clear quit-to-finish action after staging. Failed
+checks show a retry action. The existing signed updater preserves running chats.</li>
+</ul>
+</div>
+        <div class="release-links"><a data-release-changelog href="changelog.html#v2-0-1">What changed →</a><a data-release-link href="https://github.com/edihasaj/gatefox/releases/tag/v2.0.1">GitHub release ↗</a></div>
+      </aside>
+      <div class="route" aria-label="Your app talks to the gateway on this Mac, which talks to your accounts">
+        <span>Codex · Claude app · Claude Code</span><b aria-hidden="true">→</b><span>Gateway on this Mac</span><b aria-hidden="true">→</b><span>Your accounts</span>
+      </div>
+      <div class="split">
+        <div><h2>The gateway does</h2><ul><li>Sign in to each account the official way</li><li>Add its models to your app's picker</li><li>Translate requests and stream answers back</li></ul></div>
+        <div><h2>Your app still does</h2><ul><li>Run tools and ask for approvals</li><li>Own chats, names and permissions</li><li>Choose the model and agents</li></ul></div>
+      </div>
+      <p>Each account keeps its own sign-in. A failed request never moves to another account or billing plan, and the gateway never logs tokens, request bodies or tool arguments.</p>
+    </header>
+
+    <p id="search-status" role="status" aria-live="polite" hidden></p>
+
+    <section id="setup" data-section>
+      <div class="section-number">02 / START HERE</div>
+      <h2>Set up this Mac.</h2>
+      <p>One Mac is the whole setup. It holds your accounts, runs the gateway and shows the models in your app. You need an Apple Silicon Mac, the Codex desktop app, and the official CLI for each subscription you connect, such as Claude Code for a Claude subscription.</p>
+      <ol class="steps">
+        <li><b>Install</b><span>the app or the command</span></li>
+        <li><b>Connect</b><span>your accounts and models</span></li>
+        <li><b>Start</b><span>the service, then reopen Codex</span></li>
+      </ol>
+
+      <h3>The easy way: the app</h3>
+      <p><a class="primary download" data-download href="https://github.com/edihasaj/gatefox/releases/download/v2.0.1/GateFox-2.0.1-macos-arm64.zip">Download for Mac <span data-download-version>2.0.1 · Apple silicon</span></a></p>
+      <p class="release-strip" data-release-strip>
+        <span class="release-channel">Latest</span>
+        <a class="release-strip-version" data-release-version href="changelog.html#v2-0-1">2.0.1</a>
+        <time data-release-date datetime="2026-11-12T16:47:11.000Z">12 November 2026</time>
+        <a class="release-strip-link" data-release-changelog href="changelog.html#v2-0-1">What changed</a>
+      </p>
+      <p>Unzip it, move the fox to Applications and open it. The setup wizard walks through all three steps: choose a provider, sign in, pick models, then <strong>Set up once</strong> starts the background service and adds the models to Codex. The app is notarized and includes its own runtime. Every version is on <a href="https://github.com/edihasaj/gatefox/releases">GitHub Releases</a>. See <a href="macos-app.html">the macOS app</a>.</p>
+
+      <h3>The command-line way</h3>
+      <p>Run these in a new, empty download folder. The installer needs no administrator access and installs under your user folder.</p>
+      <pre><code data-release-cli>VERSION=2.0.1
+gh release download &quot;v$VERSION&quot; -R edihasaj/gatefox \
+  --pattern 'gatefox-*-macos-arm64.tar.gz' --pattern SHA256SUMS
+shasum -a 256 --ignore-missing -c SHA256SUMS
+tar -xzf &quot;gatefox-$VERSION-macos-arm64.tar.gz&quot;
+&quot;./gatefox-$VERSION-macos-arm64/install&quot;
+gateway --version</code></pre>
+      <p>Then connect accounts and start it. <code>gateway init</code> writes a private configuration that listens on <code>127.0.0.1</code> only, so nothing is reachable from other machines.</p>
+      <pre><code>gateway init                     # 1. private config for this Mac
+gateway login claude             # 2. sign in to each account you want
+gateway login codex              #    (a second ChatGPT account)
+gateway discover claude --load   #    load the models each one offers
+gateway discover codex --load
+gateway service install          # 3. keep it running in the background
+gateway desktop register         #    add the models to Codex
+gateway doctor                   #    check everything</code></pre>
+      <p>Quit Codex normally once and reopen it. That's it: the new models appear after your native ones.</p>
+      <details><summary>Adding Copilot, an API key or a local model server</summary><p>Copilot uses its CLI's subscription login. API services (OpenRouter, xAI, OpenCode and compatible endpoints) and local servers such as vLLM use a key or a URL. The app's <strong>Add connection</strong> wizard covers each; on the command line see <a href="api-providers.html">API providers</a>.</p><pre><code>gateway login copilot
+gateway discover copilot --load
+gateway doctor</code></pre></details>
+      <details><summary>Already using a development checkout?</summary><p>Import its gateway-owned registrations into the installed data directory. Native Codex authentication and settings are not copied.</p><pre><code>gateway setup --from-config /absolute/path/gateway.local.json</code></pre></details>
+    </section>
+
+    <section id="use" data-section>
+      <div class="section-number">03 / CHATGPT APP (CODEX)</div>
+      <h2>Use it in the ChatGPT app (Codex).</h2>
+      <p>Codex lives in the ChatGPT app for Mac. After setup, its model picker lists your GateFox models after the native ones.</p>
+      <ol>
+        <li>Start a new chat and select the project where the work belongs.</li>
+        <li>Open the model list. Added models have labels such as <strong>Claude · Opus 5.5</strong> and <strong>Codex 2 · GPT-6.1-Sol</strong>.</li>
+        <li>Choose a reasoning level, then send your task.</li>
+      </ol>
+      <div class="table-wrap"><table><caption>What to expect in a gateway chat</caption><thead><tr><th>Control</th><th>Behavior</th></tr></thead><tbody>
+        <tr><td>Files and instructions</td><td>Codex reads the project's AGENTS.md and runs tools in that workspace, as usual.</td></tr>
+        <tr><td>Switching models</td><td>History carries across gateway models. Start a new chat to move between your native account and a gateway model.</td></tr>
+        <tr><td>Images</td><td>Claude and Codex accept PNG, JPEG, GIF and WebP. Some local models accept text only.</td></tr>
+        <tr><td>Stop and resume</td><td>Stop cancels the request. Send another message or reopen the chat to continue.</td></tr>
+        <tr><td>From your phone</td><td>Codex in the ChatGPT app lists and continues your gateway chats while your Mac's <a href="native-remote.html">native relay</a> is connected. Claude's mobile app does not support custom gateways yet.</td></tr>
+        <tr><td>Speed</td><td>Standard is the default. Fast appears only where the account offers it.</td></tr>
+      </tbody></table></div>
+    </section>
+
+    <section id="claude" data-section>
+      <div class="section-number">04 / CLAUDE APP</div>
+      <h2>Use it in the Claude app.</h2>
+      <p>The Claude app (Claude Desktop) can list every GateFox model too: your Claude accounts first, then Codex, local and API models. It talks to the gateway on this Mac; nothing else is installed.</p>
+      <ol>
+        <li><b>Once:</b> in the Claude app, open <strong>Developer → Configure Third-Party Inference…</strong>, set the provider to <strong>Gateway</strong> and the base URL to <code>http://127.0.0.1:3457</code>, name the configuration <code>GateFox</code> and apply it.</li>
+        <li>Quit the Claude app (⌘Q), then run the command below.</li>
+        <li>Open the Claude app. The account menu reads <strong>you · GateFox</strong> and the picker shows <strong>Claude · Opus 5.5</strong>, <strong>Codex · GPT-6.1-Sol</strong> and the rest.</li>
+      </ol>
+      <pre><code>gateway claude-desktop configure --direct --native-model-metadata --apply</code></pre>
+      <p>Run it again after you add or remove models. To go back to another configuration, use the account menu → <strong>Inference configuration</strong>. Each run keeps a backup of the previous profile.</p>
+      <p>To run Claude app sessions on another Mac over SSH, see <a href="#machines">Other Macs</a>. The Claude mobile app has no setting for a custom gateway; use Codex in the ChatGPT app on your phone instead.</p>
+      <p>More: <a href="claude-desktop-direct.html">the Claude app guide</a>.</p>
+    </section>
+
+    <section id="models" data-section>
+      <div class="section-number">05 / MODEL LIST</div>
+      <h2>Load the models your account offers.</h2>
+      <p>Discovery reads each account's current model list. <code>--load</code> saves it; <code>--select</code> keeps a smaller list.</p>
+      <pre><code>gateway discover claude --load
+gateway discover copilot --select gpt-6.1-sol,claude-opus-5.5 --load
+gateway catalog</code></pre>
+      <p>The provider's <code>label</code> is the name before the middle dot. Changes apply on the next request; reopen the model picker to see them. To follow new model releases automatically, see <a href="auto-latest-models.html">automatic latest models</a>.</p>
+    </section>
+
+    <section id="machines" data-section>
+      <div class="section-number">06 / OTHER MACS</div>
+      <h2>Use more than one Mac.</h2>
+      <p>Skip this if you use one Mac. To use the same models on a laptop, keep the accounts on your first Mac and let the others connect to it. Each extra Mac gets only a client token and an SSH tunnel; no account credentials are copied.</p>
+      <div class="route" aria-label="An extra Mac reaches the main Mac through an SSH tunnel">
+        <span>Extra Mac</span><b aria-hidden="true">— SSH tunnel →</b><span>Main Mac: accounts + gateway</span><b aria-hidden="true">→</b><span>Providers</span>
+      </div>
+      <p>On the extra Mac, install the gateway as in step 1, then:</p>
+      <pre><code>umask 077
+mkdir -p ~/.local/state/gatefox-client
+ssh you@main-mac 'gateway token' \
+  &gt; ~/.local/state/gatefox-client/client-token
+gateway setup --client --port 3459 \
+  --token-file ~/.local/state/gatefox-client/client-token
+gateway tunnel install --tunnel-id main --host you@main-mac \
+  --port 3459 --remote-port 3457
+gateway desktop register
+gateway doctor</code></pre>
+      <p>The client token unlocks every account on the main Mac. Keep it owner-only and give it only to your own devices. The main Mac must stay awake and reachable.</p>
+      <details><summary>Use an existing Codex “Control other devices” connection instead</summary><p>The experimental native relay reuses that connection, so there is no separate SSH entry. Finish open chats and quit ChatGPT normally on that Mac first.</p><pre><code>gateway native install
+gateway desktop register
+gateway native status</code></pre><p>Read <a href="native-remote.html">the native relay requirements</a>.</p></details>
+      <h3>Work in a project on another Mac</h3>
+      <p>Both apps can run a chat's files, terminal and tools on another Mac over SSH, while the chat stays on this one. Check that <code>ssh that-mac</code> works from a terminal first.</p>
+      <div class="table-wrap"><table><thead><tr><th></th><th>Codex app</th><th>Claude app</th></tr></thead><tbody>
+        <tr><td>First, on both</td><td colspan="2"><code>ssh that-mac</code> works without a password (key in <code>~/.ssh/config</code>)</td></tr>
+        <tr><td>On the other Mac</td><td>GateFox and the Codex CLI, then <code>gateway ssh register --codex "$(command -v codex)"</code></td><td>Nothing</td></tr>
+        <tr><td>On this Mac</td><td>Nothing</td><td>Turn on <code>"tailnetListener": true</code>, then quit the Claude app and run <code>gateway claude-desktop configure --direct --tailnet --ssh-host that-mac --ssh-host ITS-IP --apply</code></td></tr>
+        <tr><td>Add it in the app</td><td>Settings → SSH connections</td><td>New environment → SSH → Add SSH connection…</td></tr>
+        <tr><td>Needs</td><td>SSH</td><td>SSH and Tailscale, with HTTPS Certificates on</td></tr>
+      </tbody></table></div>
+      <p>Step by step, with a three-Mac example: <a href="remote.html#work-on-another-mac-over-ssh">other Macs</a>, and <a href="claude-desktop-direct.html#ssh-environments">Claude app SSH environments</a>.</p>
+    </section>
+
+    <section id="clients" data-section>
+      <div class="section-number">07 / OTHER APPS</div>
+      <h2>Use it beyond the Codex app.</h2>
+      <div class="cards">
+        <a class="card" href="messages.html"><strong>Claude Code</strong><span>Point Claude Code at the gateway and use GPT, Claude and local models through its native Messages API.</span></a>
+        <a class="card" href="claude-desktop-direct.html"><strong>Claude app</strong><span>Every GateFox model in the Claude app's picker, Claude accounts first, without changing Codex.</span></a>
+        <a class="card" href="cli.html"><strong>Codex CLI</strong><span>Generate a separate CLI home with <code>gateway codex-config</code> so your main settings stay untouched.</span></a>
+      </div>
+      <pre><code>mkdir -p ~/.config/gatefox/clients/codex
+gateway codex-config --model codex/gpt-6.1-sol \
+  &gt; ~/.config/gatefox/clients/codex/config.toml
+CODEX_HOME=~/.config/gatefox/clients/codex codex</code></pre>
+    </section>
+
+    <section id="service" data-section>
+      <div class="section-number">08 / OPERATIONS</div>
+      <h2>Keep it running.</h2>
+      <p>One background service starts the gateway at login and restarts it after a crash. Closing the app or the terminal leaves it running. New releases are picked up when the gateway is idle, without stopping your chats.</p>
+      <pre><code>gateway service status
+gateway health
+gateway versions --check</code></pre>
+      <p>Uninstalling moves the installed files to Trash and keeps your accounts and native Codex settings.</p>
+      <pre><code>gateway uninstall</code></pre>
+      <p>More: <a href="services.html">the service</a>, <a href="health.html">health checks</a>, <a href="diagnostics.html">diagnostics</a>.</p>
+    </section>
+
+    <section id="troubleshooting" data-section>
+      <div class="section-number">09 / RECOVERY</div>
+      <h2>Find where it stopped.</h2>
+      <p>Start with <code>gateway doctor</code> on the Mac that has the problem. It checks the configuration, accounts, service, tunnel and Codex registration in turn.</p>
+      <div class="table-wrap"><table><thead><tr><th>Symptom</th><th>Next step</th></tr></thead><tbody>
+        <tr><td>Added models are missing</td><td>Quit Codex normally once and reopen it. Then run <code>gateway desktop status</code> and <code>gateway doctor</code>.</td></tr>
+        <tr><td>“Model not supported with a ChatGPT account”</td><td>Start a new chat with the gateway model selected. An existing native chat cannot switch to it.</td></tr>
+        <tr><td>Model provider <code>gatefox</code> (or <code>subscription_gateway</code>) not found</td><td>Run <code>gateway desktop register</code> on the Mac that owns the chat's project, then reopen the chat. It registers both of the gateway's ids.</td></tr>
+        <tr><td>An extra Mac sees no models</td><td>Check that the main Mac is awake, then run <code>gateway doctor</code> on the extra Mac to test the tunnel.</td></tr>
+        <tr><td>The Claude app shows no GateFox models</td><td>Quit the Claude app with ⌘Q and run <code>gateway claude-desktop configure --direct --apply</code> again; it refuses to write while the app is open.</td></tr>
+          <tr><td>Claude app: “Some saved settings can't be used as written: inferenceGatewayBaseUrl”</td><td>Choose <strong>Cancel</strong>, not Save. Quit the app, update GateFox and run the configure command again; the app accepts <code>http://</code> only on this Mac.</td></tr>
+          <tr><td>Claude app: “SSH host … is not allowed by your organization's managed settings”</td><td>Add that address with another <code>--ssh-host</code> in the configure command. The app checks the address the SSH alias resolves to.</td></tr>
+          <tr><td>An answer stops early</td><td>Check <code>gateway service status</code>. Keep the chat and logs; the gateway does not retry on another account.</td></tr>
+      </tbody></table></div>
+      <p>When asking for help, share versions, timestamps and error messages. Never share client tokens, account tokens or request bodies.</p>
+      <p class="notice"><strong>Everything else</strong> is in <a href="reference.html">All docs</a>, a searchable list of every topic with when to read it. Want to help, including with Linux and Windows? See the <a href="roadmap.html">roadmap</a>.</p>
+    </section>
+    <footer><img src="assets/favicon.png" width="24" height="24" alt=""><span>GateFox · Guide<br><small>Your accounts. One model list.</small></span><a href="#overview">Back to top ↑</a></footer>
+  </main>
+</body>
+</html>

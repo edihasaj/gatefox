@@ -1,0 +1,15 @@
+{
+  "name": "GateFox",
+  "short_name": "GateFox",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f3eb",
+  "theme_color": "#ba3c19",
+  "icons": [
+    {
+      "src": "/assets/logo.png",
+      "sizes": "256x256",
+      "type": "image/png"
+    }
+  ]
+}

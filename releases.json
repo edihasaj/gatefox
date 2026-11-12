@@ -1,0 +1,258 @@
+{
+  "repository": "edihasaj/gatefox",
+  "latest": {
+    "version": "2.0.1",
+    "tag": "v2.0.1",
+    "url": "https://github.com/edihasaj/gatefox/releases/tag/v2.0.1",
+    "publishedAt": "2026-11-12T16:47:11.000Z",
+    "appAssetName": "GateFox-2.0.1-macos-arm64.zip",
+    "backendAssetName": "gatefox-2.0.1-macos-arm64.tar.gz",
+    "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v2.0.1/GateFox-2.0.1-macos-arm64.zip",
+    "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v2.0.1/gatefox-2.0.1-macos-arm64.tar.gz",
+    "notes": "- GateFox checks for app updates when opened or activated and every five minutes\n  while active. Available updates appear above every page and in the sidebar,\n  with an install action and a clear quit-to-finish action after staging. Failed\n  checks show a retry action. The existing signed updater preserves running chats."
+  },
+  "releases": [
+    {
+      "version": "2.0.1",
+      "tag": "v2.0.1",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v2.0.1",
+      "publishedAt": "2026-11-12T16:47:11.000Z",
+      "appAssetName": "GateFox-2.0.1-macos-arm64.zip",
+      "backendAssetName": "gatefox-2.0.1-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v2.0.1/GateFox-2.0.1-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v2.0.1/gatefox-2.0.1-macos-arm64.tar.gz",
+      "notes": "- GateFox checks for app updates when opened or activated and every five minutes\n  while active. Available updates appear above every page and in the sidebar,\n  with an install action and a clear quit-to-finish action after staging. Failed\n  checks show a retry action. The existing signed updater preserves running chats."
+    },
+    {
+      "version": "1.9.8",
+      "tag": "v1.9.8",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.9.8",
+      "publishedAt": "2026-11-12T15:10:35.000Z",
+      "appAssetName": "GateFox-1.9.8-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.9.8-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.8/GateFox-1.9.8-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.8/gatefox-1.9.8-macos-arm64.tar.gz",
+      "notes": "- An unused phone connection no longer blocks updates. The native relay kept each remote\n  stream's engine running until the stream closed, and while its cloud connection failed with\n  `409 Conflict` the SDK's idle sweep never closed it, so one stream on macbook-server held an\n  old release for more than eight hours and left the rollout at `process_version_pending`. The\n  relay now ends a session after 10 minutes with no traffic, no running turn and no request or\n  approval waiting (`idle_released`). The phone reconnects on its next use."
+    },
+    {
+      "version": "1.9.7",
+      "tag": "v1.9.7",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.9.7",
+      "publishedAt": "2026-11-12T13:27:52.000Z",
+      "appAssetName": "GateFox-1.9.7-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.9.7-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.7/GateFox-1.9.7-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.7/gatefox-1.9.7-macos-arm64.tar.gz",
+      "notes": "- The tailnet listener now works with the App Store build of Tailscale. That build is sandboxed\n  and could not write the certificate to the gateway's state directory (\"operation not\n  permitted\"), so the listener stayed closed. The gateway now reads the certificate and key from\n  `tailscale cert` output, checks that they match, and keeps them in memory only. The copy that\n  1.9.6 wrote is removed."
+    },
+    {
+      "version": "1.9.6",
+      "tag": "v1.9.6",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.9.6",
+      "publishedAt": "2026-11-12T11:36:13.000Z",
+      "appAssetName": "GateFox-1.9.6-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.9.6-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.6/GateFox-1.9.6-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.6/gatefox-1.9.6-macos-arm64.tar.gz",
+      "notes": "- The tailnet listener serves HTTPS. Claude Desktop accepts a plain `http://` gateway only on\n  loopback, and its configuration window drops any other `http://` URL when it saves, so the\n  1.9.3 endpoint could not be used. The gateway now serves the tailnet with this Mac's own\n  Tailscale certificate (Let's Encrypt, from `tailscale cert`), fetches and renews it itself,\n  and stays closed on the tailnet without one. `gateway claude-desktop configure --direct\n  --tailnet` writes the `https://NAME.ts.net:PORT` endpoint. The tailnet must allow HTTPS\n  certificates. The Mac app's Tailscale binary runs as its command line from the background\n  service (`TAILSCALE_BE_CLI=1`); without it, it tried to open its GUI and the certificate was\n  never fetched. 1.9.5 was not published."
+    },
+    {
+      "version": "1.9.4",
+      "tag": "v1.9.4",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.9.4",
+      "publishedAt": "2026-11-12T10:53:34.000Z",
+      "appAssetName": "GateFox-1.9.4-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.9.4-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.4/GateFox-1.9.4-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.4/gatefox-1.9.4-macos-arm64.tar.gz",
+      "notes": "- The phone reaches a Mac again after ChatGPT 26.1106.51428, and that Mac shares its native\n  chats again. The update ships the Codex 0.167.0-alpha.4.1 app engine, which the remote relay\n  refused (\"requires the matching Codex CLI build\") and paused as `failing`, while the shared\n  host reported native sharing unavailable. Its remote-control transport and processor, state\n  migrations and `auth.json` format are byte-identical to the admitted 0.167.0-alpha.3.2. The\n  rebuilt relay passed its 47 tests, the upstream `remote_control` suite (165) and the relay\n  end-to-end check against the signed engine, and the engine passed every stdio and Unix\n  shared-native phase with and without an explicit host engine path."
+    },
+    {
+      "version": "1.9.3",
+      "tag": "v1.9.3",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.9.3",
+      "publishedAt": "2026-11-11T22:22:28.000Z",
+      "appAssetName": "GateFox-1.9.3-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.9.3-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.3/GateFox-1.9.3-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.3/gatefox-1.9.3-macos-arm64.tar.gz",
+      "notes": "- Claude Desktop Code sessions can run on another machine over SSH while using this Mac's\n  gateway. Claude Desktop sends such a session's inference from the remote host and refuses\n  a loopback endpoint for it, so the gateway can now also listen on this Mac's own Tailscale\n  addresses when the configuration sets `\"tailnetListener\": true`. Only tailnet peers are\n  accepted, and every request still needs the client token. `gateway claude-desktop\n  configure --direct --tailnet --ssh-host HOST` points the profile at that address and\n  writes the `sshHostAllowlist` that makes the app offer SSH environments. The listener is\n  off by default and follows a live configuration edit without a restart."
+    },
+    {
+      "version": "1.9.2",
+      "tag": "v1.9.2",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.9.2",
+      "publishedAt": "2026-11-11T14:35:06.000Z",
+      "appAssetName": "GateFox-1.9.2-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.9.2-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.2/GateFox-1.9.2-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.2/gatefox-1.9.2-macos-arm64.tar.gz",
+      "notes": "- The gateway can serve Claude Desktop itself. `gateway claude-desktop configure --direct`\n  points the app's profile at the gateway's own port and lists one row per catalog model,\n  including GPT accounts, local models and API models. The separate adapter process and\n  the private inference gateway are no longer needed for a new setup; both stay supported.\n  The gateway resolves the same Claude-safe model IDs the adapter used, clamps an effort\n  the route does not offer, and answers `GET /v1/models` in Anthropic's shape for a client\n  that sends `anthropic-version` or `x-api-key`. Other clients keep the alias list.\n- Claude Desktop configuration can opt into native `behavesAs` model metadata\n  with `--native-model-metadata`. Secondary reasoning models keep stable opaque\n  IDs, while older saved-chat routes remain accepted and explicit effort caps\n  survive migration. The existing mapping remains the default."
+    },
+    {
+      "version": "1.9.1",
+      "tag": "v1.9.1",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.9.1",
+      "publishedAt": "2026-11-11T11:50:52.000Z",
+      "appAssetName": "GateFox-1.9.1-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.9.1-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.1/GateFox-1.9.1-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.1/gatefox-1.9.1-macos-arm64.tar.gz",
+      "notes": "- Claude Fable 5.2 and Mythos 5.1 now advertise a 1M context window instead of 200K.\n  Fable 5.2 runs through the Claude CLI's `[1m]` variant, because CLI 2.1.299 does not\n  yet recognize the model and runs its plain ID at 200K. Its gateway alias keeps the\n  plain ID, so saved chats keep working. Codex previously limited Fable 5.2 chats to\n  about 180K, so a chat switched to it after compaction could fail with \"ran out of room\n  in the model's context window\". Sonnet 4.6 and Haiku 4.5 stay at 200K: on a\n  subscription, Sonnet's 1M variant needs paid usage credits, and Haiku has none."
+    },
+    {
+      "version": "1.9.0",
+      "tag": "v1.9.0",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.9.0",
+      "publishedAt": "2026-11-10T17:26:57.000Z",
+      "appAssetName": "GateFox-1.9.0-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.9.0-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.0/GateFox-1.9.0-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.9.0/gatefox-1.9.0-macos-arm64.tar.gz",
+      "notes": "- Codex app context items that arrive as a `function_call_output` with a name but no\n  `call_id` (such as `codex_apps_open_page`) are rewritten once, before any provider,\n  as a user context message `<external_NAME>…</external_NAME>`. They previously failed\n  every gateway turn on Claude and other translated routes with \"Responses request\n  contains invalid or unsupported data\". Request telemetry counts them as `contextOutputs`."
+    },
+    {
+      "version": "1.8.9",
+      "tag": "v1.8.9",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.8.9",
+      "publishedAt": "2026-11-10T15:44:03.000Z",
+      "appAssetName": "GateFox-1.8.9-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.8.9-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.9/GateFox-1.8.9-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.9/gatefox-1.8.9-macos-arm64.tar.gz",
+      "notes": "- A provider can set `cacheMissLimit` (3 to 12, default 3) to allow more measured\n  large cache misses in a row before the five-minute cache-safety stop. DeepSeek on\n  OpenRouter builds its prefix cache asynchronously, so a fresh Flash worker could be\n  paused after three cold requests although its cache was still warming. Unknown usage\n  and refusals keep the two-miss limit, and other providers are unchanged."
+    },
+    {
+      "version": "1.8.8",
+      "tag": "v1.8.8",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.8.8",
+      "publishedAt": "2026-11-10T14:52:03.000Z",
+      "appAssetName": "GateFox-1.8.8-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.8.8-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.8/GateFox-1.8.8-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.8/gatefox-1.8.8-macos-arm64.tar.gz",
+      "notes": "- Chat Completions servers (local Qwen through vLLM) now report every context overflow\n  as `context_length_exceeded`, including vLLM's \"max_tokens must be at least 1, got 0\"\n  for a prompt that fills the window exactly and overflow wording without the usual token\n  counts. Codex then compacts instead of ending the turn with an upstream error.\n- A conversation that keeps overflowing a Chat Completions provider stops reaching it\n  after 25 consecutive refusals within ten minutes. The client gets one non-retryable\n  error that asks for a fresh worker with a compact handoff, instead of trimming one\n  history item per request for an hour. Any completed request resets the count."
+    },
+    {
+      "version": "1.8.7",
+      "tag": "v1.8.7",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.8.7",
+      "publishedAt": "2026-11-10T10:51:11.000Z",
+      "appAssetName": "GateFox-1.8.7-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.8.7-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.7/GateFox-1.8.7-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.7/gatefox-1.8.7-macos-arm64.tar.gz",
+      "notes": "- Large chats get one additional request to recover from two measured cache misses.\n  If reuse still fails, the five-minute cooldown has a fixed deadline that retries\n  cannot extend. After the cooldown, one recovery request can check whether the\n  provider cache is working again. Unknown cache usage and provider refusals retain\n  their earlier spending limits. The error reports the remaining wait and preserves\n  the chat history.\n\n- Linux rollout checks verify external component executables through procfs,\n  so minimal hosts without `lsof` can attest a live tunnel while mismatched\n  executables and process start stamps remain pending."
+    },
+    {
+      "version": "1.8.6",
+      "tag": "v1.8.6",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.8.6",
+      "publishedAt": "2026-11-09T20:58:31.000Z",
+      "appAssetName": "GateFox-1.8.6-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.8.6-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.6/GateFox-1.8.6-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.6/gatefox-1.8.6-macos-arm64.tar.gz",
+      "notes": "- Fixed a rolling-update regression introduced in 1.8.5: changing the gateway auth\n  command spelling and deadline made retained native writers reject new desktop and\n  SSH connections. New clients can attach using the earlier metadata only after\n  proving both command aliases execute identical code for the same managed install.\n  Endpoints, credential arguments, client settings and the existing writer stay exact."
+    },
+    {
+      "version": "1.8.5",
+      "tag": "v1.8.5",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.8.5",
+      "publishedAt": "2026-11-09T17:48:59.000Z",
+      "appAssetName": "GateFox-1.8.5-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.8.5-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.5/GateFox-1.8.5-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.5/gatefox-1.8.5-macos-arm64.tar.gz",
+      "notes": "- Provider token authentication uses a lightweight CLI path instead of importing the\n  entire provider/service stack. New auth rows permit a bounded 15-second cold start,\n  and new generated command references prefer `gatefox`. Existing `gateway` and\n  `harness-gateway` launchers remain compatible. Fresh installs select GateFox config\n  and install folders and export the canonical `gatefox` command from all launchers.\n\n- The sidebar brand is only GateFox. The Harness Gateway subtitle and its spoken\n  accessibility label have been removed.\n\n- The macOS app includes a **Submit an issue** link in the sidebar that opens\n  the GateFox feedback board in the default browser."
+    },
+    {
+      "version": "1.8.4",
+      "tag": "v1.8.4",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.8.4",
+      "publishedAt": "2026-11-09T15:18:55.000Z",
+      "appAssetName": "GateFox-1.8.4-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.8.4-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.4/GateFox-1.8.4-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.4/gatefox-1.8.4-macos-arm64.tar.gz",
+      "notes": "- Home Linux CI now runs successfully with portable platform checks, bounded test\n  memory and deterministic asynchronous test waits. Published release versions and\n  changelog entries are connected to the landing page.\n\n- Chat-registry caches invalidate when file permissions or ownership change,\n  even when the filesystem reports the same modification and change timestamps.\n\n- `gatefox chats migrate --apply` is blocked only by processes on the same Codex home: an\n  engine with another `CODEX_HOME` (such as Mission Runtime's `~/.codex-primary`), a test\n  run, or an inference-only `gateway serve` no longer stops it. A process without\n  `CODEX_HOME` counts as `~/.codex`."
+    },
+    {
+      "version": "1.8.3",
+      "tag": "v1.8.3",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.8.3",
+      "publishedAt": "2026-11-09T12:32:50.000Z",
+      "appAssetName": "GateFox-1.8.3-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.8.3-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.3/GateFox-1.8.3-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.3/gatefox-1.8.3-macos-arm64.tar.gz",
+      "notes": "- The app shows GateFox once in the sidebar, with Harness Gateway beneath it.\n  The window title text is hidden and the footer shows only the version."
+    },
+    {
+      "version": "1.8.2",
+      "tag": "v1.8.2",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.8.2",
+      "publishedAt": "2026-11-09T11:58:42.000Z",
+      "appAssetName": "GateFox-1.8.2-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.8.2-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.2/GateFox-1.8.2-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.2/gatefox-1.8.2-macos-arm64.tar.gz",
+      "notes": "- A cancelled Claude turn whose interrupt times out no longer blocks the chat for\n  an hour. Gateway deliberately closes that CLI and permits a new session on the\n  next caller request, subject to the cache guard. Genuine crashes still keep\n  their replay holds, and the cancelled request is never replayed automatically."
+    },
+    {
+      "version": "1.8.1",
+      "tag": "v1.8.1",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.8.1",
+      "publishedAt": "2026-11-09T11:23:41.000Z",
+      "appAssetName": "GateFox-1.8.1-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.8.1-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.1/GateFox-1.8.1-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.1/gatefox-1.8.1-macos-arm64.tar.gz",
+      "notes": "- The package is `@edihasaj/gatefox`. The installer and app builder still accept a backend\n  packaged as `@edihasaj/harness-gateway` or `@edihasaj/subscription-gateway`. The Claude\n  Desktop help and errors, the Grok config marker (an old marker is replaced, never\n  duplicated), the native app's type and Swift package, and the README now say GateFox.\n  The README links the 1.8.0 GateFox download.\n\n- `gatefox chats migrate` moves saved gateway chats from the provider id\n  `subscription_gateway` to `gatefox`. Without `--apply` it only reports. With `--apply`\n  it needs ChatGPT and the service stopped, rewrites the provider in each rollout's\n  first line (including the engine's compressed `.zst` rollouts), copies\n  `state_5.sqlite`, then moves the chat rows. `--revert` moves them back. Both ids stay\n  registered.\n\n- The app's rename to GateFox.app leaves `Harness Gateway.app` as a link to it. launchd\n  keeps the loaded service's old program path until the next login, and the service plan\n  stores the old app's Node path for the Claude components; without the link, a service\n  restart failed with exit 78 and the Claude adapter could not start until the next login."
+    },
+    {
+      "version": "1.8.0",
+      "tag": "v1.8.0",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.8.0",
+      "publishedAt": "2026-11-09T09:33:41.000Z",
+      "appAssetName": "GateFox-1.8.0-macos-arm64.zip",
+      "backendAssetName": "gatefox-1.8.0-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.0/GateFox-1.8.0-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.8.0/gatefox-1.8.0-macos-arm64.tar.gz",
+      "notes": "- A Claude chat whose login fails before any reply, tool result or queued message no\n  longer stays blocked behind a crash hold. The next request tries the saved login again.\n  A failure after the turn produced output keeps the hold, because the turn may have\n  advanced. See `docs/claude-sessions.md`.\n\n- A Claude chat whose login fails before any reply, tool result or queued message no\n  longer stays blocked behind a crash hold. The next request tries the saved login again.\n  A failure after the turn produced output keeps the hold, because the turn may have\n  advanced. See `docs/claude-sessions.md`.\n\n- The app is GateFox.app, published as `GateFox-VERSION-macos-arm64.zip` with\n  `gatefox-VERSION-macos-arm64.tar.gz`, under the standard `vVERSION` tag only. A Mac\n  updated from 1.7.x first gets the new app at its old `Harness Gateway.app` path; at its\n  next launch the app renames itself to `GateFox.app` beside it, relaunches, and moves\n  the service and the command-line runtime to the new path. Permissions stay, because\n  the bundle identifier and signature are unchanged. The rename waits while an update is\n  unfinished. See `docs/macos-updates.md`.\n\n- The installer also writes a `gatefox` command, with the same contents as\n  `harness-gateway` and `gateway`, which keep working. An update run by a 1.7.x app adds\n  it at the next install, because that updater refuses receipts it does not know.\n\n- Fresh installations use `~/.local/share/gatefox` and\n  `~/Library/Application Support/GateFox` (`~/.config/gatefox` on Linux). A Mac installed\n  earlier keeps its `subscription-gateway` folders; nothing moves. The signed service\n  launcher, the updater, uninstall and the app accept both.\n\n- The Claude Desktop profile and the ChatGPT sign-in agent are named GateFox. A profile\n  created as Harness Gateway is still selected.\n\n- After a service restart, a desktop, relay session or SSH listener no longer takes the\n  native ChatGPT engine away from the gateway host. The new host's claim could lose to the\n  old host that was still exiting; the next client then started its own private engine, and\n  every later client joined it, so rollout stayed `native_owner_pending` until every client\n  disconnected. While no private engines hold the native home, a refused client now asks\n  the host again for up to 20 seconds instead.\n\n- New gateway chats are recorded with the provider id `gatefox`. Chats saved earlier keep\n  `subscription_gateway`, which every engine still registers and every list still shows,\n  so nothing needs reopening. `gateway desktop register` publishes a native row for both\n  ids, so ChatGPT's own engine opens either. The native-config guard refuses both ids.\n  Executors carry `GATEFOX_EXECUTOR` (and the older marker). The patched SDK is\n  `gateway-executor-v4`. See `docs/harness-identity.md` and `docs/gatefox-rename.md`.\n\n- gatefox.dev has search and sharing metadata on every page: canonical URLs, Open Graph\n  and Twitter cards with a share image per page, JSON-LD, `robots.txt`, a sitemap with\n  images and a web manifest. The deploy adds the IndexNow key file."
+    },
+    {
+      "version": "1.7.8",
+      "tag": "v1.7.8",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.7.8",
+      "publishedAt": "2026-11-08T21:44:14.000Z",
+      "appAssetName": "Harness-Gateway-1.7.8-macos-arm64.zip",
+      "backendAssetName": "harness-gateway-1.7.8-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.7.8/Harness-Gateway-1.7.8-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.7.8/harness-gateway-1.7.8-macos-arm64.tar.gz",
+      "notes": "- Macs that share the native ChatGPT engine can share the Codex 0.167.0-alpha.3.2 app\n  engine again. It passed every stdio and Unix shared-native check, with and without\n  an explicit host engine path. Until now such a Mac stayed `native_owner_pending`\n  and ran native chats in private engines."
+    },
+    {
+      "version": "1.7.7",
+      "tag": "v1.7.7",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.7.7",
+      "publishedAt": "2026-11-08T20:55:09.000Z",
+      "appAssetName": "Harness-Gateway-1.7.7-macos-arm64.zip",
+      "backendAssetName": "harness-gateway-1.7.7-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.7.7/Harness-Gateway-1.7.7-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.7.7/harness-gateway-1.7.7-macos-arm64.tar.gz",
+      "notes": "- The remote relay accepts the Codex 0.167.0-alpha.3.2 app engine that ChatGPT\n  26.1103.41825 shipped on 8 November. The installed relay refused it after a service\n  restart and paused as `failing`, so the phone could not reach that Mac. Its\n  remote-control transport, state migrations and `auth.json` format are unchanged from\n  the admitted 0.166.0-alpha.6. Native sharing on the host still waits for its own check."
+    },
+    {
+      "version": "1.7.6",
+      "tag": "v1.7.6",
+      "url": "https://github.com/edihasaj/gatefox/releases/tag/v1.7.6",
+      "publishedAt": "2026-11-08T19:12:49.000Z",
+      "appAssetName": "Harness-Gateway-1.7.6-macos-arm64.zip",
+      "backendAssetName": "harness-gateway-1.7.6-macos-arm64.tar.gz",
+      "appDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.7.6/Harness-Gateway-1.7.6-macos-arm64.zip",
+      "backendDownloadUrl": "https://github.com/edihasaj/gatefox/releases/download/v1.7.6/harness-gateway-1.7.6-macos-arm64.tar.gz",
+      "notes": "- The app updater now also accepts standard `vVERSION` release tags and the GateFox\n  release names (`GateFox-VERSION-macos-arm64.zip` holding `GateFox.app`, and\n  `gatefox-VERSION-macos-arm64.tar.gz`). A release must carry `app-update.json` to\n  count as an app update, so command-line-only releases are ignored. This prepares\n  the 1.8.0 rename; 1.7.6 itself keeps the Harness Gateway names.\n\n- A public [roadmap](docs/roadmap.md) lists the next steps for contributors: the\n  Claude apps, DeepSeek, and a Chat Completions ingress for other harnesses, each\n  with a GitHub issue.\n\n- The project is now GateFox (https://gatefox.dev, `edihasaj/gatefox`). The app's\n  window, Dock and menu name, permission prompts and update messages say GateFox.\n  The app file stays `Harness Gateway.app` for now, and the bundle ID, service\n  labels, folders, Codex provider ID and Claude Desktop profile name are unchanged,\n  so installed Macs and their updates keep working.\n\n- The README and the guide now start with a single-Mac setup: install, connect your\n  accounts, start the service. Adding more Macs is a separate, optional chapter. The\n  long README moved to `docs/cli.md`, and `docs/reference.html` is a new searchable\n  index of every doc, generated from each page's summary by `npm run docs:site` and\n  checked by `npm run check`."
+    }
+  ]
+}

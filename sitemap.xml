@@ -1,0 +1,413 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+  <url>
+    <loc>https://gatefox.dev/</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/index.jpg</image:loc><image:title>GateFox</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/reference.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/reference.jpg</image:loc><image:title>All docs</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/activity.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/activity.jpg</image:loc><image:title>Execution activity</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/api-mode.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/api-mode.jpg</image:loc><image:title>API mode</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/api-providers.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/api-providers.jpg</image:loc><image:title>API providers</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/app-management.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/app-management.jpg</image:loc><image:title>Setup and connections</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/app-server-compaction.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/app-server-compaction.jpg</image:loc><image:title>Compaction and model changes</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/app-server-forks.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/app-server-forks.jpg</image:loc><image:title>Processes and prediction forks</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/app-server-guide-chat-lifecycle.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/app-server-guide-chat-lifecycle.jpg</image:loc><image:title>Chat and executor lifecycle</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/app-server-guide-login-environment.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/app-server-guide-login-environment.jpg</image:loc><image:title>Desktop login environment</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/app-server-guide-model-catalog.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/app-server-guide-model-catalog.jpg</image:loc><image:title>Model catalog, picker and usage counters</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/app-server-guide-native-relay.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/app-server-guide-native-relay.jpg</image:loc><image:title>Native relay, remote control and native sharing</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/app-server.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/app-server.jpg</image:loc><image:title>Codex app-server adapter</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/architecture.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/architecture.jpg</image:loc><image:title>Architecture</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/auto-latest-models.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/auto-latest-models.jpg</image:loc><image:title>Automatic latest models</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/availability-agent-tests.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/availability-agent-tests.jpg</image:loc><image:title>Availability and agent tasks</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/availability.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/availability.jpg</image:loc><image:title>Availability</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/background-commands.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/background-commands.jpg</image:loc><image:title>Background command completion</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/brand.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/brand.jpg</image:loc><image:title>Gateway identity</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/cache-safety.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/cache-safety.jpg</image:loc><image:title>Large-context cache safety</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/ci-cost-policy.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/ci-cost-policy.jpg</image:loc><image:title>CI cost policy</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/ci.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/ci.jpg</image:loc><image:title>CI</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/claude-desktop-direct.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/claude-desktop-direct.jpg</image:loc><image:title>Claude Desktop (the Claude app)</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/claude-desktop-native-metadata.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/claude-desktop-native-metadata.jpg</image:loc><image:title>Native model metadata</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/claude-desktop.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/claude-desktop.jpg</image:loc><image:title>Claude Desktop adapter (earlier setup)</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/claude-native-trial.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/claude-native-trial.jpg</image:loc><image:title>Native Claude picker experiment</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/claude-sessions.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/claude-sessions.jpg</image:loc><image:title>Live Claude sessions</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/cli.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/cli.jpg</image:loc><image:title>Command and provider reference</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/client-tool-reachability.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/client-tool-reachability.jpg</image:loc><image:title>Client tool reachability</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/codex-unread-trial.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/codex-unread-trial.jpg</image:loc><image:title>Offline unread dots: guarded client candidate</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/component-origins.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/component-origins.jpg</image:loc><image:title>Component origins</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/copilot-sessions.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/copilot-sessions.jpg</image:loc><image:title>Live Copilot sessions</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/desktop-legacy-force-cli.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/desktop-legacy-force-cli.jpg</image:loc><image:title>Legacy FORCE_CLI cleanup</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/desktop-update-compatibility.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/desktop-update-compatibility.jpg</image:loc><image:title>ChatGPT update compatibility</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/diagnostics-guide-provider-failures.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/diagnostics-guide-provider-failures.jpg</image:loc><image:title>Provider failures and cache diagnostics</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/diagnostics-guide-runtime-events.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/diagnostics-guide-runtime-events.jpg</image:loc><image:title>Runtime and execution events</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/diagnostics-guide-usage-and-versions.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/diagnostics-guide-usage-and-versions.jpg</image:loc><image:title>Usage ledger and loaded releases</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/diagnostics.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/diagnostics.jpg</image:loc><image:title>Diagnostics</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/docs-site.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/docs-site.jpg</image:loc><image:title>Docs site</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/engine-exits.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/engine-exits.jpg</image:loc><image:title>Engine exits and stream recovery</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/gatefox-rename.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/gatefox-rename.jpg</image:loc><image:title>Names and compatibility</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/grok-sessions.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/grok-sessions.jpg</image:loc><image:title>Grok subscription</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/harness-identity.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/harness-identity.jpg</image:loc><image:title>Harness identity</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/health.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/health.jpg</image:loc><image:title>Health watchdog</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/macos-app.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/macos-app.jpg</image:loc><image:title>GateFox for macOS</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/macos-background-item.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/macos-background-item.jpg</image:loc><image:title>One app identity in Login Items</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/macos-permissions.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/macos-permissions.jpg</image:loc><image:title>Gateway permissions on macOS</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/macos-updates.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/macos-updates.jpg</image:loc><image:title>macOS app updates</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/managed-routing.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/managed-routing.jpg</image:loc><image:title>Managed worker routing</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/mcp-credentials.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/mcp-credentials.jpg</image:loc><image:title>MCP credentials on an unattended Mac</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/messages.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/messages.jpg</image:loc><image:title>Messages clients</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/native-launcher-verification.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/native-launcher-verification.jpg</image:loc><image:title>Native launcher verification</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/native-remote-setup.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/native-remote-setup.jpg</image:loc><image:title>Native relay setup and builds</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/native-remote-troubleshooting.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/native-remote-troubleshooting.jpg</image:loc><image:title>Native relay troubleshooting</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/native-remote.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/native-remote.jpg</image:loc><image:title>Native connected machines</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/node-repl.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/node-repl.jpg</image:loc><image:title>node_repl on gateway rows</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/provider-reuse.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/provider-reuse.jpg</image:loc><image:title>Conversation reuse</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/provider-updates.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/provider-updates.jpg</image:loc><image:title>Provider updates</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/reboot-recovery.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/reboot-recovery.jpg</image:loc><image:title>Recovery after a reboot</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/release-validation.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/release-validation.jpg</image:loc><image:title>Release validation checks</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/RELEASING.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/RELEASING.jpg</image:loc><image:title>Release</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/remote.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/remote.jpg</image:loc><image:title>Other Macs</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/responses-guide-protocol.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/responses-guide-protocol.jpg</image:loc><image:title>Responses protocol, streaming, and failures</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/responses-guide-providers.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/responses-guide-providers.jpg</image:loc><image:title>Responses provider adapters and images</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/responses-guide-tools.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/responses-guide-tools.jpg</image:loc><image:title>Responses tools across routes</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/responses.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/responses.jpg</image:loc><image:title>Responses support</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/roadmap.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/roadmap.jpg</image:loc><image:title>Roadmap</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/rollout.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/rollout.jpg</image:loc><image:title>Rollout readiness</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/service-install-recovery.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/service-install-recovery.jpg</image:loc><image:title>Legacy service installation recovery</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/services-consolidation.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/services-consolidation.jpg</image:loc><image:title>Service ownership and consolidation</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/services-releases.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/services-releases.jpg</image:loc><image:title>Service updates and release adoption</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/services-shared-executors.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/services-shared-executors.jpg</image:loc><image:title>Shared chat and native execution</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/services.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/services.jpg</image:loc><image:title>One managed service</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/speed-controls.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/speed-controls.jpg</image:loc><image:title>Speed controls</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/travel-recovery.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/travel-recovery.jpg</image:loc><image:title>Sleep, travel, and reconnects</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/upstream-capacity.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/upstream-capacity.jpg</image:loc><image:title>Upstream capacity discovery</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/verification-desktop.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/verification-desktop.jpg</image:loc><image:title>Desktop verification evidence</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/verification-release-history.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/verification-release-history.jpg</image:loc><image:title>Historical release evidence</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/verification-subscriptions.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/verification-subscriptions.jpg</image:loc><image:title>Subscription verification evidence</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/verification-transport.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/verification-transport.jpg</image:loc><image:title>Transport and installer verification</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/verification.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/verification.jpg</image:loc><image:title>Verification</image:title></image:image>
+  </url>
+  <url>
+    <loc>https://gatefox.dev/changelog.html</loc>
+    <lastmod>2026-11-12</lastmod>
+    <image:image><image:loc>https://gatefox.dev/assets/og/changelog.jpg</image:loc><image:title>Changelog</image:title></image:image>
+  </url>
+</urlset>
