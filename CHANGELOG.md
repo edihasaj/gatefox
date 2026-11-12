@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.9.4 — 2026-11-12
+
+- The phone reaches a Mac again after ChatGPT 26.1106.51428, and that Mac shares its native
+  chats again. The update ships the Codex 0.167.0-alpha.4.1 app engine, which the remote relay
+  refused ("requires the matching Codex CLI build") and paused as `failing`, while the shared
+  host reported native sharing unavailable. Its remote-control transport and processor, state
+  migrations and `auth.json` format are byte-identical to the admitted 0.167.0-alpha.3.2. The
+  rebuilt relay passed its 47 tests, the upstream `remote_control` suite (165) and the relay
+  end-to-end check against the signed engine, and the engine passed every stdio and Unix
+  shared-native phase with and without an explicit host engine path.
+
 ## 1.9.3 — 2026-11-11
 
 - Claude Desktop Code sessions can run on another machine over SSH while using this Mac's

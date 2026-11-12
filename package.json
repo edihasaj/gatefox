@@ -1,6 +1,6 @@
 {
   "name": "@edihasaj/gatefox",
-  "version": "1.9.3",
+  "version": "1.9.4",
   "private": true,
   "type": "module",
   "description": "A local gateway that serves subscription and API providers to agent harnesses through Responses and Messages APIs.",
