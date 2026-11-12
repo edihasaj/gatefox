@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
-import { createServer, request, type Server } from "node:http";
+import { createServer, request as httpRequest, type Server } from "node:http";
+import { request } from "node:https";
 import { createServer as createSocketServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,11 +34,29 @@ test("a peer outside the tailnet is closed before it is served", () => {
   for (const address of ["192.168.1.5", "127.0.0.1", "::1", "::ffff:100.100.1.1", "100.128.0.1", undefined]) { const socket = peer(address); assert.equal(admitTailnetPeer(socket), false, String(address)); assert.equal(socket.destroyed, true); }
 });
 
-function get(port: number, host: string, path = "/health", headers: Record<string, string> = {}): Promise<{ status?: number; body: string }> {
+/** A self-signed pair for ::1, standing in for this Mac's Tailscale certificate. */
+function selfSigned(cn: string): { cert: Buffer; key: Buffer } | undefined {
+  try {
+    const directory = mkdtempSync(join(tmpdir(), "gatefox-tailnet-tls-"));
+    execFileSync("openssl", ["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", join(directory, "k.pem"), "-out", join(directory, "c.pem"), "-days", "2", "-subj", `/CN=${cn}`, "-addext", "subjectAltName=IP:::1"], { stdio: "ignore" });
+    return { cert: readFileSync(join(directory, "c.pem")), key: readFileSync(join(directory, "k.pem")) };
+  } catch { return undefined; }
+}
+const first = selfSigned("first.tailnet.test");
+const renewed = selfSigned("renewed.tailnet.test");
+const noOpenssl = (!first || !renewed) && "openssl is not available";
+
+function get(port: number, host: string, path = "/health", headers: Record<string, string> = {}, ca: Buffer = first?.cert ?? Buffer.alloc(0)): Promise<{ status?: number; body: string; cn?: string }> {
   return new Promise((resolve, reject) => {
-    const req = request({ host, port, path, headers, agent: false }, res => { let body = ""; res.setEncoding("utf8"); res.on("data", chunk => { body += chunk; }); res.on("end", () => resolve({ status: res.statusCode, body })); });
+    const req = request({ host, port, path, headers, agent: false, ca }, res => {
+      const cn = (res.socket as import("node:tls").TLSSocket).getPeerCertificate?.().subject?.CN;
+      let body = ""; res.setEncoding("utf8"); res.on("data", chunk => { body += chunk; }); res.on("end", () => resolve({ status: res.statusCode, body, cn: typeof cn === "string" ? cn : undefined }));
+    });
     req.on("error", reject); req.end();
   });
+}
+function plainGet(port: number, host: string): Promise<number | undefined> {
+  return new Promise((resolve, reject) => { const req = httpRequest({ host, port, path: "/health", agent: false }, res => { res.resume(); resolve(res.statusCode); }); req.on("error", reject); req.end(); });
 }
 const listening = async (server: Server): Promise<number> => { await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve)); return (server.address() as AddressInfo).port; };
 async function ipv6Loopback(): Promise<boolean> {
@@ -44,42 +64,51 @@ async function ipv6Loopback(): Promise<boolean> {
   return new Promise(resolve => { probe.once("error", () => resolve(false)); probe.listen(0, "::1", () => probe.close(() => resolve(true))); });
 }
 
-test("the tailnet socket hands connections to the same server, follows the setting, and ends with the server", async t => {
+test("the tailnet socket speaks TLS to the same server, follows the setting and the certificate, and ends with the server", { skip: noOpenssl }, async t => {
   if (!await ipv6Loopback()) { t.skip("IPv6 loopback is unavailable on this machine"); return; }
   let served = 0;
   const server = createServer((_req, res) => { served++; res.end("same handler"); });
   const port = await listening(server);
   try {
     // The test stands in ::1 for a Tailscale address and admits its own loopback peer.
-    const seams = { addresses: () => ["::1"], admit: () => true };
+    const seams = { addresses: () => ["::1"], admit: () => true, tls: first! };
     assert.deepEqual(await reconcileTailnetListener(server, false, seams), []);
     await assert.rejects(get(port, "::1"));
     assert.deepEqual(await reconcileTailnetListener(server, true, seams), ["::1"]);
     assert.deepEqual(tailnetListenerAddresses(), ["::1"]);
-    assert.deepEqual(await get(port, "::1"), { status: 200, body: "same handler" });
+    assert.deepEqual(await get(port, "::1"), { status: 200, body: "same handler", cn: "first.tailnet.test" });
     assert.deepEqual(await reconcileTailnetListener(server, true, seams), ["::1"], "a second reconcile keeps the bound socket");
+    await assert.rejects(plainGet(port, "::1"), "plain http is not served on the tailnet socket");
+    // Without a certificate nothing listens there: Claude Desktop would refuse plain http:// anyway.
+    assert.deepEqual(await reconcileTailnetListener(server, true, { ...seams, tls: undefined }), []);
+    await assert.rejects(get(port, "::1"));
+    assert.deepEqual(await reconcileTailnetListener(server, true, seams), ["::1"]);
+    // A renewed certificate is used for the next handshake without rebinding.
+    assert.deepEqual(await reconcileTailnetListener(server, true, { ...seams, tls: renewed! }), ["::1"]);
+    assert.equal((await get(port, "::1", "/health", {}, renewed!.cert)).cn, "renewed.tailnet.test");
+    assert.deepEqual(await reconcileTailnetListener(server, true, seams), ["::1"]);
     // Without the test's admission, a loopback peer is not on the tailnet and is closed unread.
     assert.deepEqual(await reconcileTailnetListener(server, false, seams), []);
-    assert.deepEqual(await reconcileTailnetListener(server, true, { addresses: () => ["::1"] }), ["::1"]);
+    assert.deepEqual(await reconcileTailnetListener(server, true, { addresses: () => ["::1"], tls: first! }), ["::1"]);
     const before = served;
     await assert.rejects(get(port, "::1"));
     assert.equal(served, before, "a refused peer never reaches the handler");
     // An address that left the interface is closed on the next reconcile.
-    assert.deepEqual(await reconcileTailnetListener(server, true, { addresses: () => [] }), []);
+    assert.deepEqual(await reconcileTailnetListener(server, true, { addresses: () => [], tls: first! }), []);
     assert.deepEqual(await reconcileTailnetListener(server, true, seams), ["::1"]);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
   assert.deepEqual(tailnetListenerAddresses(), [], "closing the server closes its tailnet sockets");
   await assert.rejects(get(port, "::1"));
 });
 
-test("an address that cannot be bound is skipped without failing the server", async () => {
+test("an address that cannot be bound is skipped without failing the server", { skip: noOpenssl }, async () => {
   const server = createServer((_req, res) => res.end());
   await listening(server);
-  try { assert.deepEqual(await reconcileTailnetListener(server, true, { addresses: () => ["192.0.2.55"], admit: () => true }), []); }
+  try { assert.deepEqual(await reconcileTailnetListener(server, true, { addresses: () => ["192.0.2.55"], admit: () => true, tls: first! }), []); }
   finally { await reconcileTailnetListener(server, false); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 
-test("the real gateway behind the tailnet socket still requires the client token", async t => {
+test("the real gateway behind the tailnet socket still requires the client token", { skip: noOpenssl }, async t => {
   if (!await ipv6Loopback()) { t.skip("IPv6 loopback is unavailable on this machine"); return; }
   const state = await mkdtemp(join(tmpdir(), "gatefox-tailnet-gateway-"));
   const provider: Provider = { async *infer() { yield { type: "done", usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } }; } };
@@ -87,7 +116,7 @@ test("the real gateway behind the tailnet socket still requires the client token
   const server = await startGateway(validateConfig({ version: 1, port: 0, stateDirectory: state, providers }), () => provider, undefined, { onFailure() {} });
   try {
     const port = (server.address() as AddressInfo).port;
-    assert.deepEqual(await reconcileTailnetListener(server, true, { addresses: () => ["::1"], admit: () => true }), ["::1"]);
+    assert.deepEqual(await reconcileTailnetListener(server, true, { addresses: () => ["::1"], admit: () => true, tls: first! }), ["::1"]);
     const anthropic = { "anthropic-version": "2023-06-01" };
     const refused = await get(port, "::1", "/v1/models", anthropic);
     assert.equal(refused.status, 401); assert.match(refused.body, /Gateway client token required/);
@@ -110,11 +139,13 @@ test("tailnetListener is an explicit boolean and needs a local inference server"
 });
 
 const rows: ClaudeDirectListRow[] = [{ id: "claude-opus-5-5", displayName: "Claude · Opus 5.5", alias: "claude/claude-opus-5-5", native: true, efforts: ["low", "high"] }];
-const tailnet = { endpoint: "http://100.91.110.87:3457", tokenFile: "/private/state/client-token" };
+const tailnet = { endpoint: "https://edis-macbook-pro-1.tail5ea051.ts.net:3457", tokenFile: "/private/state/client-token" };
 
 test("SSH hosts are written to the allowlist only with an endpoint the remote host can reach", () => {
   const profile = buildClaudeDirectProfile({}, rows, { ...tailnet, sshHosts: ["macbook-server", "MacBook-Server", "*.dev.example.com", "100.73.86.17"] });
-  assert.equal(profile.inferenceGatewayBaseUrl, "http://100.91.110.87:3457");
+  assert.equal(profile.inferenceGatewayBaseUrl, "https://edis-macbook-pro-1.tail5ea051.ts.net:3457");
+  // Claude Desktop drops an http:// endpoint that is not loopback when it saves the profile.
+  for (const endpoint of ["http://100.91.110.87:3457", "http://edis-macbook-pro-1.tail5ea051.ts.net:3457"]) assert.throws(() => buildClaudeDirectProfile({}, rows, { ...tailnet, endpoint }), /http:\/\/ only on loopback/, endpoint);
   assert.deepEqual(profile.sshHostAllowlist, ["macbook-server", "*.dev.example.com", "100.73.86.17"]);
   // Without --ssh-host the profile's own list stays, whatever it holds.
   assert.deepEqual(buildClaudeDirectProfile({ sshHostAllowlist: ["studio"] }, rows, tailnet).sshHostAllowlist, ["studio"]);

@@ -12,10 +12,15 @@ import { releaseState, watchForUpgrade } from "./self-update.js";
 import { retainRunningRelease, type ReleaseLease } from "./release-retention.js";
 import { hostAutoLatestMaintenance } from "./model-auto-latest/hosting.js";
 import { refreshApiModeCatalog } from "./desktop-api-mode.js";
-import { reconcileTailnetListener } from "./tailnet-listener.js";
+import { reconcileTailnetListener, type TailnetTls } from "./tailnet-listener.js";
+import { fetchTailnetCertificate } from "./tailnet-tls.js";
 
 /** How often an enabled tailnet listener picks up a Tailscale address that appeared or left, for example after login. */
 const tailnetRefreshMs = 30_000;
+/** Tailscale renews the certificate well before it expires; asking twice a day picks the renewal up in time. */
+const certificateRefreshMs = 12 * 60 * 60_000;
+/** After a failed fetch (Tailscale logged out, HTTPS certificates off), wait this long before asking again. */
+const certificateRetryMs = 5 * 60_000;
 
 /** Releases that agree on this number can take over a running server in place. */
 export const serveRuntimeVersion = 1;
@@ -32,13 +37,33 @@ export async function startServeRuntime(configPath: string, port?: number, serve
   configureTelemetry(config.stateDirectory, "server"); startErrorReports(config.stateDirectory, "server");
   // The tailnet socket follows the configuration this runtime adopts, including a live edit, and this Mac's addresses.
   let tailnetEnabled = config.tailnetListener === true; let tailnetTarget: GatewayServer | undefined;
-  const syncTailnet = () => { if (tailnetTarget) void reconcileTailnetListener(tailnetTarget, tailnetEnabled); };
+  let stateDirectory = config.stateDirectory; let tailnetTls: TailnetTls | undefined;
+  let certificateDue = 0; let certificateValidTo = 0; let tailnetSyncing: Promise<void> | undefined;
+  const certificate = async () => {
+    const now = Date.now();
+    if (now < certificateDue && (!tailnetTls || certificateValidTo - now > certificateRefreshMs)) return;
+    const fetched = await fetchTailnetCertificate(stateDirectory);
+    if (fetched) { tailnetTls = { cert: fetched.cert, key: fetched.key }; certificateValidTo = fetched.validTo; certificateDue = now + certificateRefreshMs; }
+    else {
+      certificateDue = now + certificateRetryMs;
+      // An expired pair is never served.
+      if (certificateValidTo <= now) tailnetTls = undefined;
+      telemetry("tailnet_listener", { state: "certificate_unavailable" });
+    }
+  };
+  const syncTailnet = (): Promise<void> => tailnetSyncing ??= (async () => {
+    try {
+      if (!tailnetTarget) return;
+      if (tailnetEnabled) await certificate();
+      if (tailnetTarget) await reconcileTailnetListener(tailnetTarget, tailnetEnabled, { tls: tailnetTls });
+    } catch { /* The next tick retries; the loopback listener is unaffected. */ } finally { tailnetSyncing = undefined; }
+  })();
   // API mode's model list lives in a file the app's own engine reads, so it follows every configuration this service
   // adopts. No timer and no background item of its own: the hook runs on the apply that is already happening, and only
   // at all while the API mode receipt exists.
   const live = new LiveConfig(configPath, config, port, applied => {
     void refreshApiModeCatalog(applied);
-    tailnetEnabled = applied.tailnetListener === true; syncTailnet();
+    tailnetEnabled = applied.tailnetListener === true; stateDirectory = applied.stateDirectory; void syncTailnet();
   });
   const options = { configRejection: () => live.rejection };
   const handler: GatewayHandler = await createGatewayHandler(config, undefined, () => live.current(), options);
@@ -49,8 +74,9 @@ export async function startServeRuntime(configPath: string, port?: number, serve
     await new Promise<void>((done, fail) => { listener.once("error", fail); listener.listen(config.port, "127.0.0.1", () => { listener.off("error", fail); done(); }); });
   }
   await previous?.stop();
-  tailnetTarget = gateway; await reconcileTailnetListener(gateway, tailnetEnabled);
-  const tailnetTimer = setInterval(syncTailnet, tailnetRefreshMs); tailnetTimer.unref();
+  // The certificate may take a moment to fetch; the loopback listener already serves meanwhile.
+  tailnetTarget = gateway; void syncTailnet();
+  const tailnetTimer = setInterval(() => { void syncTailnet(); }, tailnetRefreshMs); tailnetTimer.unref();
   // The existing app-owned service tree hosts model maintenance. Never register another background item.
   const maintenance = hostAutoLatestMaintenance(configPath, "server");
   // Model metadata follows each provider's own catalog: shortly after start, then every six hours.
