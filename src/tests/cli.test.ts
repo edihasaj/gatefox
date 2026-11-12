@@ -21,7 +21,7 @@ test("npm-style CLI symlinks execute help and version without a provider configu
   const options = { env: { ...process.env, GATEWAY_CONFIG: join(directory, "absent.json") }, cwd: directory };
   const version = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8")).version;
   assert.equal((await run(process.execPath, [entry, "--version"], options)).stdout.trim(), version);
-  assert.match((await run(process.execPath, [entry, "--help"], options)).stdout, /gateway codex-config/);
+  assert.match((await run(process.execPath, [entry, "--help"], options)).stdout, /gatefox codex-config/);
   await assert.rejects(run(process.execPath, [entry, "providers"], options), /Configuration file is unreadable/);
 });
 

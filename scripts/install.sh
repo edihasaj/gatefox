@@ -26,6 +26,7 @@ shasum -a 256 -c checksums.txt >/dev/null
 version=$(./runtime/bin/node -p 'JSON.parse(require("fs").readFileSync("package/package.json","utf8")).version')
 # A fresh installation uses share/gatefox; one from before 1.8.0 keeps share/subscription-gateway.
 root="$prefix/share/gatefox"
+if [ -L "$root" ] && [ "$(readlink "$root")" = "$prefix/share/subscription-gateway" ]; then root="$prefix/share/subscription-gateway"; fi
 if [ ! -e "$root" ] && [ -e "$prefix/share/subscription-gateway" ]; then root="$prefix/share/subscription-gateway"; fi
 release="$root/releases/$version"
 mkdir -p "$root/releases" "$prefix/bin"
@@ -162,7 +163,7 @@ import {writeFileSync} from 'node:fs';
 const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
 const [root,launcher,...files]=process.argv.slice(2);
 const appRuntime=root+'/app-runtime';
-const text='#!/bin/sh\n# Managed by subscription-gateway installer\n# App runtime is registered by Harness Gateway.\nruntime='+quote(root+'/current/runtime/bin/node')+'\nif [ -L '+quote(appRuntime)+' ] || [ -e '+quote(appRuntime)+' ]; then\n runtime='+quote(appRuntime+'/bin/node')+'\n [ -x "$runtime" ] || { echo \'Harness Gateway app runtime is unavailable.\' >&2; exit 78; }\n PATH='+quote(appRuntime+'/bin')+':"${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"\n export PATH\nfi\nGATEWAY_COMMAND='+quote(launcher)+' GATEWAY_INSTALLED=1 exec "$runtime" '+quote(root+'/current/package/dist/cli.js')+' "$@"\n';
+const text='#!/bin/sh\n# Managed by subscription-gateway installer\n# App runtime is registered by GateFox.\nruntime='+quote(root+'/current/runtime/bin/node')+'\nif [ -L '+quote(appRuntime)+' ] || [ -e '+quote(appRuntime)+' ]; then\n runtime='+quote(appRuntime+'/bin/node')+'\n [ -x "$runtime" ] || { echo \'GateFox app runtime is unavailable.\' >&2; exit 78; }\n PATH='+quote(appRuntime+'/bin')+':"${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"\n export PATH\nfi\nGATEWAY_COMMAND='+quote(launcher)+' GATEWAY_INSTALLED=1 exec "$runtime" '+quote(root+'/current/package/dist/cli.js')+' "$@"\n';
 for(const file of files)writeFileSync(file,text,{flag:'wx'});
 JS
 chmod 700 "$launcher.new" "$compat.new" ${staged_gatefox:+"$staged_gatefox"}

@@ -23,6 +23,11 @@ app keeps that file. Settings lets
 you choose a different existing JSON file. The app remembers that path locally;
 it does not copy your provider registrations or change your model choices.
 
+The explicit [GateFox path migration](gatefox-rename.md#explicit-path-migration)
+can publish canonical GateFox entries for an older installation. Verified aliases
+keep the original configuration and preference identity. It never restarts the
+app or service; apply it only during a coordinated maintenance window.
+
 Open **Add connection** to connect an account, API, or local server and choose
 its models. An unconfigured Mac opens this wizard automatically. Existing
 configurations open directly in the dashboard. See

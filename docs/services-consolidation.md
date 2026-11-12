@@ -10,56 +10,27 @@ Return to the [managed service overview](services.md).
 
 ## The name macOS shows
 
-For CLI-only installations, macOS names a LaunchAgent item after the first `ProgramArguments`
-entry, and shows that name in System Settings, Login Items, under "Allow in the
-Background", and in the "Background Items Added" notification. Since 0.4.7 the
-installer writes `~/.local/bin/harness-gateway` as the managed launcher, plus
-`~/.local/bin/gateway` as a second launcher with the same contents (both set
-`GATEWAY_COMMAND` to the `harness-gateway` path), so every plist written from
-either command names `harness-gateway`. The service, desktop login, native
-relay (its `--gateway` argument) and consolidated plans all use it. The
-login environment agent (0.4.7, and a standalone registration today) runs
-`<state>/harness-gateway-login-env`, a private script, instead of `launchctl`, so it is
-not listed as "launchctl" either. With the unified service it does not exist since
-0.4.8. The launchd labels stay `com.edihasaj.subscription-gateway*`.
+The signed GateFox app owns the existing background job and supplies its name and
+fox icon. It does not create another LaunchAgent. The launchd labels and management
+markers remain stable compatibility identities for installed services and recovery
+records. See [macOS background identity](macos-background-item.md).
 
-Older plists keep working, and a rollback to 0.4.5 needs no plist change: the checks that
-read a plist's arguments (service plans, login consolidation, consolidation collection, uninstall)
-accept both `.../bin/gateway` and `.../bin/harness-gateway`. A running standalone native relay
-whose plist names `bin/gateway` in its `--gateway` argument counts as the same registration as
-one written now within the same release, so `gateway native install` there no longer asks you to uninstall it first; across releases the relay path differs too and the existing refusal stands. An existing
-`harness-gateway` link to `gateway` is replaced by the launcher file; any other file with that
-name is left alone and the installer refuses to continue. Plists name `harness-gateway` only
-while that file carries the installer's marker line; otherwise they keep `gateway`.
+New registrations prefer the installer-owned `gatefox` launcher. The `gateway` and
+`harness-gateway` commands remain supported. A historical layout without a verified
+GateFox launcher keeps its working launcher.
 
-Migration is one-time and happens when a plist is next written by 0.4.7:
+On an already unified Mac, `gatefox service install` can update the program in the
+owned service plist and standalone desktop login plist. It changes only the first
+program argument, preserves the label and other arguments, and accepts a managed
+historical launcher only when its preferred sibling is managed too. A running
+service receives no bootout, kickstart or bootstrap. The result reports
+`programRewritten` and `desktopRewritten`, with `appliesAt: "next login"` when
+launchd will read the changed file later. Existing behavior for a stopped service
+still applies: installation may load or start it, reporting `appliesAt: "now"`.
 
-- A standalone service: `gateway service install`, which upgrades the running
-  service when it is idle like any other install.
-- `gateway service consolidate --apply` and `--next-login` write a newly unified
-  service with the new name. They do nothing to a Mac that is already unified.
-- `gateway desktop register` rewrites the standalone desktop login agent and, without a
-  unified service, the login environment agent.
-- An already-unified service (a `service-plan.json` exists, as on every production Mac):
-  `gateway service install` renames the launcher in the service plist file, and in the
-  desktop login plist if one exists. It changes only the first program argument, writes
-  atomically, keeps the label, and does only that and what it always did (start the service if it
-  is not loaded or has no process). It never boots out, restarts or replaces a running
-  service, and it rewrites a file only when it carries the gateway's marker and names a managed
-  `gateway` launcher whose sibling `harness-gateway` is managed too. The result says
-  `programRewritten: true|false` (and `desktopRewritten`), and `appliesAt: "next login"`:
-  launchd reads the file at its next load, so the running service keeps its current definition
-  until you log in again (or restart through `launchctl bootout` and `bootstrap`), and shows the
-  new name from then. `appliesAt` is `"now"` when that same call had to load a stopped service.
-  Run it once per Mac after installing 0.4.7.
-
-At the first load of a renamed plist macOS posts one "Background Items Added" notification
-for `harness-gateway`, and the old "gateway" entry disappears from the list once the old
-definition is no longer loaded, which is the next login for a unified service.
-The signed native app can attribute the existing gateway job to its fox identity
-without registering another job or restarting the service. See
-[macOS background identity](macos-background-item.md). This association does not
-change service ownership or replace consolidation.
+File naming does not authorize a restart. Coordinate service activation separately.
+The [explicit GateFox path migration](gatefox-rename.md#explicit-path-migration)
+previews its changes by default and refuses application while clients or jobs run.
 
 ## Preview and apply consolidation
 
@@ -113,7 +84,7 @@ timeout names which readiness condition never held (`status_not_current`,
 test paths while retaining the original relay home and connected-machine
 registration.
 
-With the unified service the gateway has exactly one background item, `harness-gateway`.
+With the unified service, the gateway has exactly one background item owned by GateFox.
 ChatGPT can start at login before this service has set `CODEX_CLI_PATH`, so the
 daemon (`gateway daemon`) runs `/bin/launchctl setenv CODEX_CLI_PATH <registered
 wrapper>` as its very first step, before consolidation, any wait or any child. It does so

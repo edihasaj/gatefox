@@ -132,6 +132,19 @@ test("uninstall moves both launchers to the Trash whichever one ran it, and leav
 
 const unifiedPlist = (program: string, config: string, extra = "") => servicePlist(process.execPath, "/unused/cli.js", config, "/tmp/service.log", "/usr/bin:/bin", program, "daemon") + extra;
 
+test("launcher migration prefers gatefox from either historical launcher, without changing the service label", async () => {
+  const l = await installed(); const file = join(l.root, `${label}.plist`), canonical = join(l.bin, "gatefox");
+  try {
+    await writeFile(canonical, "#!/bin/sh\n# Managed by subscription-gateway installer\n", { mode: 0o700 });
+    for (const name of ["gateway", "harness-gateway"]) {
+      const original = unifiedPlist(join(l.bin, name), "/unchanged.json"); await writeFile(file, original, { mode: 0o600 });
+      assert.equal(await renameLauncherInPlist(file), true);
+      assert.equal(await readFile(file, "utf8"), original.replace(`<string>${join(l.bin, name)}</string>`, `<string>${canonical}</string>`));
+      assert.equal(await renameLauncherInPlist(file), false);
+    }
+  } finally { await rm(l.root, { recursive: true, force: true }); }
+});
+
 test("an already-unified service plist is rewritten in place to harness-gateway, changing nothing else", async () => {
   const l = await installed(); const file = join(l.root, `${label}.plist`); const config = "/Users/x/Library/Application Support/gw & co/config.json";
   const legacy = join(l.bin, "gateway"); const harness = join(l.bin, "harness-gateway");

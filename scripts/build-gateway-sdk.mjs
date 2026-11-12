@@ -187,7 +187,7 @@ if (values.test) {
   }
   cpSync(join(sdk, 'LICENSE'), join(artifact, 'CODEX-LICENSE'));
   cpSync(join(sdk, 'NOTICE'), join(artifact, 'CODEX-NOTICE'));
-  writeFileSync(join(artifact, 'NOTICE'), 'Harness Gateway uses a separately compiled OpenAI Codex SDK for gateway-provider execution.\n' +
+  writeFileSync(join(artifact, 'NOTICE'), 'GateFox uses a separately compiled OpenAI Codex SDK for gateway-provider execution.\n' +
     'Executor identity, selected-model compaction and failed-turn queue preservation apply inside marked gateway executors.\n' +
     'Its dynamic-tool registration also exposes declared-deferred tools directly when the selected model cannot search.\n' +
     'Opt-in tracked background commands can deliver completion through the executor input loop without a goal.\n' +

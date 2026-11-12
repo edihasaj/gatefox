@@ -56,6 +56,13 @@ test("preview validates the same inputs without creating a registry link, state,
   await assert.rejects(lstat(join(f.install, "app-runtime"))); await assert.rejects(lstat(f.state));
 }));
 
+test("GateFox recognizes the exact previous Harness Gateway runtime wrapper before updating its name", () => fixture(async f => {
+  const previous = renderInstalledLauncher(f.install, f.gateway).replaceAll("GateFox", "Harness Gateway");
+  await writeFile(f.gateway, previous, { mode: 0o700 });
+  assert.equal(await associateAppRuntime(f.options()), true);
+  assert.match(await readFile(f.gateway, "utf8"), /App runtime is registered by GateFox/);
+}));
+
 test("both current managed launchers keep the shared harness command identity", () => fixture(async f => {
   const harness = join(f.home, ".local/bin/harness-gateway");
   await f.legacy(harness);

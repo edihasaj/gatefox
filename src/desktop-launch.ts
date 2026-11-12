@@ -25,7 +25,7 @@ export async function prepareDesktop(configPath: string, app = "/Applications/Ch
   // Only long-lived app-server sessions need translation. Startup diagnostics,
   // help/version and tooling run the original CLI before gateway state is read.
   // A gateway-internal CODEX_HOME inherited from an agent shell is never the user's native home (native-home-env.ts).
-  const content = '#!/bin/sh\n# Harness Gateway desktop adapter.\n' + wrapperHomeGuard(config.stateDirectory) + appServerSessionShellGuard() + 'if gateway_app_server_session "$@"; then exec ' + command + ' "$@"; fi\nexec ' + quoted(codex) + ' "$@"\n';
+  const content = '#!/bin/sh\n# GateFox desktop adapter.\n' + wrapperHomeGuard(config.stateDirectory) + appServerSessionShellGuard() + 'if gateway_app_server_session "$@"; then exec ' + command + ' "$@"; fi\nexec ' + quoted(codex) + ' "$@"\n';
   const wrapper = resolve(config.stateDirectory, `desktop-wrapper-${createHash("sha256").update(content).digest("hex").slice(0, 16)}`);
   try { const file = await open(wrapper, "wx", 0o700); try { await file.writeFile(content); await file.sync(); } finally { await file.close(); } }
   catch (error) {

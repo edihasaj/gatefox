@@ -416,7 +416,7 @@ final class GatewayModel: ObservableObject {
         let managed = managedConfiguration(homeDirectory: homeDirectory)
         let managedPath: String?
         if case let .managed(path) = managed { managedPath = path } else { managedPath = nil }
-        if let chosen = defaults.string(forKey: chosenConfigKey), !chosen.isEmpty { return (chosen, managedPath) }
+        if let chosen = defaults.string(forKey: chosenConfigKey), !chosen.isEmpty { return (GatewayLaunchConfiguration.identityConfigPath(chosen, homeDirectory: homeDirectory), managedPath) }
         return (managedPath ?? defaultConfigPath(homeDirectory: homeDirectory, exists: { FileManager.default.fileExists(atPath: $0) }), managedPath)
     }
 
@@ -424,7 +424,7 @@ final class GatewayModel: ObservableObject {
     static func defaultConfigPath(homeDirectory: URL, exists: (String) -> Bool) -> String {
         let gatefox = homeDirectory.appending(path: "Library/Application Support/GateFox/gateway.json").path
         let legacy = homeDirectory.appending(path: "Library/Application Support/Subscription Gateway/gateway.json").path
-        return exists(legacy) && !exists(gatefox) ? legacy : gatefox
+        return exists(legacy) && !exists(gatefox) ? legacy : GatewayLaunchConfiguration.identityConfigPath(gatefox, homeDirectory: homeDirectory)
     }
 
     private enum ManagedConfiguration { case missing, managed(String), unsafe }

@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import { nativeEngineExecutable, nativeOwnerEngineExecutable } from "./native-engine-path.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { executionHostHome, executionCapabilities, readOwnerRecord, receiptPidAlive, socketIdentity, socketAnswers, sameSocketIdentity, type ExecutionCapability } from "./execution-host-storage.js";
+import { configIdentityPath } from "./paths.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import { object, type Message } from "./app-server-connection.js";
 import type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
@@ -91,7 +92,7 @@ export class ExecutionHostClient {
     if (ownership === "live" || ownership === "unconfirmed") blocked();
     if (!configPath) return;
     const owner = await readOwnerRecord(resolve(executionHostHome(configPath, nativeHome), "owner.json"));
-    if (owner.owner && owner.owner.configPath === resolve(configPath) && owner.owner.nativeHome === resolve(nativeHome) && executionCapabilities(owner.owner.capabilities).includes("native")
+    if (owner.owner && owner.owner.configPath === configIdentityPath(resolve(configPath)) && owner.owner.nativeHome === resolve(nativeHome) && executionCapabilities(owner.owner.capabilities).includes("native")
       && (await receiptAlive(owner.owner, owner.mtimeMs) || (owner.owner.native ? await receiptAlive(owner.owner.native, owner.mtimeMs) : false))) blocked();
   }
   /**
@@ -131,7 +132,7 @@ export class ExecutionHostClient {
     const capabilities = executionCapabilities(owner.capabilities);
     if (!capabilities.includes(capability)) return required ? fail(Object.assign(new Error(`Shared ${capability} executor is not enabled in the configured host`), { capabilityAbsent: capability })) : {};
     const socketPath = resolve(home, "host.sock");
-    if (owner.configPath !== resolve(configPath) || owner.nativeHome !== resolve(nativeHome) || owner.socketPath !== socketPath) return fail(new Error("Shared executor ownership does not match this adapter"));
+    if (owner.configPath !== configIdentityPath(resolve(configPath)) || owner.nativeHome !== resolve(nativeHome) || owner.socketPath !== socketPath) return fail(new Error("Shared executor ownership does not match this adapter"));
     // Only native sharing runs the app's own engine. A gateway-only host runs its pinned runtime, guarded by that runtime's
     // checksum, so an app update that moves, relinks or removes the app's codex must not make its host look foreign.
     try {

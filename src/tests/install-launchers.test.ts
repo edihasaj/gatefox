@@ -40,6 +40,19 @@ if (process.argv.includes("--hold") || process.argv.includes("--legacy-hold") ||
 }
 const managedFile = `#!/bin/sh\n${marker}\nexec echo old\n`;
 
+test("installing after a GateFox path migration preserves the original backing root", apple, async () => {
+  const l = await layout();
+  try {
+    const backing = join(l.prefix, "share/subscription-gateway");
+    await mkdir(backing, { recursive: true, mode: 0o700 });
+    await writeFile(join(backing, ".gateway-installation"), "subscription-gateway\n", { mode: 0o600 });
+    await symlink(backing, join(l.prefix, "share/gatefox"));
+    assert.equal((await l.install()).code, 0);
+    assert.equal((await lstat(join(l.prefix, "share/gatefox"))).isSymbolicLink(), true);
+    assert.match(await readFile(l.bin("gatefox"), "utf8"), /share\/subscription-gateway\/current/);
+  } finally { await l.cleanup(); }
+});
+
 test("an installation from before 1.8.0 keeps updating in share/subscription-gateway; a fresh one uses share/gatefox", apple, async () => {
   const l = await layout();
   try {
@@ -78,7 +91,7 @@ test("an older install's harness-gateway link to gateway is replaced by the laun
     await writeFile(l.bin("gateway"), managedFile, { mode: 0o700 }); await symlink("gateway", l.bin("harness-gateway"));
     assert.equal((await l.install()).code, 0);
     assert.equal((await lstat(l.bin("harness-gateway"))).isSymbolicLink(), false, "no longer a link");
-    assert.ok((await readFile(l.bin("harness-gateway"), "utf8")).includes("# App runtime is registered by Harness Gateway."), "and the canonical managed launcher");
+    assert.ok((await readFile(l.bin("harness-gateway"), "utf8")).includes("# App runtime is registered by GateFox."), "and the canonical managed launcher");
     assert.equal(await readFile(l.bin("gateway"), "utf8"), await readFile(l.bin("harness-gateway"), "utf8"));
   } finally { await l.cleanup(); }
 });

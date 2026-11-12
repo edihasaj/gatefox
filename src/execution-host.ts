@@ -16,6 +16,7 @@ import { engineActivity } from "./execution-host-activity.js";
 import { engineBusy, skewWatch } from "./execution-host-skew.js";
 import { pendingGatewaySdkReader, type PendingGatewaySdk } from "./self-update.js";
 import { telemetry } from "./telemetry.js";
+import { configIdentityPath } from "./paths.js";
 import { installedReleaseRuntime, type InstalledReleaseRuntime } from "./installed-release-runtime.js";
 import type { ReleaseLease } from "./release-retention.js";
 import { executableRunsCodeMode } from "./codex-native-rows.js";
@@ -126,6 +127,7 @@ const skewWatchMs = (): number => Number(process.env.GATEWAY_SKEW_WATCH_MS) || 1
  * `skewRefused(release)`: this host refused an adapter that runs the gateway SDK of the installed `release`, so that newer release is waiting urgently.
  */
 export async function startExecutionHost(options: ExecutionHostOptions): Promise<{ close(): Promise<void>; prepareStop(): Promise<boolean>; prepareQuietStop?(quietMs?: number): Promise<QuietStop | undefined>; skewRefused?(release: string): boolean; resume(): void }> {
+  options = { ...options, configPath: configIdentityPath(resolve(options.configPath)) };
   const home = executionHostHome(options.configPath, options.nativeHome); const socketPath = resolve(home, "host.sock");
   if (Buffer.byteLength(socketPath) > 103) throw new Error("Execution host Unix socket path exceeds 103 bytes");
   const requested = executionCapabilities(options.capabilities); const resolveRuntime = options.gatewayRuntime ?? gatewaySdkRuntime;

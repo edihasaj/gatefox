@@ -3,6 +3,31 @@ import XCTest
 @testable import GatewayApp
 
 final class GatewayLaunchConfigurationTests: XCTestCase {
+    func testRenameAliasRetainsExistingPreferencesAndConfigurationIdentity() throws {
+        let root = URL(fileURLWithPath: "/tmp/gatefox-launch-\(UUID().uuidString)").resolvingSymlinksInPath()
+        let parent = root.appending(path: "Library/Application Support")
+        let backing = parent.appending(path: "Subscription Gateway")
+        let alias = parent.appending(path: "GateFox")
+        try FileManager.default.createDirectory(at: backing, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let oldConfig = backing.appending(path: "gateway.json").path
+        let newConfig = alias.appending(path: "gateway.json").path
+        try "{}".write(toFile: oldConfig, atomically: true, encoding: .utf8)
+        let old = try GatewayLaunchConfiguration.read(arguments: ["GateFox", "--config", oldConfig, "--data-home", root.path])
+        old.defaults.set("rename-proof", forKey: "GateFox.rename.test")
+        defer { old.defaults.removeObject(forKey: "GateFox.rename.test") }
+        try FileManager.default.createSymbolicLink(atPath: alias.path, withDestinationPath: backing.path)
+        let migrated = try GatewayLaunchConfiguration.read(arguments: ["GateFox", "--config", newConfig, "--data-home", root.path])
+        XCTAssertEqual(migrated.configPath, oldConfig)
+        XCTAssertEqual(migrated.defaults.string(forKey: "GateFox.rename.test"), "rename-proof")
+        try FileManager.default.removeItem(at: alias)
+        try FileManager.default.createSymbolicLink(atPath: alias.path, withDestinationPath: "Subscription Gateway")
+        XCTAssertEqual(GatewayLaunchConfiguration.identityConfigPath(newConfig, homeDirectory: root), oldConfig)
+        try FileManager.default.removeItem(at: alias)
+        try FileManager.default.createSymbolicLink(atPath: alias.path, withDestinationPath: "/unrelated")
+        XCTAssertEqual(GatewayLaunchConfiguration.identityConfigPath(newConfig, homeDirectory: root), newConfig)
+    }
+
     func testIsolatedLaunchUsesSeparateHomeAndPreferences() throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "gateway-launch-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])

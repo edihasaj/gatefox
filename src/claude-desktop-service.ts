@@ -67,7 +67,7 @@ export async function installClaudeDesktopService(configPath: string, deps: Clau
   const platform = deps.platform ?? process.platform;
   if (platform !== "darwin") throw new Error("Claude Desktop adapter installation currently supports macOS only");
   requireAbsolute(configPath, "--config");
-  throw new Error("Separate Claude Desktop LaunchAgents are no longer supported. Keep the existing adapter running and use gateway service claude-desktop --on-restart to move it under the signed Harness Gateway.app service.");
+  throw new Error("Separate Claude Desktop LaunchAgents are no longer supported. Keep the existing adapter running and use gatefox service claude-desktop --on-restart to move it under the signed GateFox.app service.");
 }
 
 async function managedAdapter(home: string, configPath: string | undefined, execCommand: ClaudeDesktopExec, uid: number): Promise<Record<string, unknown> | undefined> {

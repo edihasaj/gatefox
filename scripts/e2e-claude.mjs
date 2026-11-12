@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// End-to-end check: a private Harness Gateway instance driven by the native Claude Code CLI.
+// End-to-end check: a private GateFox instance driven by the native Claude Code CLI.
 // Reads the caller's config, clones it into a throwaway sandbox, and proves one Read + Write
 // tool round-trip through the gateway. Nothing secret is logged: failures print a fixed stage.
 import { spawn } from "node:child_process";

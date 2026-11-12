@@ -49,49 +49,51 @@ import { providerCommand } from "./provider-tool-runtime.js";
 import { runAutoLatestCli } from "./auto-latest-cli.js";
 import { availabilityCommand } from "./availability/cli.js";
 import { activityCommand } from "./activity-cli.js";
+import { gatefoxMigrateCommand } from "./gatefox-migrate.js";
 
-const help = `gateway — local subscription and API inference
+const help = `GateFox — local subscription and API inference
 
-  gateway init [--config PATH]
-  gateway setup --from-config PATH [--config DESTINATION]
-  gateway setup --client --port PORT --token-file PATH [--config DESTINATION]
-  gateway desktop [--config PATH] [--native-home PATH]
-  gateway desktop register|unregister|status
-  gateway desktop api-mode [on|off|status] [--config PATH] [--model ALIAS]   Let the app run its own engine, with the gateway as its model provider (macOS)
-  gateway ssh register|unregister|status [--codex ORIGINAL_CLI_PATH]
-  gateway native install|status|uninstall [--codex MATCHING_CLI_PATH]
-  gateway uninstall
-  gateway tunnel install|status|uninstall --tunnel-id NAME [--host HOST --port PORT --remote-port PORT] [--reverse] [--ssh-config PATH]
-  gateway serve [--config PATH] [--port NUMBER]
-  gateway service install|status|restart|uninstall [--config PATH]
-  gateway service restart --force [--config PATH]   Stop and restart now even with Claude components (may interrupt Claude work)
-  gateway service restart --interrupt [--config PATH]   Restart now even while chats run or ChatGPT is open; ends every running turn
-  gateway service consolidate [--apply | --next-login] [--config PATH]
-  gateway service claude-desktop [--on-restart [--force]] [--config PATH]
-  gateway service shared-executors [--apply] [--disable] [--config PATH]
-  gateway service shared-native [--apply] [--disable] [--on-restart [--with-gateway]] [--config PATH]
-  gateway executor-host --config PATH --codex PATH --native-home PATH
-  gateway providers [--config PATH] [--json]
-  gateway discover PROVIDER [--select ID,ID] [--load] [--config PATH]
-  gateway catalog [--config PATH] [--model ALIAS]
-  gateway tool-search [on|off|status] [--config PATH]   Codex tool search through the gateway (opt-in bridge; default off)
-  gateway diagnostics [--since HOURS] [--config PATH]   Summarize local telemetry: turns, failures, cache hits, restarts
-  gateway chats migrate [--apply] [--revert]   Move saved chats from subscription_gateway to gatefox (quit ChatGPT and stop the service first)
-  gateway activity [--json] [--config PATH]   Inspect this execution host without resuming or changing chats
-  gateway versions [--json] [--check]   Real release of each running gateway process; --check exits 1 if any lags, 2 with no release to compare.
-  gateway health [--json] [--push] [--smoke]   Watchdog verdict: app update, releases, service, inference, failures. --push alerts a monitor; exit 0 ok, 1 warn, 2 fail, 3 push failed.
-  gateway rollout [--json] [--verify] [--config PATH]   Release readiness from loaded process, service, inference, execution-host and tool-canary evidence.
-  gateway availability [--json] [--wait MS]   What this Mac's gateway can serve now: local model health, load, quota and paid balance (facts only).
-  gateway login PROVIDER [--config PATH] [--account-email EMAIL] [--no-browser]
-  gateway doctor [--config PATH] [--json]
-  gateway codex-config --model ALIAS [--config PATH]
-  gateway codex-config --model ALIAS --endpoint URL --token-file PATH [--catalog PATH]
-  gateway claude-config --model ALIAS [--config PATH]
-  gateway claude-config --model ALIAS --endpoint URL --token-file PATH
-  gateway claude-desktop configure|serve|install|status [--help]
-  gateway codex-shim --config PATH --codex PATH -- CODEX_ARGUMENTS
-  gateway token [--config PATH]   Credential helper; prints the local client token.
-  gateway token --file PATH      Credential helper for a trusted remote gateway.
+  gatefox migrate [--apply] [--revert] [--json]   Preview or explicitly publish canonical paths; never starts or stops a service
+  gatefox init [--config PATH]
+  gatefox setup --from-config PATH [--config DESTINATION]
+  gatefox setup --client --port PORT --token-file PATH [--config DESTINATION]
+  gatefox desktop [--config PATH] [--native-home PATH]
+  gatefox desktop register|unregister|status
+  gatefox desktop api-mode [on|off|status] [--config PATH] [--model ALIAS]   Let the app run its own engine, with the gateway as its model provider (macOS)
+  gatefox ssh register|unregister|status [--codex ORIGINAL_CLI_PATH]
+  gatefox native install|status|uninstall [--codex MATCHING_CLI_PATH]
+  gatefox uninstall
+  gatefox tunnel install|status|uninstall --tunnel-id NAME [--host HOST --port PORT --remote-port PORT] [--reverse] [--ssh-config PATH]
+  gatefox serve [--config PATH] [--port NUMBER]
+  gatefox service install|status|restart|uninstall [--config PATH]
+  gatefox service restart --force [--config PATH]   Stop and restart now even with Claude components (may interrupt Claude work)
+  gatefox service restart --interrupt [--config PATH]   Restart now even while chats run or ChatGPT is open; ends every running turn
+  gatefox service consolidate [--apply | --next-login] [--config PATH]
+  gatefox service claude-desktop [--on-restart [--force]] [--config PATH]
+  gatefox service shared-executors [--apply] [--disable] [--config PATH]
+  gatefox service shared-native [--apply] [--disable] [--on-restart [--with-gateway]] [--config PATH]
+  gatefox executor-host --config PATH --codex PATH --native-home PATH
+  gatefox providers [--config PATH] [--json]
+  gatefox discover PROVIDER [--select ID,ID] [--load] [--config PATH]
+  gatefox catalog [--config PATH] [--model ALIAS]
+  gatefox tool-search [on|off|status] [--config PATH]   Codex tool search through the gateway (opt-in bridge; default off)
+  gatefox diagnostics [--since HOURS] [--config PATH]   Summarize local telemetry: turns, failures, cache hits, restarts
+  gatefox chats migrate [--apply] [--revert]   Move saved chats from subscription_gateway to gatefox (quit ChatGPT and stop the service first)
+  gatefox activity [--json] [--config PATH]   Inspect this execution host without resuming or changing chats
+  gatefox versions [--json] [--check]   Real release of each running gateway process; --check exits 1 if any lags, 2 with no release to compare.
+  gatefox health [--json] [--push] [--smoke]   Watchdog verdict: app update, releases, service, inference, failures. --push alerts a monitor; exit 0 ok, 1 warn, 2 fail, 3 push failed.
+  gatefox rollout [--json] [--verify] [--config PATH]   Release readiness from loaded process, service, inference, execution-host and tool-canary evidence.
+  gatefox availability [--json] [--wait MS]   What this Mac's gateway can serve now: local model health, load, quota and paid balance (facts only).
+  gatefox login PROVIDER [--config PATH] [--account-email EMAIL] [--no-browser]
+  gatefox doctor [--config PATH] [--json]
+  gatefox codex-config --model ALIAS [--config PATH]
+  gatefox codex-config --model ALIAS --endpoint URL --token-file PATH [--catalog PATH]
+  gatefox claude-config --model ALIAS [--config PATH]
+  gatefox claude-config --model ALIAS --endpoint URL --token-file PATH
+  gatefox claude-desktop configure|serve|install|status [--help]
+  gatefox codex-shim --config PATH --codex PATH -- CODEX_ARGUMENTS
+  gatefox token [--config PATH]   Credential helper; prints the local client token.
+  gatefox token --file PATH      Credential helper for a trusted remote gateway.
 
 Defaults: GATEWAY_CONFIG, ./gateway.local.json, then the installed user configuration.
 Help/version require no configuration. API keys are referenced by environment name.
@@ -111,6 +113,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv[0] === "rollout") { process.exitCode = await rolloutCommand(argv.slice(1)); return; }
   if (argv[0] === "availability") { process.exitCode = await availabilityCommand(argv.slice(1)); return; }
   if (argv[0] === "activity") { process.exitCode = await activityCommand(argv.slice(1)); return; }
+  if (argv[0] === "migrate" && !argv.some(arg => ["--help", "-h"].includes(arg))) return gatefoxMigrateCommand(argv.slice(1));
   if (argv.includes("--help") || argv.includes("-h")) { process.stdout.write(help); return; }
   if (argv.includes("--version")) { process.stdout.write(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version + "\n"); return; }
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: {

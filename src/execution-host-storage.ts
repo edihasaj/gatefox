@@ -10,6 +10,7 @@ import { withPrivateFileLock } from "./private-file-lock.js";
 import { fromPreviousBoot, ownerAlive, ownerStamp } from "./boot-identity.js";
 import { testSafeRoot } from "./test-root-guard.js";
 import { telemetry } from "./telemetry.js";
+import { configIdentityPath } from "./paths.js";
 
 export const executionHostMarker = "subscription-gateway-execution-host";
 // Bound receipt bytes, rather than the number of catalog generations loaded chats may retain.
@@ -36,7 +37,7 @@ export function executionHostRoot(): string { return executionHostRootOverride ?
 /** Tests keep host homes in a folder of their own; production never calls it. Undefined restores the real root. */
 export function setExecutionHostRootForTests(root?: string): void { executionHostRootOverride = root ? resolve(root) : undefined; }
 export function executionHostHome(configPath: string, nativeHome: string): string {
-  const scope = createHash("sha256").update(resolve(configPath) + "\0" + resolve(nativeHome)).digest("hex").slice(0, 16);
+  const scope = createHash("sha256").update(configIdentityPath(resolve(configPath)) + "\0" + resolve(nativeHome)).digest("hex").slice(0, 16);
   return resolve(executionHostRoot(), scope);
 }
 export function livePid(pid: number): boolean {

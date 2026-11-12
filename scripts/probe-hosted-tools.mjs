@@ -7,7 +7,7 @@
 // Privacy: the access token and account id stay in memory. Output holds only HTTP status, fixed error fields, a scrubbed
 // and capped error message, stream event types and output item types. No request body, response text or header value.
 // Uses real inference on the Codex subscription (one short request per case). `--dry-run` lists the cases offline.
-// Example: node scripts/probe-hosted-tools.mjs --config "$HOME/Library/Application Support/Subscription Gateway/gateway.json"
+// Example: node scripts/probe-hosted-tools.mjs --config "$HOME/Library/Application Support/GateFox/gateway.json"
 //   --output /tmp/FRESH_DIR/hosted-tools.json [--alias codex/gpt-6.1-sol] [--only web_search,tool_search] [--dry-run]
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';

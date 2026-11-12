@@ -44,14 +44,17 @@ function quote(value: string): string { return `'${value.replaceAll("'", "'\\''"
 
 /** The installed launcher always uses the app runtime when the verified registration link exists. */
 export function renderInstalledLauncher(root: string, command: string): string {
+  return brandedLauncher(root, command, "GateFox");
+}
+function brandedLauncher(root: string, command: string, brand: "GateFox" | "Harness Gateway"): string {
   const appRuntime = join(root, "app-runtime");
   return "#!/bin/sh\n" +
     "# Managed by subscription-gateway installer\n" +
-    "# App runtime is registered by Harness Gateway.\n" +
+    `# App runtime is registered by ${brand}.\n` +
     `runtime=${quote(join(root, "current/runtime/bin/node"))}\n` +
     `if [ -L ${quote(appRuntime)} ] || [ -e ${quote(appRuntime)} ]; then\n` +
     ` runtime=${quote(join(appRuntime, "bin/node"))}\n` +
-    " [ -x \"$runtime\" ] || { echo 'Harness Gateway app runtime is unavailable.' >&2; exit 78; }\n" +
+    ` [ -x \"$runtime\" ] || { echo '${brand} app runtime is unavailable.' >&2; exit 78; }\n` +
     ` PATH=${quote(join(appRuntime, "bin"))}:\"${"${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"}\"\n` +
     " export PATH\n" +
     "fi\n" +
@@ -137,7 +140,8 @@ function recognizedLauncher(bytes: Buffer, root: string, command: string): boole
   const variants = (path: string) => [path, path.replace(/^\/private\/var(?=\/|$)/, "/var").replace(/^\/private\/tmp(?=\/|$)/, "/tmp")];
   return variants(root).some(candidateRoot => variants(command).some(candidateCommand => {
     const bin = dirname(candidateCommand);
-    return launcherNames.some(name => bytes.equals(Buffer.from(renderInstalledLauncher(candidateRoot, join(bin, name)))) || bytes.equals(legacyLauncher(candidateRoot, join(bin, name))));
+    return launcherNames.some(name => bytes.equals(Buffer.from(renderInstalledLauncher(candidateRoot, join(bin, name)))) ||
+      bytes.equals(Buffer.from(brandedLauncher(candidateRoot, join(bin, name), "Harness Gateway"))) || bytes.equals(legacyLauncher(candidateRoot, join(bin, name))));
   }));
 }
 /** Derives an installation only from an exact installer launcher and verifies its root marker and template. */

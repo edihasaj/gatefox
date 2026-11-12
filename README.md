@@ -60,12 +60,12 @@ shasum -a 256 --ignore-missing -c SHA256SUMS
 tar -xzf "gatefox-$VERSION-macos-arm64.tar.gz"
 "./gatefox-$VERSION-macos-arm64/install"
 
-gateway init                       # private config, listens on 127.0.0.1 only
-gateway login claude               # sign in to each account you want
-gateway discover claude --load     # load the models it offers
-gateway service install            # keep it running in the background
-gateway desktop register           # add the models to the Codex app
-gateway doctor                     # check everything
+gatefox init                       # private config, listens on 127.0.0.1 only
+gatefox login claude               # sign in to each account you want
+gatefox discover claude --load     # load the models it offers
+gatefox service install            # keep it running in the background
+gatefox desktop register           # add the models to the Codex app
+gatefox doctor                     # check everything
 ```
 
 Quit Codex once and reopen it. New models appear after the native ones, with
@@ -74,7 +74,7 @@ labels such as **Claude · Opus 5.5**.
 **The Claude app.** Create a third-party configuration named `GateFox` once in the
 Claude app (**Developer → Configure Third-Party Inference…**, provider **Gateway**,
 base URL `http://127.0.0.1:3457`), quit it, then run
-`gateway claude-desktop configure --direct --apply`. The picker then lists your Claude
+`gatefox claude-desktop configure --direct --apply`. The picker then lists your Claude
 accounts first, then every other model. See [the Claude app guide](docs/claude-desktop-direct.md).
 
 ## Add another Mac (optional)
@@ -89,10 +89,10 @@ only a client token and an SSH tunnel; no account credentials are copied.
 ```sh
 # on the extra Mac, after installing the gateway
 umask 077; mkdir -p ~/.local/state/gatefox-client
-ssh you@main-mac 'gateway token' > ~/.local/state/gatefox-client/client-token
-gateway setup --client --port 3459 --token-file ~/.local/state/gatefox-client/client-token
-gateway tunnel install --tunnel-id main --host you@main-mac --port 3459 --remote-port 3457
-gateway desktop register && gateway doctor
+ssh you@main-mac 'gatefox token' > ~/.local/state/gatefox-client/client-token
+gatefox setup --client --port 3459 --token-file ~/.local/state/gatefox-client/client-token
+gatefox tunnel install --tunnel-id main --host you@main-mac --port 3459 --remote-port 3457
+gatefox desktop register && gatefox doctor
 ```
 
 To work in a project on another Mac over SSH from the Codex app or the Claude app, see
@@ -133,6 +133,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as desc
 
 GateFox was called Harness Gateway, and before that Subscription Gateway. The installer
 writes three launchers with the same contents: `gatefox`, `gateway` and `harness-gateway`,
-so existing scripts keep working. Examples here use `gateway`.
+so existing scripts keep working. Use `gatefox` for new commands.
 
 Existing saved chats remain supported; see [chat compatibility](docs/harness-identity.md).
+For older installations, `gatefox migrate --json` previews canonical GateFox paths
+with reversible aliases to the original storage. Application is explicit and needs
+a coordinated maintenance window. See [names and migration](docs/gatefox-rename.md).

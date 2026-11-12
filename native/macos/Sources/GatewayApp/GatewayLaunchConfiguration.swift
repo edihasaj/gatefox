@@ -40,12 +40,29 @@ struct GatewayLaunchConfiguration {
                 throw LaunchError.invalidOptions
             }
         }
-        let identity = selectedHome.path + "\n" + selected.path
+        let identityPath = identityConfigPath(selected.path, homeDirectory: selectedHome)
+        let identity = selectedHome.path + "\n" + identityPath
         let hash = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
         guard let preferences = UserDefaults(suiteName: "com.edihasaj.harness-gateway.configuration.\(hash)") else {
             throw LaunchError.invalidOptions
         }
-        return GatewayLaunchConfiguration(homeDirectory: selectedHome, configPath: selected.path, defaults: preferences)
+        return GatewayLaunchConfiguration(homeDirectory: selectedHome, configPath: identityPath, defaults: preferences)
+    }
+
+    /// A verified GateFox rename alias keeps the original preferences and executor ownership identity.
+    static func identityConfigPath(_ path: String, homeDirectory: URL) -> String {
+        let parent = homeDirectory.appending(path: "Library/Application Support")
+        let canonical = parent.appending(path: "GateFox")
+        let legacy = parent.appending(path: "Subscription Gateway")
+        guard path == canonical.appending(path: "gateway.json").path else { return path }
+        var aliasInfo = stat(), backingInfo = stat()
+        guard lstat(canonical.path, &aliasInfo) == 0, aliasInfo.st_mode & S_IFMT == S_IFLNK,
+              aliasInfo.st_uid == getuid(), lstat(legacy.path, &backingInfo) == 0,
+              backingInfo.st_mode & S_IFMT == S_IFDIR, backingInfo.st_uid == getuid(),
+              backingInfo.st_mode & 0o022 == 0,
+              let target = try? FileManager.default.destinationOfSymbolicLink(atPath: canonical.path),
+              (target.hasPrefix("/") ? URL(fileURLWithPath: target) : parent.appending(path: target)).standardizedFileURL.path == legacy.path else { return path }
+        return legacy.appending(path: "gateway.json").path
     }
 
     private static func parsedOptions(_ arguments: [String]) throws -> [String: String] {

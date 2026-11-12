@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, lstatSync, readlinkSync } from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
 
 /**
  * The install root under a prefix, by the same rule as `installRootIn` in src/paths.ts: an existing share/gatefox,
@@ -8,5 +8,10 @@ import { join } from 'node:path';
  */
 export function installRoot(prefix) {
   const gatefox = join(prefix, 'share', 'gatefox'), legacy = join(prefix, 'share', 'subscription-gateway');
+  try {
+    const alias = lstatSync(gatefox), backing = lstatSync(legacy);
+    if (alias.isSymbolicLink() && alias.uid === process.getuid?.() && backing.isDirectory() &&
+        backing.uid === process.getuid?.() && !(backing.mode & 0o022) && resolve(dirname(gatefox), readlinkSync(gatefox)) === legacy) return legacy;
+  } catch { /* Fresh installation or an unrelated path. */ }
   return existsSync(gatefox) || !existsSync(legacy) ? gatefox : legacy;
 }
