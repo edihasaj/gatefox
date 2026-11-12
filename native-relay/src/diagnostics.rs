@@ -26,6 +26,7 @@ pub enum Cause {
     SessionTaskLimit,
     TaskPanic,
     TaskCancelled,
+    IdleReleased,
 }
 
 impl Cause {
@@ -51,6 +52,7 @@ impl Cause {
             Self::SessionTaskLimit => "session_task_limit",
             Self::TaskPanic => "task_panic",
             Self::TaskCancelled => "task_cancelled",
+            Self::IdleReleased => "idle_released",
         }
     }
 }
@@ -194,8 +196,33 @@ pub struct SessionDiagnostics {
     started: u64,
     completed: u64,
     active: HashSet<(String, String)>,
+    // Request IDs still waiting for an answer, in either direction: client
+    // requests the engine has not answered, and engine requests (approvals)
+    // the client has not answered. Bounded; overflow counts as busy.
+    client_pending: HashSet<String>,
+    engine_pending: HashSet<String>,
+    pending_overflow: bool,
+    started_at: u64,
     last_received: Option<u64>,
     last_queued: Option<u64>,
+}
+
+const PENDING_LIMIT: usize = 256;
+
+fn request_key(message: &Value) -> Option<(String, bool)> {
+    let id = message.get("id")?;
+    if id.is_null() {
+        return None;
+    }
+    Some((id.to_string(), message.get("method").is_some()))
+}
+
+fn track(set: &mut HashSet<String>, overflow: &mut bool, key: String) {
+    if set.len() < PENDING_LIMIT {
+        set.insert(key);
+    } else {
+        *overflow = true;
+    }
 }
 
 impl SessionDiagnostics {
@@ -207,6 +234,10 @@ impl SessionDiagnostics {
             started: 0,
             completed: 0,
             active: HashSet::new(),
+            client_pending: HashSet::new(),
+            engine_pending: HashSet::new(),
+            pending_overflow: false,
+            started_at: now_ms(),
             last_received: None,
             last_queued: None,
         }
@@ -226,13 +257,48 @@ impl SessionDiagnostics {
     pub fn start(&self) -> Value {
         self.base("session_started")
     }
-    pub fn received(&mut self) {
+    pub fn received(&mut self, message: &Value) {
         self.received = self.received.saturating_add(1);
         self.last_received = Some(now_ms());
+        match request_key(message) {
+            Some((key, true)) => {
+                track(&mut self.client_pending, &mut self.pending_overflow, key)
+            }
+            Some((key, false)) => {
+                self.engine_pending.remove(&key);
+            }
+            None => {}
+        }
+    }
+    /// True when the session has been quiet for `idle_ms`: no frame in either
+    /// direction, no turn running, and no request waiting for an answer.
+    /// The relay then ends the stream so an unused phone connection does not
+    /// keep an old engine release alive; the client reconnects on next use.
+    pub fn idle_expired(&self, now: u64, idle_ms: u64) -> bool {
+        let last = self
+            .last_received
+            .into_iter()
+            .chain(self.last_queued)
+            .fold(self.started_at, u64::max);
+        now.saturating_sub(last) >= idle_ms
+            && self.active.is_empty()
+            && self.started <= self.completed
+            && self.client_pending.is_empty()
+            && self.engine_pending.is_empty()
+            && !self.pending_overflow
     }
     pub fn queued(&mut self, message: &Value) -> Option<Value> {
         self.queued = self.queued.saturating_add(1);
         self.last_queued = Some(now_ms());
+        match request_key(message) {
+            Some((key, true)) => {
+                track(&mut self.engine_pending, &mut self.pending_overflow, key)
+            }
+            Some((key, false)) => {
+                self.client_pending.remove(&key);
+            }
+            None => {}
+        }
         let method = message.get("method")?.as_str()?;
         let event = match method {
             "turn/started" => "turn_started_queued",

@@ -4,6 +4,8 @@ mod diagnostics;
 #[cfg(test)]
 mod diagnostics_tests;
 mod frames;
+#[cfg(test)]
+mod idle_tests;
 mod lease;
 mod registration;
 mod relay_counters;

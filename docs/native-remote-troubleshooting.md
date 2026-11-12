@@ -48,8 +48,18 @@ stream silently, and the client lost every request it sent until its next
 
 | Stream ended by | Unknown pong |
 | --- | --- |
-| Shim child exit, session rejection, queue failure, relay shutdown, inbound-gap reset | Yes, after the queued replies |
+| Shim child exit, session rejection, queue failure, relay shutdown, inbound-gap reset, relay idle release | Yes, after the queued replies |
 | Client close, idle sweep (10 minutes), re-initialize of the same stream, SDK shutdown | No |
+
+The SDK's idle sweep only sees streams while its cloud websocket is connected.
+While that connection fails, for example with `409 Conflict`, an unused stream
+used to stay open and keep its `codex-shim` and engine release alive for hours,
+which held rollouts at `process_version_pending`. The relay now releases a
+session itself (`session_ended` with cause `idle_released`) after 10 minutes in
+which no frame moved in either direction, no turn is running, and no request or
+approval waits for an answer. A turn that started without a matching completion
+keeps the session. The phone reconnects on its next use and gets an engine from
+the current release.
 
 The tracker marks a stream before it ends it itself, so only relay-side ends send
 the pong. Every step is bounded by one 750 ms budget: forwarding the queued

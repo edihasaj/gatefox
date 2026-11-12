@@ -89,7 +89,7 @@ fn observe(diagnostics: &mut SessionDiagnostics, message: Value) -> Option<Value
 fn real_lifecycle_is_counted_and_preserves_only_trusted_metadata() {
     let mut state = SessionDiagnostics::new(17);
     assert_eq!(state.start()["event"], "session_started");
-    state.received();
+    state.received(&Value::Null);
     let start = observe(
         &mut state,
         json!({"method":"turn/started", "emittedAtMs":123,
@@ -314,7 +314,7 @@ impl io::Write for CountingWriter {
 #[test]
 fn each_record_is_one_write() {
     let mut state = SessionDiagnostics::new(21);
-    state.received();
+    state.received(&Value::Null);
     for record in [
         diagnostics::record("session_rejected", 3, Cause::QueueFull),
         state.snapshot(),
