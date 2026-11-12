@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.9.5 — 2026-11-12
+## 1.9.6 — 2026-11-12
 
 - The tailnet listener serves HTTPS. Claude Desktop accepts a plain `http://` gateway only on
   loopback, and its configuration window drops any other `http://` URL when it saves, so the
@@ -8,7 +8,9 @@
   Tailscale certificate (Let's Encrypt, from `tailscale cert`), fetches and renews it itself,
   and stays closed on the tailnet without one. `gateway claude-desktop configure --direct
   --tailnet` writes the `https://NAME.ts.net:PORT` endpoint. The tailnet must allow HTTPS
-  certificates.
+  certificates. The Mac app's Tailscale binary runs as its command line from the background
+  service (`TAILSCALE_BE_CLI=1`); without it, it tried to open its GUI and the certificate was
+  never fetched. 1.9.5 was not published.
 
 ## 1.9.4 — 2026-11-12
 
