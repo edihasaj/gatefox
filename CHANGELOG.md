@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.9.4 — 2026-11-12
+
+- The tailnet listener serves HTTPS. Claude Desktop accepts a plain `http://` gateway only on
+  loopback, so the gateway now uses this Mac's own Tailscale certificate (Let's Encrypt, from
+  `tailscale cert`), fetches and renews it itself, and stays closed on the tailnet without
+  one. `gateway claude-desktop configure --direct --tailnet` writes the
+  `https://NAME.ts.net:PORT` endpoint. The tailnet must allow HTTPS certificates. 1.9.3 was
+  not published.
+
 ## 1.9.3 — 2026-11-11
 
 - Claude Desktop Code sessions can run on another machine over SSH while using this Mac's
