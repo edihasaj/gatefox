@@ -3,13 +3,14 @@
  * `tailscale cert`. Claude Desktop accepts plain http:// only on loopback, so an endpoint an SSH host can reach must be
  * https://. The gateway fetches and renews the certificate itself; nothing is configured by hand.
  *
- * The key stays in an owner-only directory under the gateway's state directory. No certificate, key, name or command
- * output is logged.
+ * Tailscale prints the pair to standard output, and the gateway keeps it in memory only. The App Store build of Tailscale
+ * is sandboxed and cannot write files outside its container ("operation not permitted"), so file output is not used.
+ * No certificate, key, name or command output is logged.
  */
 import { execFile } from "node:child_process";
-import { X509Certificate } from "node:crypto";
+import { X509Certificate, createPrivateKey } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
 export interface TailnetCertificate { name: string; cert: Buffer; key: Buffer; validTo: number }
@@ -47,24 +48,37 @@ export async function tailnetCertificateName(run: TailscaleRun | undefined = tai
   return dnsName.test(name) && domains.includes(name) ? name : undefined;
 }
 
+const pemBlock = /-----BEGIN ([A-Z0-9 ]+)-----\r?\n[A-Za-z0-9+/=\r\n]+-----END \1-----/g;
+
+/** Splits `tailscale cert --cert-file - --key-file -` output into the certificate chain and the one private key. */
+export function splitTailscalePem(output: string): { cert: Buffer; key: Buffer } | undefined {
+  const certs: string[] = []; const keys: string[] = [];
+  for (const match of output.matchAll(pemBlock)) {
+    if (match[1] === "CERTIFICATE") { if (!certs.includes(match[0])) certs.push(match[0]); }
+    else if (match[1].endsWith("PRIVATE KEY")) { if (!keys.includes(match[0])) keys.push(match[0]); }
+  }
+  if (!certs.length || keys.length !== 1) return undefined;
+  return { cert: Buffer.from(certs.join("\n") + "\n"), key: Buffer.from(keys[0] + "\n") };
+}
+
 /**
- * Asks Tailscale for this Mac's certificate and reads it back. Tailscale keeps its own copy and renews it before it
+ * Asks Tailscale for this Mac's certificate. Tailscale keeps its own copy and renews it before it
  * expires, so calling this again is cheap and returns the renewed pair. Returns undefined, without throwing, when
  * Tailscale is missing, logged out, or the tailnet has HTTPS certificates turned off.
  */
 export async function fetchTailnetCertificate(stateDirectory: string, run: TailscaleRun | undefined = tailscaleRunner()): Promise<TailnetCertificate | undefined> {
+  // 1.9.6 kept a copy of the pair here; the gateway no longer writes one.
+  await rm(join(stateDirectory, "tailnet-tls"), { recursive: true, force: true }).catch(() => {});
   const name = await tailnetCertificateName(run);
   if (!name || !run) return undefined;
-  const directory = join(stateDirectory, "tailnet-tls");
-  await mkdir(directory, { recursive: true, mode: 0o700 }); await chmod(directory, 0o700);
-  const certFile = join(directory, "cert.pem"); const keyFile = join(directory, "key.pem");
-  try { await run(["cert", "--cert-file", certFile, "--key-file", keyFile, name], 120_000); } catch { return undefined; }
+  let output: string;
+  try { output = await run(["cert", "--cert-file", "-", "--key-file", "-", name], 120_000); } catch { return undefined; }
+  const pair = splitTailscalePem(output);
+  if (!pair) return undefined;
   try {
-    await chmod(keyFile, 0o600);
-    const [cert, key] = await Promise.all([readFile(certFile), readFile(keyFile)]);
-    const parsed = new X509Certificate(cert);
+    const parsed = new X509Certificate(pair.cert);
     const validTo = Date.parse(parsed.validTo);
-    if (!parsed.checkHost(name) || !Number.isFinite(validTo) || validTo <= Date.now()) return undefined;
-    return { name, cert, key, validTo };
+    if (!parsed.checkHost(name) || !parsed.checkPrivateKey(createPrivateKey(pair.key)) || !Number.isFinite(validTo) || validTo <= Date.now()) return undefined;
+    return { name, cert: pair.cert, key: pair.key, validTo };
   } catch { return undefined; }
 }

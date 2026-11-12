@@ -95,8 +95,9 @@ SSH session     Claude Desktop ══SSH══► host: Claude Code ───►
 
 The gateway fetches the certificate itself with `tailscale cert`: a Let's Encrypt
 certificate for this Mac's MagicDNS name, which Tailscale renews. The gateway asks for it
-again every 12 hours and serves a renewed one to new connections without rebinding. The
-key stays in `tailnet-tls/` under the state directory, owner-only. The tailnet must allow
+again every 12 hours and serves a renewed one to new connections without rebinding. Tailscale
+prints the pair to standard output and the gateway keeps it in memory only; nothing is
+written to disk, which also suits the sandboxed App Store build of Tailscale. The tailnet must allow
 HTTPS certificates (Tailscale admin console → **DNS** → **HTTPS Certificates**). Without a
 certificate the tailnet listener stays closed and records `tailnet_listener` with state
 `certificate_unavailable`; it retries every five minutes.
