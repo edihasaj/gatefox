@@ -10,6 +10,7 @@ import { closeSessions, evictable, idleMs, pinReplay, recordWarmupCompletion, re
 import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveInput, type ClaudeLiveOutcome, type ClaudeMissReason } from "./claude-live-contract.js";
 import { systemPrefixOnly } from "./claude-usage.js";
 import { fingerprintChange, fingerprintParts, type FingerprintChange, type FingerprintParts } from "./claude-fingerprint-parts.js";
+import { keepLegacyClaudeToolNames } from "./claude-tool-names.js";
 
 /**
  * Live Claude sessions: one long-lived CLI process per identified conversation, loaded
@@ -59,14 +60,12 @@ export function claudeLive(settings: Omit<Settings, "warmup"> & { warmup?: numbe
   };
 }
 
-/** Refreshes a replay hold exactly when a cold request reaches it. */
+/** Blocked requests spend nothing and never extend the hold's original deadline. */
 function replayFallback(registry: SessionRegistry, key: string): Extract<ClaudeLiveOutcome, { kind: "fallback" }> | undefined {
   const hold = replayPinned(registry, key);
   const mismatch = hold && preserved(hold as ReseedReason);
   if (mismatch) throw new ClaudeSessionPreserved(mismatch, false);
-  // Asking again starts the hour over: a thread that keeps talking has no use for a session that
-  // would reseed it every turn, so the hold only lapses once the thread has actually gone quiet.
-  if (hold !== undefined) { registry.replayUntil.set(key, { since: Date.now(), why: hold }); return { kind: "fallback", reason: heldReason(hold) }; }
+  if (hold !== undefined) return { kind: "fallback", reason: heldReason(hold) };
 }
 
 /** A thread without an open session cannot reserve capacity while it is held or still warming up. */
@@ -155,7 +154,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
       input.replayBudget?.beforeRequest("seed");
       if (signal.aborted) throw cancelled();
       const dropped = session;
-      registry.sessions.delete(key); registry.toolNameModes?.delete(key); session = undefined;
+      registry.sessions.delete(key); registry.toolNameModes?.delete(key); registry.toolNamePins?.delete(key); session = undefined;
       void dropped.close("closed", reason);
     }
   } else {
@@ -173,7 +172,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
       const victim = evictable(registry);
       // Nothing has gone cold yet: a warm session is worth more parked than its cache is worth rewriting.
       if (!victim) return { kind: "fallback", reason: "capacity" };
-      registry.sessions.delete(victim.key); registry.toolNameModes?.delete(victim.key); void victim.close("evicted");
+      registry.sessions.delete(victim.key); registry.toolNameModes?.delete(victim.key); registry.toolNamePins?.delete(victim.key); void victim.close("evicted");
     }
     try {
       session = await ClaudeSession.start({
@@ -186,6 +185,8 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
     }
     registry.sessions.set(key, session); registry.ended.delete(key); registry.replayUntil.delete(key); sessionParts.set(session, parts);
     (registry.toolNameModes ??= new Map()).set(key, input.toolNameMode ?? "readable");
+    if (input.toolNameMode === "legacy") (registry.toolNamePins ??= new Map()).set(key, keepLegacyClaudeToolNames);
+    registry.recoveryToolNameModes?.delete(key);
     plan = { kind: "seed" }; parkedMs = undefined;
   }
   // A continued session records its scope too: a registry adopted from an earlier release had none,
@@ -227,7 +228,7 @@ function start(registry: SessionRegistry, settings: Settings, session: ClaudeSes
 }
 
 function ended(registry: SessionRegistry, session: ClaudeSession, outcome: SessionEnd, reason?: string): void {
-  if (registry.sessions.get(session.key) === session) { registry.sessions.delete(session.key); registry.toolNameModes?.delete(session.key); }
+  if (registry.sessions.get(session.key) === session) { registry.sessions.delete(session.key); registry.toolNameModes?.delete(session.key); registry.toolNamePins?.delete(session.key); }
   if (!registry.sessions.has(session.key) && !registry.starting.has(session.key)) registry.scopes.delete(session.key);
   // A crash says the CLI died on us; another process would only die on the same cache write, so hold the thread.
   if (outcome === "crashed") pinReplay(registry, session.key, session.lastUse, outcome);

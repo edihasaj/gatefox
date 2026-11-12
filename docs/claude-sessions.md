@@ -87,11 +87,12 @@ finishes normally, then the session closes instead of remaining parked in replay
   Pending tool mismatches still preserve and refuse.
   Explicit thread IDs retain the preservation behavior above.
 - **Dead session:** a crashed CLI cannot be preserved. Its existing replay hold
-  remains bounded by the shared cache guard and expires after an idle hour.
-  Each ordinary retry restarts that hour. Explicit client compaction can recover
+  remains bounded by the shared cache guard and expires one hour after its failure.
+  Blocked retries never extend that deadline. Explicit client compaction can recover
   the same chat: only a successful, uncancelled compaction clears the unchanged
   crash hold. A newer session or replacement hold remains protected. Gateway
   does not replay the failed request automatically.
+
 - **Cancellation timeout:** if a cancelled turn does not produce its interrupt
   result within two seconds, Gateway deliberately closes that CLI. This is a
   controlled cancellation, so it creates no crash hold. The cancelled request
@@ -235,6 +236,33 @@ cache. Cancelling interrupts the turn and keeps the session; the next history ma
 keep or drop the partial text. The session closes instead if a tool call was being
 written.
 
+## Recover after an interrupted connection
+
+A malformed tool call stops the current response before forwarding any call.
+It is a controlled rejection, so it does not place the chat behind a crash hold.
+A separate caller message can try again. This also applies to adopted older CLIs;
+their unchanged rejection hold is cleared by the handler that received the error.
+Genuine transport crashes and inconsistent streams keep their separate checks.
+
+For a chat already held by an earlier release:
+
+```sh
+gatefox claude-sessions status --json
+gatefox claude-sessions recover --thread-key deadbeef --json
+gatefox claude-sessions recover --thread-key deadbeef --apply --json
+```
+
+Use the exact thread key returned by status. Application reads a fresh revision
+and refuses a replacement hold, an active or starting session, an ambiguous key,
+or a history-mismatch hold. The local endpoint requires the gateway client token
+and a loopback connection, and refuses browser origins. Recovery starts no model
+request, executes no tools, edits no saved messages and resets no cache budget.
+The person sends the next message in the original chat.
+
+Add `--legacy-catalog` only for a known retained hashed catalog, so a recovery seed
+keeps that wire naming and its available prompt cache. Running legacy sessions
+retain their exact marker callback across upgrades, including the module-private
+marker used by 2.0.3. Existing healthy sessions are preserved.
 ## Prompt cache across threads
 
 Each Claude request's system array has a billing header with no cache marker, then the

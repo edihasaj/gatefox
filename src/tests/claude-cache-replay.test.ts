@@ -174,7 +174,7 @@ test("a diverged history is refused repeatedly without discarding its live sessi
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
 });
 
-test("a crashed session holds its thread: requests are refused without a replay until an idle hour lets a new process start", async () => {
+test("a crashed session holds its thread without replay until its fixed deadline lets a new process start", async () => {
   const { f, starts, events } = await setup({ replies: [{ text: "unexpected" }], exitAtFirstUser: true });
   try {
     const provider = adapter({ mode: "live", max: 6 });
@@ -186,7 +186,7 @@ test("a crashed session holds its thread: requests are refused without a replay 
     assert.deepEqual(await starts(), ["live"], "starting no live CLI and no one-shot CLI");
     sessionRegistry().replayUntil.set(keyOf("c1"), { since: Date.now() - idleMs - 1, why: "crashed" });
     await assert.rejects(turn(provider, [user("first"), said("one"), said("two"), user("later")], thread("c1")), unavailable, "this fixture's CLI dies again");
-    assert.deepEqual(await starts(), ["live", "live"], "a thread quiet for an hour may hold a session again, and still never replays");
+    assert.deepEqual(await starts(), ["live", "live"], "an expired hold allows a new session without replaying the failed request");
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
 });
 

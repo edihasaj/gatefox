@@ -49,8 +49,10 @@ import { providerCommand } from "./provider-tool-runtime.js";
 import { runAutoLatestCli } from "./auto-latest-cli.js";
 import { availabilityCommand } from "./availability/cli.js";
 import { activityCommand } from "./activity-cli.js";
+import { claudeSessionsCommand } from "./claude-session-recovery-cli.js";
 
 const help = `gateway — local subscription and API inference
+  gatefox claude-sessions status|recover [--thread-key KEY --apply] [--legacy-catalog] [--json]
 
   gateway init [--config PATH]
   gateway setup --from-config PATH [--config DESTINATION]
@@ -103,6 +105,7 @@ const defaults: GatewayConfig = { version: 1, port: 3457, stateDirectory: ".stat
 ] };
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
+  if (argv[0] === "claude-sessions") return claudeSessionsCommand(argv.slice(1));
   if (argv[0] === "codex-shim") return codexShim(argv.slice(1));
   if (argv[0] === "claude-desktop") return runClaudeDesktopCommand(argv.slice(1));
   if (argv[0] === "versions") { process.exitCode = await versionsCommand(argv.slice(1)); return; }

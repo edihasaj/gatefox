@@ -1,11 +1,32 @@
 import { registerActivityProbe, registerShutdownHook } from "../runtime-activity.js";
 import type { ClaudeSession } from "./claude-session.js";
 import { sessionKey } from "./claude-live-contract.js";
+import type { OpenAITool } from "../protocol/types.js";
+import { keepLegacyClaudeToolNames } from "./claude-tool-names.js";
+import { previousClaudeToolPin, type ToolNamePin } from "./claude-legacy-tools.js";
+import { ProviderError } from "./provider.js";
+
+/** Pin both generations' private markers when a retained legacy CLI belongs to 2.0.3. */
+export async function prepareClaudeToolNames(scope: string, threadId: string, tools: OpenAITool[], loadPrevious = previousClaudeToolPin): Promise<"legacy" | "readable"> {
+  if (claudeToolNameMode(scope, threadId) !== "legacy") return "readable";
+  const registry = adopt(), key = sessionKey(scope, threadId), session = registry?.sessions.get(key);
+  let pin = registry?.toolNamePins?.get(key);
+  if (!pin && session && registry?.toolNameModes?.get(key) === "legacy") {
+    pin = await loadPrevious();
+    if (registry.sessions.get(key) === session) {
+      if (!pin) throw new ProviderError("invalid_request", "Claude's retained tool catalog cannot be verified. Compact this conversation before continuing.", 400);
+      (registry.toolNamePins ??= new Map()).set(key, pin);
+    }
+  }
+  if (claudeToolNameMode(scope, threadId) !== "legacy") return "readable";
+  keepLegacyClaudeToolNames(tools); pin?.(tools);
+  return "legacy";
+}
 
 /** Older live CLIs have no mode receipt; all of them registered historical hashed names. */
 export function claudeToolNameMode(scope: string, threadId: string): "legacy" | "readable" {
   const registry = adopt(), key = sessionKey(scope, threadId), session = registry?.sessions.get(key);
-  return session && session.state !== "closed" ? registry?.toolNameModes?.get(key) ?? "legacy" : "readable";
+  return session && session.state !== "closed" ? registry?.toolNameModes?.get(key) ?? "legacy" : registry?.recoveryToolNameModes?.get(key) ?? "readable";
 }
 
 /** A failed/cancelled compaction or a concurrently replaced session grants no reset. */
@@ -38,6 +59,8 @@ export function compactionCheckpoint(scope: string, threadId: string): (() => vo
  * the symbol version; the old version's sessions are then left to their own park timers.
  */
 export interface SessionRegistry {
+  toolNamePins?: Map<string, ToolNamePin>;
+  recoveryToolNameModes?: Map<string, "legacy" | "readable">;
   toolNameModes?: Map<string, "legacy" | "readable">;
   interfaceVersion: 1;
   sessions: Map<string, ClaudeSession>;
@@ -150,11 +173,20 @@ export function pinReplay(registry: SessionRegistry, key: string, lastUse: numbe
  */
 export function refusalHoldRelease(scope: string, threadId: string): () => void {
   const registry = adopt(), key = sessionKey(scope, threadId), session = registry?.sessions.get(key);
+  const mode = registry?.toolNameModes?.get(key) ?? "legacy";
   return () => {
     const hold = registry?.replayUntil.get(key);
-    if (!registry || !session || typeof hold !== "object" || hold.why !== "crashed" || hold.since !== session.lastUse) return;
-    registry.replayUntil.delete(key); registry.ended.delete(key);
+    if (!registry || !session || registry.sessions.has(key) || registry.starting.has(key)) return;
+    if (hold !== undefined && (typeof hold !== "object" || hold.why !== "crashed" || hold.since !== session.lastUse)) return;
+    registry.replayUntil.delete(key); registry.ended.delete(key); registry.toolNamePins?.delete(key); rememberRecoveryToolNames(registry, key, mode);
   };
+}
+
+/** Naming only: this never resets the inference cache budget or starts a process. */
+export function rememberRecoveryToolNames(registry: SessionRegistry, key: string, mode: "legacy" | "readable"): void {
+  const modes = registry.recoveryToolNameModes ??= new Map();
+  modes.delete(key); modes.set(key, mode);
+  while (modes.size > 256) modes.delete(modes.keys().next().value!);
 }
 
 /**

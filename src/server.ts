@@ -51,6 +51,8 @@ import { AvailabilityService } from "./availability/service.js";
 import { availabilityPath, serveAvailability } from "./availability/http.js";
 import { ManagedRouter, managedReasoningRequest } from "./managed-routing.js";
 import { resolveManagedRequest } from "./server-managed-routing.js";
+import { claudeRecoveryPath } from "./claude-session-recovery.js";
+import { serveClaudeRecovery } from "./claude-session-recovery-http.js";
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
 /** What this release guarantees on the wire; `/health` advertises it so operators can tell an old daemon from a new one. */
@@ -315,6 +317,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       && (!anthropicClient || apiKey === undefined || (typeof apiKey === "string" && validBearer(`Bearer ${apiKey}`, token)))
       : anthropicClient && typeof apiKey === "string" && validBearer(`Bearer ${apiKey}`, token);
     if (!authenticated) { fail(401, "authentication", "Gateway client token required"); return; }
+    if (path === claudeRecoveryPath) { await serveClaudeRecovery(req, res); return; }
     // Node versions that hand an upgrade to the request handler instead of the "upgrade" listener get the same refusal.
     if (path === "/v1/responses" && isUpgradeRequest(req.headers)) { sendUpgradeRefusal(res); return; }
     if (draining && req.method === "POST" && (path === "/v1/responses" || messagesProtocol)) { res.setHeader("Retry-After", "1"); fail(503, "upstream_unavailable", "Gateway is restarting; retry shortly"); return; }
