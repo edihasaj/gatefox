@@ -81,7 +81,9 @@ export function buildClaudeDirectProfile(existingProfile: Record<string, unknown
   if (!isAbsolute(options.tokenFile)) fail("Claude Desktop tokenFile must be an absolute path");
   let endpoint: URL;
   try { endpoint = new URL(options.endpoint); } catch { fail("Gateway endpoint must be a valid URL"); }
-  if (endpoint.protocol !== "http:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/") fail("Gateway endpoint must be a plain http:// origin");
+  if ((endpoint.protocol !== "http:" && endpoint.protocol !== "https:") || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/") fail("Gateway endpoint must be a plain http:// or https:// origin");
+  // Claude Desktop's own rule for this key: https, or http on loopback. Anything else is dropped when the app saves.
+  if (endpoint.protocol === "http:" && !isLoopbackEndpointHost(endpoint.hostname)) fail("Claude Desktop accepts http:// only on loopback; use --tailnet for this Mac's https:// Tailscale address");
   const sshHosts = options.sshHosts === undefined ? undefined : claudeSshHostAllowlist(options.sshHosts);
   if (sshHosts && isLoopbackEndpointHost(endpoint.hostname)) {
     fail("Claude Desktop refuses a loopback gateway for SSH sessions, because the remote host cannot reach it; use --tailnet so the profile names this Mac's Tailscale address");

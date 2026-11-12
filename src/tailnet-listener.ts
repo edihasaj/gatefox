@@ -3,14 +3,16 @@
  * session's inference to the endpoint in its profile from the remote host, and it refuses a loopback endpoint for those
  * sessions, so a profile that should work over SSH needs an address the host can reach. See docs/claude-desktop-direct.md.
  *
- * The socket parses nothing itself: an accepted connection from a tailnet peer is handed to the existing HTTP server, so
- * authentication, admission, timeouts and in-place upgrades are exactly the loopback listener's. A peer outside the
- * tailnet is closed before a byte is read. The listeners live on the process, not on one release's runtime, so a hot swap
- * keeps them and only reconciles them with the configuration it adopted.
+ * Claude Desktop accepts plain http:// only on loopback, so this socket speaks TLS with this Mac's Tailscale certificate
+ * (see tailnet-tls.ts) and stays closed until one exists. A peer outside the tailnet is closed before the handshake; a
+ * decrypted connection is handed to the existing HTTP server, so authentication, admission, timeouts and in-place
+ * upgrades are exactly the loopback listener's. The listeners live on the process, not on one release's runtime, so a hot
+ * swap keeps them and only reconciles them with the configuration and certificate it adopted.
  */
 import type { Server } from "node:http";
-import { createServer as createSocketServer, type AddressInfo, type Server as SocketServer, type Socket } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import { networkInterfaces } from "node:os";
+import { createServer as createTlsServer, type Server as TlsServer } from "node:tls";
 import { isTailnetAddress } from "./tailnet.js";
 import { telemetry } from "./telemetry.js";
 
@@ -34,11 +36,16 @@ export interface TailnetListenerSeams {
   addresses?: () => string[];
   /** Peer admission; tests on loopback admit their own connections. */
   admit?: (socket: Socket) => boolean;
+  /** The certificate and key to serve. Without one the listener stays closed: Claude Desktop refuses plain http:// here. */
+  tls?: TailnetTls;
 }
 
-interface ListenerSet { target: Server; port: number; sockets: Map<string, SocketServer> }
-const processKey = Symbol.for("gatefox.tailnetListeners.v1");
-type ProcessHolder = { [processKey]?: ListenerSet };
+export interface TailnetTls { cert: string | Buffer; key: string | Buffer }
+interface ListenerSet { target: Server; port: number; tls: TailnetTls; sockets: Map<string, TlsServer> }
+const processKey = Symbol.for("gatefox.tailnetListeners.v2");
+/** 1.9.3 served plain HTTP under this key; a hot swap from it closes those sockets so this release can bind the addresses. */
+const plainKey = Symbol.for("gatefox.tailnetListeners.v1");
+type ProcessHolder = { [processKey]?: ListenerSet; [plainKey]?: { sockets: Map<string, { close(): unknown }> } };
 const holder = globalThis as ProcessHolder;
 
 function boundPort(target: Server): number | undefined {
@@ -53,7 +60,11 @@ function closeAll(set: ListenerSet): void {
 
 function listen(set: ListenerSet, address: string, admit: (socket: Socket) => boolean): Promise<boolean> {
   return new Promise(resolve => {
-    const socket = createSocketServer(connection => { if (admit(connection)) set.target.emit("connection", connection); });
+    const socket = createTlsServer({ cert: set.tls.cert, key: set.tls.key, minVersion: "TLSv1.2", handshakeTimeout: 10_000 },
+      secured => { set.target.emit("connection", secured); });
+    // Runs on the raw TCP connection, before any TLS byte is read.
+    socket.on("connection", (raw: Socket) => { admit(raw); });
+    socket.on("tlsClientError", (_error, secured) => { secured.destroy(); });
     const failed = (): void => { socket.close(); resolve(false); };
     socket.once("error", failed);
     socket.listen({ host: address, port: set.port, exclusive: true }, () => {
@@ -70,11 +81,18 @@ function listen(set: ListenerSet, address: string, admit: (socket: Socket) => bo
  * Returns the addresses now served. Never throws: an address that cannot be bound yet is tried again on the next call.
  */
 export async function reconcileTailnetListener(target: Server, enabled: boolean, seams: TailnetListenerSeams = {}): Promise<string[]> {
+  const plain = holder[plainKey];
+  if (plain) { for (const socket of plain.sockets.values()) socket.close(); plain.sockets.clear(); holder[plainKey] = undefined; }
   let set = holder[processKey];
   const port = boundPort(target);
-  if (set && (set.target !== target || set.port !== port || !enabled)) { closeAll(set); set = undefined; holder[processKey] = undefined; }
-  if (!enabled || port === undefined) return [];
-  if (!set) { set = { target, port, sockets: new Map() }; holder[processKey] = set; target.once("close", () => { if (holder[processKey] === set) { closeAll(set!); holder[processKey] = undefined; } }); }
+  const tls = seams.tls;
+  if (set && (set.target !== target || set.port !== port || !enabled || !tls)) { closeAll(set); set = undefined; holder[processKey] = undefined; }
+  if (!enabled || port === undefined || !tls) return [];
+  if (!set) { set = { target, port, tls, sockets: new Map() }; holder[processKey] = set; target.once("close", () => { if (holder[processKey] === set) { closeAll(set!); holder[processKey] = undefined; } }); }
+  if (set.tls !== tls) {
+    // A renewed certificate applies to new handshakes; open connections keep theirs.
+    set.tls = tls; for (const socket of set.sockets.values()) socket.setSecureContext({ cert: tls.cert, key: tls.key });
+  }
   const wanted = new Set(seams.addresses ? seams.addresses() : tailnetInterfaceAddresses());
   for (const [address, socket] of set.sockets) if (!wanted.has(address)) { socket.close(); set.sockets.delete(address); }
   const admit = seams.admit ?? admitTailnetPeer;

@@ -65,7 +65,7 @@ test("the default model is chosen by ID, bridge ID or alias, and invalid input i
   for (const model of ["qwen/flash", opaque("qwen/flash")]) assert.equal((buildClaudeDirectProfile({}, rows, { ...options, defaultModel: model }).inferenceModels as any[])[0].name, opaque("qwen/flash"));
   assert.equal((buildClaudeDirectProfile({}, rows, { ...options, defaultModel: bridgeRouteName("codex/gpt") }).inferenceModels as any[])[0].labelOverride, "Codex · GPT X");
   assert.throws(() => buildClaudeDirectProfile({}, rows, { ...options, defaultModel: "missing" }), /not a model this gateway lists/);
-  assert.throws(() => buildClaudeDirectProfile({}, rows, { ...options, endpoint: "http://127.0.0.1:3457/v1" }), /plain http:\/\/ origin/);
+  assert.throws(() => buildClaudeDirectProfile({}, rows, { ...options, endpoint: "http://127.0.0.1:3457/v1" }), /plain http:\/\/ or https:\/\/ origin/);
   assert.throws(() => buildClaudeDirectProfile({}, rows, { ...options, tokenFile: "relative" }), /absolute/);
   const many = Array.from({ length: 201 }, (_, index) => ({ ...rows[2]!, id: `claude-hg-route-${index}` }));
   assert.throws(() => buildClaudeDirectProfile({}, many, options), /at most 200 model rows, but this gateway lists 201/);

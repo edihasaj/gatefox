@@ -54,7 +54,7 @@ models in the gateway; the picker does not refresh by itself.
 | --- | --- |
 | `--gateway-config PATH` | Uses that gateway configuration for the port and client token. The default is the installed configuration. |
 | `--endpoint URL --token-file PATH` | Names a gateway reached through a loopback SSH forward. Only its public model list is read. |
-| `--tailnet` | Names this Mac's Tailscale address instead of `127.0.0.1`. Needed for [SSH environments](#ssh-environments). |
+| `--tailnet` | Names this Mac's Tailscale HTTPS address, `https://NAME.ts.net:PORT`, instead of `127.0.0.1`. Needed for [SSH environments](#ssh-environments). |
 | `--ssh-host HOST` | With `--tailnet`, adds the host to the profile's `sshHostAllowlist`. Repeat it, or separate hosts with commas. |
 | `--model ID_OR_ALIAS` | Lists that model first, by row ID or gateway alias. Without it, the model the profile already starts with stays first. |
 | `--native-model-metadata` | Writes opaque row IDs with `behavesAs`, for an app version that reads it. See [native model metadata](claude-desktop-native-metadata.md). |
@@ -79,16 +79,27 @@ two rules from Anthropic decide whether that works
    endpoint (`localhost`, `*.localhost`, `127.x`, `::1`, `0.0.0.0`) for those sessions
    with "SSH sessions can't use your model provider settings". It checks the literal
    name only, and resolves nothing.
+3. Every other endpoint must use `https://`. The app accepts plain `http://` only on
+   loopback, and its configuration window drops any other `http://` URL when it saves.
 
 Codex's SSH support carries the gateway inside its own SSH connection. Claude Desktop
 owns its SSH connection and opens no tunnel for inference, so the gateway must answer
-on an address the host can reach. With `tailnetListener` the gateway also listens on
-this Mac's own Tailscale addresses:
+on an address the host can reach, over HTTPS. With `tailnetListener` the gateway also
+listens on this Mac's own Tailscale addresses, with TLS and this Mac's Tailscale
+certificate:
 
 ```text
-local session   Claude Desktop ─────────────────────────────► http://100.x.y.z:3457 ─┐
-SSH session     Claude Desktop ══SSH══► host: Claude Code ───► http://100.x.y.z:3457 ─┴► this Mac's GateFox
+local session   Claude Desktop ─────────────────────────────► https://NAME.ts.net:3457 ─┐
+SSH session     Claude Desktop ══SSH══► host: Claude Code ───► https://NAME.ts.net:3457 ─┴► this Mac's GateFox
 ```
+
+The gateway fetches the certificate itself with `tailscale cert`: a Let's Encrypt
+certificate for this Mac's MagicDNS name, which Tailscale renews. The gateway asks for it
+again every 12 hours and serves a renewed one to new connections without rebinding. The
+key stays in `tailnet-tls/` under the state directory, owner-only. The tailnet must allow
+HTTPS certificates (Tailscale admin console → **DNS** → **HTTPS Certificates**). Without a
+certificate the tailnet listener stays closed and records `tailnet_listener` with state
+`certificate_unavailable`; it retries every five minutes.
 
 Both kinds of session use this Mac's gateway, its accounts and its model list, as a
 Codex SSH chat does.
@@ -96,7 +107,8 @@ Codex SSH chat does.
 ### Set it up
 
 1. Add `"tailnetListener": true` to the gateway configuration. The running gateway
-   starts listening within 30 seconds, without a restart, on the same port.
+   fetches its certificate and starts listening within about a minute, without a
+   restart, on the same port.
 2. With Claude quit, write the profile:
 
    ```sh
@@ -118,7 +130,8 @@ for the session. Without `--ssh-host`, an allowlist already in the profile is ke
 | Check | Behavior |
 | --- | --- |
 | Addresses | This Mac's non-internal addresses in `100.64.0.0/10` and `fd7a:115c:a1e0::/48`, rechecked every 30 seconds, so an address that appears after login is picked up and one that leaves is closed. |
-| Peers | Only Tailscale addresses. Any other peer is closed before a byte is read. |
+| Peers | Only Tailscale addresses. Any other peer is closed before the TLS handshake. |
+| Transport | TLS 1.2 or later with this Mac's Tailscale certificate. Plain HTTP is not served there. |
 | Requests | Handed to the loopback listener's own HTTP server: the same client token, the browser-origin refusal, admission limits and timeouts. Only `GET /health` answers without the token, as on loopback. |
 | Upgrades | An in-place upgrade keeps the sockets and reconciles them with the configuration it adopts. Setting the key to `false`, or removing it, closes them. |
 
@@ -126,8 +139,8 @@ Every tailnet device can reach the port, and any device holding the client token
 every account this gateway serves. Turn the listener on only on Macs whose SSH sessions
 need it, and issue the token only to machines you trust.
 
-A Tailscale address is stable for a Mac. If it changes, run the `configure` command
-again. Each listener start records a `tailnet_listener` telemetry event with the number of
+The profile names the MagicDNS name, which stays the same when the Tailscale address
+changes. If the Mac or the tailnet is renamed, run the `configure` command again. Each listener start records a `tailnet_listener` telemetry event with the number of
 addresses served, not the addresses themselves.
 
 ## Model IDs

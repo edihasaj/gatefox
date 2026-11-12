@@ -11,7 +11,7 @@ import { buildClaudeDirectProfile, claudeDirectListRows } from "./claude-direct-
 import { buildClaudeDesktopProfile, type ClaudeDesktopCatalog, type ClaudeDesktopGatewaySource } from "./claude-desktop-profile.js";
 import { claudeDesktopServiceStatus, installClaudeDesktopService } from "./claude-desktop-service.js";
 import { startClaudeDesktopInference } from "./claude-desktop-inference.js";
-import { tailnetInterfaceAddresses } from "./tailnet-listener.js";
+import { tailnetCertificateName } from "./tailnet-tls.js";
 
 const catalogLimitBytes = 1024 * 1024;
 const help = `gateway claude-desktop — Claude Desktop model rows for gateway models
@@ -31,10 +31,11 @@ Claude-safe model IDs in-process: no adapter port, no second gateway, and the
 rows come from that gateway's own model list. It needs a gateway release that
 lists Claude Desktop models. Without --direct the profile uses the adapter.
 
---tailnet names this Mac's Tailscale address instead of 127.0.0.1, so SSH
-sessions can reach the gateway from the remote host; the gateway configuration
-must set "tailnetListener": true. Each --ssh-host adds that host to the
-profile's sshHostAllowlist, which Claude Desktop needs before it offers SSH.
+--tailnet names this Mac's Tailscale HTTPS address (https://NAME.ts.net:PORT)
+instead of 127.0.0.1, so SSH sessions can reach the gateway from the remote host;
+the gateway configuration must set "tailnetListener": true, and the tailnet must
+allow HTTPS certificates. Each --ssh-host adds that host to the profile's
+sshHostAllowlist, which Claude Desktop needs before it offers SSH.
 
 configure reads the selected Claude Desktop GateFox profile and writes a
 candidate under Claude-3p/alias-trial/candidate. --apply requires Claude Desktop
@@ -176,11 +177,11 @@ async function directRows(endpoint: string, tokenFile: string) {
   return claudeDirectListRows(value);
 }
 
-/** This Mac's Tailscale endpoint for the gateway's port. IPv4 first; an IPv6 address is bracketed. */
-function tailnetEndpoint(port: number): string {
-  const [address] = tailnetInterfaceAddresses();
-  if (!address) throw new Error("--tailnet needs Tailscale to be connected on this Mac; no Tailscale address was found");
-  return `http://${address.includes(":") ? `[${address}]` : address}:${port}`;
+/** This Mac's Tailscale HTTPS endpoint for the gateway's port. Claude Desktop accepts plain http:// only on loopback. */
+async function tailnetEndpoint(port: number): Promise<string> {
+  const name = await tailnetCertificateName();
+  if (!name) throw new Error("--tailnet needs Tailscale connected on this Mac with HTTPS certificates enabled for the tailnet (Tailscale admin console → DNS → HTTPS Certificates)");
+  return `https://${name}:${port}`;
 }
 
 function sshHosts(value: string | boolean | string[] | undefined): string[] | undefined {
@@ -204,12 +205,12 @@ async function configureDirect(values: Record<string, string | boolean | string[
     const config = await loadConfig(gatewayConfig);
     if (!config.port) throw new Error("Use a fixed gateway port before configuring Claude Desktop");
     if (tailnet && config.tailnetListener !== true) throw new Error("--tailnet needs \"tailnetListener\": true in the gateway configuration, so the gateway listens on this Mac's Tailscale address");
-    endpoint = tailnet ? tailnetEndpoint(config.port) : `http://127.0.0.1:${config.port}`; tokenFile = resolve(config.stateDirectory, "client-token");
+    endpoint = tailnet ? await tailnetEndpoint(config.port) : `http://127.0.0.1:${config.port}`; tokenFile = resolve(config.stateDirectory, "client-token");
   } else if (values["gateway-config"] !== undefined) throw new Error("--gateway-config is not read when --endpoint and --token-file name the gateway");
   const paths = pathsFor(typeof values.home === "string" ? values.home : undefined);
   // Reading the list through the endpoint the profile will name proves the app can reach the gateway there.
   const rows = await directRows(endpoint, tokenFile).catch((error: unknown) => {
-    if (tailnet && error instanceof Error && error.message.includes("is not reachable")) throw new Error(`Gateway does not answer on ${endpoint} yet; it listens there within 30 seconds of "tailnetListener": true, or after Tailscale connects`);
+    if (tailnet && error instanceof Error && error.message.includes("is not reachable")) throw new Error(`Gateway does not answer on ${endpoint} yet; it listens there with this Mac's Tailscale certificate within a minute of "tailnetListener": true, or after Tailscale connects`);
     throw error;
   });
   const existing = await readSelectedClaudeDesktopProfile(paths.library);
