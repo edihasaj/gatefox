@@ -13,7 +13,7 @@ import { claudeRequestRejection } from "./claude-request-rejection.js";
 import { controlLine, controlResult, userLine, type ClaudeMcpTool } from "./claude-control.js";
 import type { ClaudeMessageStream, ClaudeStreamEnd, ClaudeTokens } from "./claude-stream.js";
 import type { ContentBlock } from "./claude-render.js";
-import { nativeClaudeCalls, validateForcedChoice } from "./claude-calls.js";
+import { nativeClaudeCalls, rejectedClaudeTool, validateForcedChoice } from "./claude-calls.js";
 import { claudeUsageEvent, type ClaudeLimit } from "./claude-usage.js";
 import { claudeToolName } from "./claude-tool-names.js";
 import { ClaudeRelay, type RelayContent } from "./claude-relay.js";
@@ -346,8 +346,10 @@ export class ClaudeSession {
       // A native authentication failure before any output, tool-result delivery or steering changed nothing
       // in the CLI's history, so it must not hold the thread as a crash does: the next request retries the login.
       const authentication = !refused && nativeAuthenticationFailure(error) && replaySafeStart(attached);
+      const rejectedTool = rejectedClaudeTool(error);
       this.detach(attached); attached.turn.onEnd(refused ? "refused" : "failed", attached.turn.stream.observedTokens);
       if (refused) void this.close("closed", "refused", true);
+      else if (rejectedTool) void this.close("closed", rejectedTool.upstream?.code, true);
       else if (authentication) { markReplaySafeAuthentication(error as ProviderError); void this.close("closed", "authentication_failed", true); }
       else void this.close("crashed", error instanceof ProviderError ? error.upstream?.code ?? error.code : "failed", true);
     }
@@ -382,7 +384,7 @@ export class ClaudeSession {
     const foreign = uses.find(block => typeof block.name !== "string" || !block.name.startsWith("mcp__gateway__"));
     if (foreign) {
       const error = foreignTool(foreign.name); if (this.attached) this.attached.error = error;
-      void this.close("crashed", error.upstream?.code ?? error.code, true); return;
+      void this.close(this.attached ? "closed" : "crashed", error.upstream?.code ?? error.code, true); return;
     }
     const attached = this.attached;
     if (!attached) { this.detached(message, event?.type); return; }

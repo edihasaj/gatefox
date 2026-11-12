@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.0 — 2026-11-12
+
+- A deliberately blocked Claude tool name no longer counts as a CLI crash that
+  prevents the next caller request for an hour. The failed response still stops
+  before forwarding its tool calls, and Gateway never retries it automatically.
+  The error identifies the specific rejection instead of combining unknown tools,
+  duplicate IDs and malformed calls into one message. Existing unrelated crash
+  holds remain intact.
+
 ## 1.9.9 — 2026-11-12
 
 - Composer predictions and explicitly marked thread samples no longer park a

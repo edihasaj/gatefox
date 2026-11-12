@@ -70,13 +70,12 @@ for (const mode of ["replay", "live"] as const) test(`measured cache writes from
   };
   try {
     await assert.rejects(turn("a".repeat(400000)), { code: "invalid_tool_call" });
-    // Replay has a bounded third attempt; a live thread whose session died cannot silently replay.
-    if (mode === "replay") {
-      await assert.rejects(turn("b".repeat(400000)), { code: "invalid_tool_call" });
-      await assert.rejects(turn("c".repeat(400000)), { code: "invalid_tool_call" });
-    } else await assert.rejects(turn("b".repeat(400000)), (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
+    // Each deliberate tool-name rejection remains final, but a later caller may
+    // replace its CLI. Charged failures still share the same bounded cache budget.
+    await assert.rejects(turn("b".repeat(400000)), { code: "invalid_tool_call" });
+    await assert.rejects(turn("c".repeat(400000)), { code: "invalid_tool_call" });
     await assert.rejects(turn("d".repeat(400000)), { code: "invalid_request", status: 400 });
-    assert.equal((await fixture.capture()).filter(entry => entry.start).length, mode === "replay" ? 3 : 1, "a charged failure cannot bypass the stop");
+    assert.equal((await fixture.capture()).filter(entry => entry.start).length, 3, "a charged failure cannot bypass the stop");
   } finally {
     await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await flushTelemetry(); await fixture.restore();
   }

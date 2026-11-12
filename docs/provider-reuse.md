@@ -38,6 +38,12 @@ diagnostic class and charged usage, but use final client errors across Responses
 Messages and nonstreaming HTTP. Transient availability/throttle recovery keeps its
 existing behavior.
 
+A Claude tool-name rejection deliberately closes its confined CLI without a
+crash hold. The failed response still ends without replay; only a later caller
+request may replace the process, through the existing cache budget. This applies
+to fixed unknown/unavailable tool and forbidden native-helper reasons, not to
+arbitrary CLI crashes or malformed transport failures.
+
 Claude and Copilot keep usable sessions when a history or pending-tool mismatch
 cannot safely continue. Corrected history can use the same session. Copilot closes
 an uncertain effort switch instead of inferring with an unconfirmed setting or

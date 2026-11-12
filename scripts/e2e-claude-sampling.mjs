@@ -6,6 +6,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
+import { pathToFileURL } from 'node:url';
 import { gatewayToken, validateConfig } from '../dist/config.js';
 import { startGateway } from '../dist/server.js';
 import { ClaudeSubscription } from '../dist/providers/claude.js';
@@ -14,7 +15,8 @@ import { sessionRegistry } from '../dist/providers/claude-session-registry.js';
 import { providerCommand } from '../dist/provider-tool-runtime.js';
 import { installClaudeFixture } from '../dist/tests/claude-cli-fixture.js';
 
-const { values } = parseArgs({ options: { sdk: { type: 'string' }, catalog: { type: 'string' }, root: { type: 'string' } } });
+const { values } = parseArgs({ options: { sdk: { type: 'string' }, catalog: { type: 'string' }, root: { type: 'string' },
+  'tool-recovery': { type: 'boolean' }, 'legacy-package': { type: 'string' } } });
 for (const name of ['sdk', 'catalog', 'root']) assert.ok(values[name], `Pass --${name}`);
 const root = resolve(values.root), sdk = resolve(values.sdk);
 assert.ok(root.startsWith('/tmp/'), 'Use a task-specific /tmp evidence directory');
@@ -33,8 +35,15 @@ assert.equal(await providerCommand('claude'), 'claude', 'Use a private HOME with
 const config = validateConfig({ version: 1, port: 0, stateDirectory: join(root, 'state'),
   providers: [{ id: 'fixture', type: 'claude-subscription', models: { alias: 'fixture' }, claudeSessions: { max: 1, warmup: 0 } }] });
 const sources = [];
+const Backend = values['legacy-package'] ? (await import(pathToFileURL(join(resolve(values['legacy-package']), 'dist/providers/claude.js')))).ClaudeSubscription : ClaudeSubscription;
+if (values['legacy-package']) {
+  const legacy = await import(pathToFileURL(join(resolve(values['legacy-package']), 'dist/provider-tool-runtime.js')));
+  assert.equal(await legacy.providerCommand('claude'), 'claude', 'Use a private HOME without legacy managed tools');
+}
+let switchBackend;
 const gateway = await startGateway(config, provider => {
-  const subscription = new ClaudeSubscription(provider);
+  let subscription = new Backend(provider);
+  switchBackend = () => { subscription = new ClaudeSubscription(provider); };
   return { async *infer(request, signal, context) {
     sources.push(context?.threadSource ?? null);
     yield* subscription.infer(request, signal, context);
@@ -67,11 +76,11 @@ try {
   send({ method: 'initialized', params: {} });
   const { thread } = await rpc('thread/start', { model: 'alias', modelProvider: 'fixture', cwd: work,
     approvalPolicy: 'never', sandbox: 'workspace-write' });
-  const turn = async text => {
+  const turn = async (text, expected = 'completed') => {
     const { turn } = await rpc('turn/start', { threadId: thread.id, input: [{ type: 'text', text }] });
     const deadline = Date.now() + 60_000;
     while (!completed.has(turn.id) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
-    assert.equal(completed.get(turn.id)?.status, 'completed'); return turn.id;
+    assert.equal(completed.get(turn.id)?.status, expected); return turn.id;
   };
   const firstTurn = await turn('x'.repeat(300_000));
   assert.equal(sessionRegistry().sessions.size, 1);
@@ -91,6 +100,20 @@ try {
   assert.deepEqual(sources.slice(1, 4), ['composer_predictions', 'composer_predictions', 'composer_predictions']);
   assert.ok([null, 'user'].includes(sources[0]) && [null, 'user'].includes(sources[4]));
   const receipt = { passed: true, samples: 3, poolLimit: 1, retainedSessions: 1, parentContinued: true, sources, starts };
+  if (values['tool-recovery']) {
+    switchBackend(); // An old CLI remains adopted even though the provider implementation moves.
+    await fixture.setScenario({ replies: [{ foreign: 'unregistered-fixture-tool' }, { text: 'RECOVERED' }] });
+    await turn('Exercise the synthetic tool rejection.', 'failed');
+    assert.equal(sessionRegistry().sessions.size, 0);
+    assert.equal(sessionRegistry().replayUntil.size, 0);
+    assert.equal((await fixture.capture()).filter(entry => entry.start).length, 4, 'the failed native turn does not replay itself');
+    await turn('Retry on this new caller message.');
+    assert.equal(sessionRegistry().sessions.size, 1);
+    assert.notEqual([...sessionRegistry().sessions.values()][0], parent);
+    assert.equal((await fixture.capture()).filter(entry => entry.start).length, 5);
+    receipt.toolRecovery = { rejectedTurnFailed: true, crashHold: false, automaticReplay: false, nextCallerTurnCompleted: true,
+      adoptedLegacySession: !!values['legacy-package'] };
+  }
   await writeFile(join(root, 'receipt.json'), JSON.stringify(receipt, null, 2));
   console.log(JSON.stringify(receipt));
 } finally {

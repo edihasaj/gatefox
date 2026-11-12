@@ -9,7 +9,7 @@ import { responsesToChatRequest } from "../protocol/request.js";
 import type { ResponsesRequest, InferenceEvent, OpenAITool, ChatToolSelection, PublicServiceTier } from "../protocol/types.js";
 import { ProviderError, providerRefusal, providerConversationId, type Provider, type InferenceContext } from "./provider.js";
 import { claudeSessionSettings, type ProviderConfig } from "../config.js";
-import { validateForcedChoice } from "./claude-calls.js";
+import { rejectedClaudeTool, validateForcedChoice } from "./claude-calls.js";
 import { imageConversation } from "../protocol/images.js";
 import { claudeToolName, claudeToolHistory } from "./claude-tool-names.js";
 import { claudeUsageEvent, systemPrefixOnly, type ClaudeLimit } from "./claude-usage.js";
@@ -173,6 +173,8 @@ export class ClaudeSubscription implements Provider {
           markCompleted(event); yield event;
         } return; }
         catch (error) {
+          const rejectedTool = rejectedClaudeTool(error);
+          if (rejectedTool) { releaseHold(); throw rejectedTool; }
           if (providerRefusal(error)) releaseHold();
           if (!authVisible && isReplaySafeAuthentication(error) && await beginRecovery(error)) {
             // A failed live session synchronously removes itself from the registry; the

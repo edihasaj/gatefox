@@ -20,6 +20,14 @@ Older `unexpected_output` records do not identify the frame that triggered them.
 
 ## Responses tool identity failures
 
+Claude's `claude.tool_use` failures carry fixed reasons such as `unknown_tool`,
+`unavailable_gateway_tool`, `native_builtin_tool`, `duplicate_tool_id` and
+`malformed_tool_call`. The client explanation now distinguishes these reasons
+instead of combining unknown names, duplicate IDs and malformed calls into one
+message. Tool names and arguments remain private. A deliberately blocked tool
+name closes its live CLI without treating that controlled stop as a process
+crash; the failed response is still final and never replays itself.
+
 `tool_identity_failure` separates Responses catalog/name matching failures from
 malformed arguments and other `invalid_tool_call` errors. Its `upstreamCode` is
 one of `missing_tool_name`, `unknown_wire_tool`, `unexpected_tool_namespace` or

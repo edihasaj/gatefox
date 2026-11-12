@@ -106,6 +106,16 @@ finishes normally, then the session closes instead of remaining parked in replay
   up to 250 ms for its last lines to be read, so a refusal printed just before the
   exit is not recorded as a crash.
 
+- **Rejected tool name:** an unknown tool, unavailable gateway tool or forbidden
+  native helper stops the response before any tool from that response is forwarded.
+  Gateway deliberately kills that CLI for confinement, records `closed` rather
+  than `crashed`, and does not create an hour-long crash hold. The failed request
+  remains final. Only a new caller request can start a replacement under the
+  existing cache guard. No tool is guessed, executed, remapped or automatically
+  retried. Adopted older sessions get the same hold release only when their own
+  request reports one of these fixed tool-name rejections; unrelated crash holds
+  remain protected. A hold created before this fix is not cleared retroactively.
+
 - **Capacity** (no eviction): see Admission below.
 - **Warmup** (no session): a thread must complete `warmup` ordinary requests before
   its first live CLI starts. Until then, it runs one-shot with the `warmup` miss
@@ -339,6 +349,11 @@ parent chat, three `thread/sample` composer predictions must each finish without
 parking another CLI, then the parent must continue on its original session.
 Run it after building, with `--sdk /absolute/sdk --catalog /absolute/models_cache.json
 --root /tmp/fresh-sampling-proof`. It uses private homes and no paid inference.
+Add `--tool-recovery` to also prove that a native turn rejected for an unknown
+tool fails once without replay, then a separate caller message succeeds in the
+same chat without an hour-long hold.
+Use `--legacy-package /absolute/older-release/package` with that option to start
+the session on an older implementation before adopting it into the candidate.
 
 On 1 November 2026, native Claude Code 2.1.299 and the installed Codex app-server
 SDK each completed a three-request tool loop using one backend process through an

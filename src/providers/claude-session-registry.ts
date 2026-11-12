@@ -136,7 +136,7 @@ export function pinReplay(registry: SessionRegistry, key: string, lastUse: numbe
 }
 
 /**
- * A refusal never holds a thread. A session from an earlier release still closes as crashed after one,
+ * A refusal or blocked tool name never holds a thread. A session from an earlier release still closes as crashed after one,
  * and an in-place upgrade keeps those sessions running, so the request that saw the refusal clears the
  * hold. Taken when the request attaches, it clears only that session's own hold: a later session on the
  * same thread can really crash while this request's reader is still behind.
