@@ -4,7 +4,7 @@ import { copyFileSync, mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { fetchTailnetCertificate, tailnetCertificateName, type TailscaleRun } from "../tailnet-tls.js";
+import { fetchTailnetCertificate, tailnetCertificateName, tailscaleEnvironment, tailscaleRunner, type TailscaleRun } from "../tailnet-tls.js";
 
 const name = "mac.tail1234.ts.net";
 function pair(subject: string, days = 2): { cert: string; key: string } | undefined {
@@ -32,7 +32,17 @@ test("the name is this Mac's MagicDNS name only when the tailnet issues certific
   assert.equal(await tailnetCertificateName(fake(status(name, [])).run), undefined, "HTTPS certificates turned off");
   assert.equal(await tailnetCertificateName(fake("not json").run), undefined);
   assert.equal(await tailnetCertificateName(fake(status("-bad..name", ["-bad..name"])).run), undefined);
-  assert.equal(await tailnetCertificateName(undefined), undefined, "Tailscale is not installed");
+  assert.equal(await tailnetCertificateName(async () => { throw new Error("Tailscale command failed"); }), undefined, "Tailscale is logged out or not running");
+});
+
+test("the Mac app's binary runs as the command line even from a background service", async () => {
+  // Regression: under launchd, without TAILSCALE_BE_CLI, the app binary tried to open its GUI and every call failed.
+  assert.deepEqual(tailscaleEnvironment("/Users/test"), { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: "/Users/test", TAILSCALE_BE_CLI: "1" });
+  const directory = mkdtempSync(join(tmpdir(), "gatefox-fake-tailscale-"));
+  const binary = join(directory, "Tailscale");
+  execFileSync("/bin/sh", ["-c", `printf '#!/bin/sh\\nprintf "%%s" "$TAILSCALE_BE_CLI"\\n' > '${binary}' && chmod 700 '${binary}'`]);
+  assert.equal(await tailscaleRunner([join(directory, "missing"), binary])!(["status"], 5000), "1");
+  assert.equal(tailscaleRunner([join(directory, "missing")]), undefined);
 });
 
 test("the certificate is fetched into an owner-only directory and must name this Mac", { skip: !pair(name) && "openssl is not available" }, async () => {

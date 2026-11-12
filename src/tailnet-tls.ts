@@ -18,11 +18,19 @@ export type TailscaleRun = (args: string[], timeoutMs: number) => Promise<string
 /** The Tailscale command line, in the order a Mac usually has it: the app's own binary, then Homebrew and /usr/local. */
 export const tailscaleCandidates = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"];
 
+/**
+ * The environment the command runs with. The Mac app's binary is also its GUI and, started from a background service
+ * with no terminal, opens as the GUI ("The Tailscale GUI failed to start") unless TAILSCALE_BE_CLI is set.
+ */
+export function tailscaleEnvironment(home = process.env.HOME ?? ""): Record<string, string> {
+  return { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: home, TAILSCALE_BE_CLI: "1" };
+}
+
 export function tailscaleRunner(candidates = tailscaleCandidates): TailscaleRun | undefined {
   const binary = candidates.find(path => existsSync(path));
   if (!binary) return undefined;
   return (args, timeoutMs) => new Promise((resolve, reject) => {
-    execFile(binary, args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: process.env.HOME ?? "" } },
+    execFile(binary, args, { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, env: tailscaleEnvironment() },
       (error, stdout) => error ? reject(new Error("Tailscale command failed")) : resolve(stdout));
   });
 }
