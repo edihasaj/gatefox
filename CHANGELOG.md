@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.9.7 — 2026-11-12
+
+- The tailnet listener now works with the App Store build of Tailscale. That build is sandboxed
+  and could not write the certificate to the gateway's state directory ("operation not
+  permitted"), so the listener stayed closed. The gateway now reads the certificate and key from
+  `tailscale cert` output, checks that they match, and keeps them in memory only. The copy that
+  1.9.6 wrote is removed.
+
 ## 1.9.6 — 2026-11-12
 
 - The tailnet listener serves HTTPS. Claude Desktop accepts a plain `http://` gateway only on
