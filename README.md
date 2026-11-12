@@ -46,6 +46,10 @@ Claude Code for a Claude subscription).
 app to Applications and open it. The setup wizard connects your accounts, picks
 models and starts the background service.
 
+GateFox checks for app updates when you open it and shows an **Install Update**
+notice when a newer version is available. Settings also offers manual checks
+and automatic installation. See [app updates](docs/macos-updates.md).
+
 **Option B: the command line.** In a new, empty folder:
 
 ```sh
@@ -131,17 +135,4 @@ GateFox was called Harness Gateway, and before that Subscription Gateway. The in
 writes three launchers with the same contents: `gatefox`, `gateway` and `harness-gateway`,
 so existing scripts keep working. Examples here use `gateway`.
 
-Macs installed before 1.8.0 keep a few names that their running services depend on:
-
-| Name | Where | Fresh installation |
-| --- | --- | --- |
-| `~/.local/share/subscription-gateway` | install root | `~/.local/share/gatefox` |
-| `~/Library/Application Support/Subscription Gateway` | config and state | `…/GateFox` |
-| `com.edihasaj.subscription-gateway*` | LaunchAgent labels | unchanged |
-| `subscription_gateway` | provider id of chats saved before 1.8.0 | `gatefox` |
-
-`gatefox chats migrate --apply` moves saved chats to `gatefox`; both ids stay registered,
-so either opens (see [harness identity](docs/harness-identity.md)). The gateway's one
-background item is the signed GateFox app, so System Settings shows GateFox under
-"Allow in the Background". See [services](docs/services.md) and
-[the rename plan](docs/gatefox-rename.md).
+Existing saved chats remain supported; see [chat compatibility](docs/harness-identity.md).
