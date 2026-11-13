@@ -8,12 +8,14 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { chatStateUpstream } from './chat-state-upstream.mjs';
 
 const { values } = parseArgs({ options: { package: { type: 'string' }, root: { type: 'string' },
   native: { type: 'boolean', default: false }, private: { type: 'boolean', default: false }, code: { type: 'string' },
   unread: { type: 'boolean', default: false }, activity: { type: 'boolean', default: false }, 'native-engine': { type: 'string' },
   'executor-diagnostics': { type: 'boolean', default: false }, 'restart-discovery': { type: 'boolean', default: false },
-  'delayed-discovery': { type: 'boolean', default: false }, 'replay-completion': { type: 'boolean', default: false } } });
+  'delayed-discovery': { type: 'boolean', default: false }, 'replay-completion': { type: 'boolean', default: false }, 'truncated-upstream': { type: 'boolean', default: false } } });
+assert.ok(!values['truncated-upstream'] || values.activity && !values.native && !values.private, '--truncated-upstream requires shared gateway --activity');
 assert.ok(!values['delayed-discovery'] || values['restart-discovery'], '--delayed-discovery requires --restart-discovery');
 assert.ok(values.package && values.root, 'Pass --package INSTALLED_PACKAGE --root EVIDENCE_DIRECTORY');
 const source = resolve(values.code ?? fileURLToPath(new URL('..', import.meta.url))), pkg = resolve(values.package);
@@ -68,13 +70,21 @@ const until = async (check, name, ms = 20_000) => {
   throw Error(name + ' timed out');
 };
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
-let gate, calls = 0, host, gateway, failNext = false;
+let gate, calls = 0, host, gateway, failNext = false, upstream;
 let phase = 'server';
 const clients = [];
 const evidence = { fixture, engine: values.native ? 'native' : values.private ? 'private-gateway' : 'shared-gateway',
   realGatewaySdk: true, paidInferenceRequests: 0, passed: false };
 try {
-  gateway = await startGateway(config, () => ({
+  if (values['truncated-upstream']) {
+    upstream = await chatStateUpstream({ currentCall: () => calls, gate: () => gate?.promise, fail: () => { const failed = failNext; failNext = false; return failed; } });
+    config.providers[0].baseUrl = upstream.baseUrl;
+    process.env.GATEWAY_CHAT_STATE_FIXTURE_KEY = 'synthetic-local-fixture';
+  }
+  const { ResponsesAPI } = await load('providers/responses-api');
+  gateway = await startGateway(config, provider => values['truncated-upstream'] ? {
+    async *infer(request, signal, context) { calls++; yield* new ResponsesAPI(provider).infer(request, signal, context); },
+  } : ({
     async *infer(_request, signal) {
       calls++;
       if (gate) await Promise.race([gate.promise, new Promise((_, reject) => {
@@ -242,15 +252,23 @@ try {
     let report = await readActivity(configPath, state, { nativeHome: native });
     assert.equal(report.rows.find(row => row.threadId === id)?.state, 'completed');
     gate = deferred();
-    const offline = await writerRpc('turn/start', { threadId: id, input: [{ type: 'text', text: 'Synthetic offline completion for Gateway activity.' }] });
+    const activityWriter = values['restart-discovery'] ? await client('activity_rejoined_writer') : writer;
+    if (activityWriter !== writer) await activityWriter.router.request('thread/resume', { threadId: id });
+    const offline = await activityWriter.router.request('turn/start', { threadId: id, input: [{ type: 'text', text: 'Synthetic offline completion for Gateway activity.' }] });
     await until(() => calls === 3, 'Held activity completion request');
-    await phone.backend.stop(); await writer.backend.stop();
+    if (upstream) await upstream.truncated;
+    await phone.backend.stop(); await activityWriter.backend.stop();
     gate.resolve();
     await until(async () => {
       const snapshot = await readActivity(configPath, state, { nativeHome: native });
       return snapshot.rows.some(row => row.threadId === id && row.turn?.id === offline.turn.id && row.state === 'completed');
     }, 'Gateway activity sees completion after both clients disappear');
     evidence.gatewayActivityOfflineCompletion = true;
+    if (upstream) {
+      assert.equal(upstream.stats.truncatedFrames, 1); assert.equal(upstream.stats.prematureDisconnects, 0);
+      assert.equal(upstream.stats.requests, 4, 'One pre-output provider recovery, without a new SDK inference request');
+      evidence.offlineTruncatedStreamRecovered = true;
+    }
     const controller = await client('activity_failure_controller');
     await controller.router.request('thread/resume', { threadId: id });
     gate = deferred(); failNext = true;
@@ -269,6 +287,20 @@ try {
     assert.equal(await readFile(join(native, 'config.toml'), 'utf8'), nativeConfig);
     evidence.gatewayActivityOfflineFailure = true;
     evidence.gatewayActivityNoInferenceOrClientMutation = true;
+    if (upstream) {
+      phase = 'explicit:stop';
+      const stopper = await client('offline_recovery_stop_controller');
+      await stopper.router.request('thread/resume', { threadId: id });
+      gate = deferred();
+      const stopped = await stopper.router.request('turn/start', { threadId: id, input: [{ type: 'text', text: 'Hold this synthetic request until explicit Stop.' }] });
+      await until(() => calls === 5 && upstream.stats.requests === 6, 'Explicit Stop fixture reaches provider');
+      await stopper.router.request('turn/interrupt', { threadId: id, turnId: stopped.turn.id });
+      await until(async () => (await stopper.router.request('thread/read', { threadId: id, includeTurns: true })).thread.turns.find(turn => turn.id === stopped.turn.id)?.status === 'interrupted', 'Explicit Stop remains authoritative');
+      await until(() => upstream.stats.prematureDisconnects === 1, 'Explicit Stop cancels upstream inference');
+      assert.equal(calls, 5); assert.equal(upstream.stats.requests, 6);
+      evidence.explicitStopPreserved = true;
+      evidence.upstreamRequests = upstream.stats.requests;
+    }
   }
   if (values['executor-diagnostics']) {
     assert.ok(!values.private && !values.native && !values.unread, 'Diagnostics fixture requires shared gateway execution');
@@ -364,6 +396,7 @@ try {
   await Promise.allSettled(clients.map(client => client.stop()));
   await host?.close();
   if (gateway) { gateway.closeAllConnections(); await new Promise(done => gateway.close(done)); }
+  await upstream?.close();
   await writeFile(join(root, 'result.json'), JSON.stringify(evidence, null, 2) + '\n', { mode: 0o600 });
   console.log(JSON.stringify(evidence));
 }

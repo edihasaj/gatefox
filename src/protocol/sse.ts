@@ -3,6 +3,8 @@ import { ProviderError } from "../providers/provider.js";
 
 // Malformed upstream frames are provider protocol failures, not gateway exceptions.
 const invalidStream = (message: string) => new ProviderError("invalid_stream", message, 502);
+const truncatedStream = () => new ProviderError("incomplete", "Provider stream ended with an incomplete frame", 502,
+  { code: "truncated_frame", event: "eof" });
 
 export async function* readEvents(body: AsyncIterable<Uint8Array>, format: "responses" | "chat" = "responses"): AsyncGenerator<WireEvent> {
   const decoder = new TextDecoder("utf-8", { fatal: true }); let buffer = "";
@@ -20,7 +22,8 @@ export async function* readEvents(body: AsyncIterable<Uint8Array>, format: "resp
     return event;
   };
   for await (const bytes of body) {
-    buffer += decoder.decode(bytes, { stream: true });
+    try { buffer += decoder.decode(bytes, { stream: true }); }
+    catch { throw invalidStream("Provider stream contains invalid UTF-8"); }
     if (buffer.length > 8 * 1024 * 1024) throw new ProviderError("output_too_large", "Provider stream frame exceeds 8 MiB", 502);
     let separator;
     while ((separator = /\r?\n\r?\n/.exec(buffer))) {
@@ -28,6 +31,6 @@ export async function* readEvents(body: AsyncIterable<Uint8Array>, format: "resp
       const event = parse(frame); if (event) yield event;
     }
   }
-  buffer += decoder.decode();
-  if (buffer.trim()) throw invalidStream("Provider stream ended with an incomplete frame");
+  try { buffer += decoder.decode(); } catch { throw truncatedStream(); }
+  if (buffer.trim()) throw truncatedStream();
 }

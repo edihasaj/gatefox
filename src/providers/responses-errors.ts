@@ -33,8 +33,8 @@ export function observeResponsesStream(stream: ProviderStreamDiagnostic, event: 
   if (event.type === "response.output_text.delta") stream.textDeltas = count(stream.textDeltas + 1);
   if (["response.output_item.added", "response.output_item.done"].includes(event.type) && object(event.item).type === "reasoning") stream.reasoningItems = count(stream.reasoningItems + 1);
 }
-export function responsesEOFError(stream: ProviderStreamDiagnostic, requestId?: string): ProviderError {
-  return new ProviderError("incomplete", "Provider stream ended without completion", 502, { code: "missing_terminal", event: "eof",
+export function responsesEOFError(stream: ProviderStreamDiagnostic, requestId?: string, code: "missing_terminal" | "truncated_frame" = "missing_terminal"): ProviderError {
+  return new ProviderError("incomplete", code === "truncated_frame" ? "Provider stream ended with an incomplete frame" : "Provider stream ended without completion", 502, { code, event: "eof",
     ...requestIdOf(requestId),
     stream: { events: count(stream.events), reasoningItems: count(stream.reasoningItems), textDeltas: count(stream.textDeltas), toolCalls: count(stream.toolCalls),
       ...(stream.lastEvent === undefined ? {} : { lastEvent: streamEventTypes.has(stream.lastEvent) ? stream.lastEvent : "unknown" }) } });
