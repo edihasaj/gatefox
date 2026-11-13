@@ -15,7 +15,7 @@ const diagnosticCodes = new Set([
 ]);
 const upstreamCodes = new Set([
   ...toolIdentityReasons,
-  "unknown", "missing_terminal", "server_error", "server_is_overloaded", "rate_limit", "authentication_failed", "billing_error", "invalid_request", "cache_recovery_required",
+  "unknown", "missing_terminal", "truncated_frame", "server_error", "server_is_overloaded", "rate_limit", "authentication_failed", "billing_error", "invalid_request", "cache_recovery_required",
   "rate_limit_exceeded", "slow_down", "insufficient_quota", "invalid_prompt", "invalid_encrypted_content", "invalid_request_error", "max_output_tokens",
   "content_filter", "context_length_exceeded", "invalid_api_key", "authentication_error", "token_expired", "unauthorized", "credit_balance_exhausted",
   "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "native_tool_search", "native_mcp_wait", "unknown_tool", "unavailable_gateway_tool",

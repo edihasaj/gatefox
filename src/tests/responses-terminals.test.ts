@@ -147,9 +147,21 @@ test("cancellation during EOF recovery backoff prevents another provider request
   finally { clearTimeout(timer); await f.close(); }
 });
 
-test("malformed final SSE framing is not an eligible clean EOF", async () => {
+test("truncated final SSE framing retries once before output but never becomes a successful terminal", async () => {
   const f = await fixture(() => [], { raw: 'data: {"type":"response.completed"}' });
-  try { const result = await collect(f.provider); assert.ok(result.error?.message.includes("incomplete frame")); assert.equal(f.attempts(), 1); }
+  try { const result = await collect(f.provider); assert.ok(result.error?.message.includes("incomplete frame")); assert.equal(result.error?.code, "incomplete"); assert.equal(result.error?.upstream?.code, "truncated_frame"); assert.equal(f.attempts(), 2); assert.equal(result.events.some(event => event.type === "done"), false); }
+  finally { await f.close(); }
+});
+
+test("a truncated SSE frame after text never replays the upstream request internally", async () => {
+  const f = await fixture(() => [delta], { raw: 'data: {"type":"response.completed"' });
+  try { const result = await collect(f.provider); assert.equal(result.error?.code, "incomplete"); assert.equal(f.attempts(), 1); assert.equal(result.events.some(event => event.type === "done"), false); }
+  finally { await f.close(); }
+});
+
+test("fully delimited corrupt JSON remains a permanent protocol error without a retry", async () => {
+  const f = await fixture(() => [], { raw: 'data: {not-json}\n\n' });
+  try { const result = await collect(f.provider); assert.equal(result.error?.code, "invalid_stream"); assert.equal(f.attempts(), 1); }
   finally { await f.close(); }
 });
 

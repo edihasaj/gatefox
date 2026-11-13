@@ -175,11 +175,14 @@ Every other retryable class keeps the single retry above, whichever attempt it
 lands on. A connection failure after any inference output is not replayed. Certificate
 failures, permanent DNS failures, refused connections, unknown network faults,
 OAuth refresh failures, and cancellations receive no additional internal retry.
-A clean EOF without a terminal event has the same single retry
+A clean EOF without a terminal event, or EOF in a partial SSE frame or UTF-8
+character, has the same single retry
 only before any inference output has been published. Cancellation stops that
 wait. Quota, authentication, malformed streams, partial responses, and unclassified
 stream failures other than an `error` or `response.failed` event with an unknown code
-never retry automatically. EOF and `[DONE]` never substitute
+never retry automatically. Truncated EOF is retryable `incomplete`
+(`truncated_frame`); fully received invalid JSON or invalid UTF-8 stays
+`invalid_stream`. No partial data is repaired or dispatched. EOF and `[DONE]` never substitute
 for a genuine Responses terminal.
 
 Chat Completions routes (including Qwen over the checked tailnet transport) use

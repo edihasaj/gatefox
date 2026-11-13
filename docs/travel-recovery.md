@@ -112,6 +112,28 @@ an existing private executor has become durable. After natural adoption, check
 
 ## Recovery boundaries
 
+A viewer disconnect and an upstream provider disconnect are separate boundaries.
+The shared engine keeps its inference connection when a viewer goes away. EOF in
+an SSE frame is retryable `incomplete` with the fixed `truncated_frame` diagnostic;
+the partial frame never becomes a completed response. Responses routes can retry
+once before any text, reasoning, tool output or measured input usage. After
+output, recovery belongs to the SDK's existing stream retry policy. Fully received
+corrupt frames remain permanent protocol errors, and explicit Stop still cancels.
+
+Verify both boundaries with a real SDK and synthetic upstream:
+
+```sh
+node scripts/e2e-chat-state.mjs --package /absolute/verified/package \
+  --code /absolute/matching/source --root /tmp/task-lid-stream \
+  --restart-discovery --activity --truncated-upstream
+```
+
+The baseline ends its turn after a cut-off provider frame. The fixed transport
+finishes that same turn after every viewer disconnects, without another SDK
+inference request. Reconnection recovers saved completion. Genuine usage limits
+must still fail and explicit Stop must still interrupt. No account, paid inference
+or caller tool execution is involved.
+
 Explicit Stop, user-paused or blocked goals, approval requests, authentication
 and billing failures, and usage limits retain their meaning. Shared ownership
 does not clear them or create another inference turn.

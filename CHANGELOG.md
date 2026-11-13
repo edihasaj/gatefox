@@ -8,6 +8,17 @@
   records ownership for rollback, and preserves the original storage, executor
   identity, preferences, saved chats and macOS security identities.
 
+## 2.0.5 — 2026-11-13
+
+- An upstream SSE connection ending mid-frame or mid-character is now a
+  recoverable incomplete stream instead of a permanent protocol rejection.
+  Responses retries once only before output or measured input usage. Partial
+  actions are never repaired or replayed internally; corrupt complete frames
+  remain final.
+- The real SDK disconnect fixture combines cold reconnection, offline completion
+  and a truncated provider stream, and verifies explicit Stop and genuine usage
+  limits remain authoritative.
+
 ## 2.0.4 — 2026-11-13
 
 - A malformed Claude tool call stops its failed response without imposing a

@@ -93,7 +93,7 @@ export class ResponsesAPI implements Provider {
           (failure.upstream?.event !== "http" && ["server_error", "server_is_overloaded"].includes(failure.upstream?.code || "")) ||
           (failure.upstream?.event === "http" && failure.code === "upstream_unavailable") ||
           (failure.code === "inference_failed" && ["error", "response.failed"].includes(failure.upstream?.event || "") && failure.upstream?.code === "unknown") ||
-          (failure.code === "incomplete" && failure.upstream?.code === "missing_terminal" && failure.upstream.event === "eof");
+          (failure.code === "incomplete" && ["missing_terminal", "truncated_frame"].includes(failure.upstream?.code || "") && failure.upstream?.event === "eof");
         if (!temporary) throw failure;
         const startedAt = network ? (firstNetworkAt ??= networkRetryNow()) : throttle ? (firstThrottleAt ??= throttleRetryNow()) : networkRetryNow();
         const elapsedMs = (throttle ? throttleRetryNow() : networkRetryNow()) - startedAt;
@@ -415,6 +415,8 @@ export class ResponsesAPI implements Provider {
         break;
       }
     } } catch (error) {
+      if (error instanceof ProviderError && error.code === "incomplete" && error.upstream?.event === "eof" && error.upstream.code === "truncated_frame")
+        throw responsesEOFError(stream, response.headers.get("x-request-id") || undefined, "truncated_frame");
       if (error instanceof ProviderError && error.code === "tool_identity_failure")
         throw new ProviderError(error.code, error.message, error.status, { ...error.upstream, stream: { ...stream } });
       throw networkProviderError(error, "stream") ?? error;
