@@ -1,5 +1,6 @@
 import type { ProviderError } from "./provider.js";
 import { claudeAuthenticationFailure } from "./claude-auth.js";
+import { claudeFailure } from "./claude-errors.js";
 
 /** Whether a native stream line is model output: visible text, hidden reasoning or tool use. message_start and housekeeping are not. */
 export function isNativeOutput(message: Record<string, unknown>, event: unknown): boolean {
@@ -19,6 +20,22 @@ const isTerminal = (message: Record<string, unknown>): boolean =>
 export function queuedAuthentication(queue: Array<Record<string, unknown>>): ProviderError | undefined {
   const terminal = queue.find(isTerminal);
   return terminal ? claudeAuthenticationFailure(terminal) : undefined;
+}
+
+/**
+ * Provider capacity and quota answers: a usage or rate limit, unavailable billing credits or a temporary Claude outage.
+ * They judge the account at that moment, never the CLI, so before any output they must not hold the thread as a crash.
+ */
+const limitCodes = new Set(["usage_limit", "rate_limit_exceeded", "insufficient_quota", "upstream_unavailable"]);
+export const providerLimit = (error: unknown): error is ProviderError =>
+  !!error && typeof error === "object" && limitCodes.has((error as ProviderError).code)
+  && ["claude.assistant", "claude.result"].includes((error as ProviderError).upstream?.event ?? "");
+
+/** The provider limit a CLI printed before it exited, when it is the first terminal frame in the unread lines. */
+export function queuedLimit(queue: Array<Record<string, unknown>>): ProviderError | undefined {
+  const terminal = queue.find(isTerminal);
+  const failure = terminal ? claudeFailure(terminal) : undefined;
+  return providerLimit(failure) ? failure : undefined;
 }
 
 /**

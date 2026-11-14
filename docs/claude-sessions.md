@@ -353,6 +353,24 @@ cannot be replaced by a later authentication diagnostic. Sessions adopted from a
 older release remain conservative; an existing crash hold is not retroactively
 cleared.
 
+
+## Usage and rate limits
+
+A Claude usage limit, rate limit, unavailable billing credit or temporary Claude
+outage judges the account at that moment, not the CLI. When one arrives before any
+inference output, tool-result delivery or queued steering, the live session closes
+without a crash hold and the request reports the limit itself (`usage_limit`,
+`rate_limit_exceeded`, `insufficient_quota` or `upstream_unavailable`). The next
+caller request starts a fresh live session on the same chat, as after a login
+failure. A limit that unread lines report just before the CLI exits is handled the
+same way when it is the first terminal frame. After output or a tool handoff the
+crash hold remains, because the turn may have advanced.
+
+On November 14, 2026, two Fable chats on Studio hit a temporary Claude throttle
+(`rate_limit`) at 21:57 and 22:23 UTC. Release 2.0.6 and earlier treated it as a
+crash, so each chat showed `session_dead` for an hour; both holds were released
+with `gatefox claude-sessions recover` without starting inference.
+
 On October 21, 2026, five fresh one-shot requests failed with
 `authentication_failed` between 10:33 and 10:36 Europe/Belgrade, each before any
 inference event. Two original chats later continued without a recorded login
