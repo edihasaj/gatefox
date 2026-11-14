@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { declaredResponsesTools, normalizeResponsesToolChoice, normalizeResponsesTools } from "../protocol/request.js";
 import type { ResponseToolIdentity, ResponsesRequest, ResponsesTool } from "../protocol/types.js";
 import { ProviderError } from "./provider.js";
-import { toolIdentityFailure } from "./tool-identity.js";
+import { recordToolIdentityFallback, toolIdentityFailure, type ToolIdentityFallback } from "./tool-identity.js";
 
 type Item = Record<string, unknown>;
 type StrictFlag = { present: boolean; value?: unknown };
@@ -18,6 +18,32 @@ const record = (value: unknown): Item | undefined => value !== null && typeof va
 const identityKey = (identity: ResponseToolIdentity): string => JSON.stringify([identity.type, identity.namespace || "", identity.name]);
 const invalidRequest = () => new ProviderError("invalid_request", "Responses request contains an invalid caller tool", 400);
 
+const functionsPrefix = "functions.";
+// Wire names are ASCII base64url. Fold only A-Z, so a non-ASCII letter such as the Kelvin sign (which `toLowerCase` maps to `k`)
+// can never stand in for a wire-name character.
+const asciiLower = (value: string): string => value.replace(/[A-Z]/g, letter => String.fromCharCode(letter.charCodeAt(0) + 32));
+
+/**
+ * Some models return the caller-visible alias (`exec_command`, `functions.exec_command`, `namespace.name`) or a differently
+ * cased wire name instead of the opaque wire name. Accept such a name only when it selects exactly one declared tool, so an
+ * undeclared or ambiguous name still fails. There is deliberately no fuzzy or edit-distance matching.
+ */
+function fallbackBinding(name: string, bindings: Map<string, Binding>): { binding: Binding; kind: ToolIdentityFallback } | undefined {
+  // Gather every way the name could select a tool before deciding, so one spelling can never win over another: a name that is
+  // the alias of one tool and a case variant of another tool's wire name is ambiguous, and so is `functions.<alias>` against
+  // a tool whose literal alias starts with `functions.`.
+  const candidates = new Map<Binding, ToolIdentityFallback>();
+  const lower = asciiLower(name);
+  const stripped = name.startsWith(functionsPrefix) ? name.slice(functionsPrefix.length) : undefined;
+  for (const binding of bindings.values()) {
+    if (binding.alias === name) candidates.set(binding, binding.identity.namespace ? "namespaced_alias" : "alias");
+    else if (stripped !== undefined && binding.alias === stripped) candidates.set(binding, "functions_prefix");
+    else if (asciiLower(binding.wireName) === lower) candidates.set(binding, "wire_case");
+  }
+  if (candidates.size !== 1) return;
+  const [[binding, kind]] = candidates;
+  return { binding, kind };
+}
 
 /** A custom tool has exactly one caller-visible string; extra fields would be discarded. */
 export function validCustomFunctionEnvelope(identity: ResponseToolIdentity, arguments_: string): boolean {
@@ -127,13 +153,25 @@ export function responsesFunctionTools(body: ResponsesRequest, prefix: "grok" | 
     return transformed === undefined ? [] : [transformed];
   }) as ResponsesRequest["input"] : body.input;
   const bridged: ResponsesRequest = { ...body, tools: wireTools, ...(input !== body.input ? { input } : {}), ...(toolChoice !== body.tool_choice ? { tool_choice: toolChoice } : {}) };
+  // A call is restored when it is added and again when it is done; count each call once. The id is the provider's own and is
+  // not validated until a call is done, so only a normal-sized id is remembered and only up to the tool-call limit; beyond
+  // either bound the call still runs but is not counted, which keeps this set small whatever the provider sends.
+  const counted = new Set<string>();
+  const maxCountedIdLength = 1024, maxCountedCalls = 1024;
   return {
     body: bridged,
     restoreItem(item): Item {
       if (item.type !== "function_call") return item;
       if (typeof item.name !== "string" || !item.name) throw toolIdentityFailure("missing_tool_name");
       if (item.namespace !== undefined) throw toolIdentityFailure("unexpected_tool_namespace");
-      const binding = bindings.get(item.name); if (!binding) throw toolIdentityFailure("unknown_wire_tool");
+      let binding = bindings.get(item.name);
+      if (!binding) {
+        const matched = fallbackBinding(item.name, bindings); if (!matched) throw toolIdentityFailure("unknown_wire_tool");
+        binding = matched.binding;
+        const key = typeof item.call_id === "string" ? item.call_id : typeof item.id === "string" ? item.id : undefined;
+        if (key === undefined) recordToolIdentityFallback(matched.kind);
+        else if (key.length <= maxCountedIdLength && !counted.has(key) && counted.size < maxCountedCalls) { counted.add(key); recordToolIdentityFallback(matched.kind); }
+      }
       return { ...item, name: binding.identity.name, ...(binding.identity.namespace ? { namespace: binding.identity.namespace } : {}) };
     },
   };

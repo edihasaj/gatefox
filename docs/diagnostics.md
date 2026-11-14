@@ -20,6 +20,17 @@ Read [claude output between requests](diagnostics-guide-provider-failures.md#cla
 
 Read [responses tool identity failures](diagnostics-guide-provider-failures.md#responses-tool-identity-failures).
 
+When a model answers with a declared tool's alias or a differently cased wire name
+instead of the exact wire name, the call is restored and the gateway keeps an
+in-process count under one of the fixed labels `alias`, `namespaced_alias`,
+`functions_prefix` or `wire_case` (`toolIdentityFallbackCounts()` in
+`src/providers/tool-identity.ts`). The counts hold no tool names, namespaces or
+arguments, and reset when the service restarts. A name that selects more than one tool
+by any of these spellings (an alias of one tool that is also a case variant of another
+tool's wire name) is refused. To keep memory bounded, a call is counted once per request
+only while its id is at most 1,024 characters and fewer than 1,024 calls have been
+counted; later calls still run but are not counted.
+
 ## Chat Completions malformed tool calls
 
 Read [chat completions malformed tool calls](diagnostics-guide-provider-failures.md#chat-completions-malformed-tool-calls).
