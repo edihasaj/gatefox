@@ -7,7 +7,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import type { ChatToolSelection, InferenceEvent, OpenAITool } from "../protocol/types.js";
 import { ProviderError, providerRefusal } from "./provider.js";
-import { isNativeOutput, queuedAuthentication, replaySafeStart } from "./claude-native-output.js";
+import { isNativeOutput, providerLimit, queuedAuthentication, queuedLimit, replaySafeStart } from "./claude-native-output.js";
 import { markReplaySafeAuthentication, nativeAuthenticationFailure } from "./claude-auth.js";
 import { claudeRequestRejection } from "./claude-request-rejection.js";
 import { controlLine, controlResult, userLine, type ClaudeMcpTool } from "./claude-control.js";
@@ -346,11 +346,14 @@ export class ClaudeSession {
       // A native authentication failure before any output, tool-result delivery or steering changed nothing
       // in the CLI's history, so it must not hold the thread as a crash does: the next request retries the login.
       const authentication = !refused && nativeAuthenticationFailure(error) && replaySafeStart(attached);
+      // A usage or rate limit before any output likewise left the CLI's history untouched: the limit is the answer.
+      const limited = !refused && !authentication && providerLimit(error) && replaySafeStart(attached);
       const rejectedTool = rejectedClaudeTool(error);
       this.detach(attached); attached.turn.onEnd(refused ? "refused" : "failed", attached.turn.stream.observedTokens);
       if (refused) void this.close("closed", "refused", true);
       else if (rejectedTool) void this.close("closed", rejectedTool.upstream?.code, true);
       else if (authentication) { markReplaySafeAuthentication(error as ProviderError); void this.close("closed", "authentication_failed", true); }
+      else if (limited) void this.close("closed", (error as ProviderError).upstream?.code ?? (error as ProviderError).code, true);
       else void this.close("crashed", error instanceof ProviderError ? error.upstream?.code ?? error.code : "failed", true);
     }
     return error;
@@ -454,9 +457,11 @@ export class ClaudeSession {
     // it skips the crash hold only when nothing before it changed the CLI's history.
     const login = outcome === "crashed" && attached && !attached.error && !refusal ? queuedAuthentication(attached.queue) : undefined;
     if (login && replaySafeStart(attached!)) { outcome = "closed"; reason = "authentication_failed"; markReplaySafeAuthentication(login); }
+    const limit = outcome === "crashed" && attached && !attached.error && !refusal && !login && replaySafeStart(attached) ? queuedLimit(attached.queue) : undefined;
+    if (limit) { outcome = "closed"; reason = limit.upstream?.code ?? limit.code; }
     if (attached) {
       this.detach(attached); attached.turn.onEnd(refusal ? "refused" : "failed", attached.turn.stream.observedTokens);
-      attached.error ??= refusal ?? login ?? (attached.steered
+      attached.error ??= refusal ?? login ?? limit ?? (attached.steered
         ? steeringEnded()
         : new ProviderError("cli_failed", "Claude CLI session ended; run gateway doctor", 502, { code: reason, event: "claude.session" }));
       attached.wake?.();

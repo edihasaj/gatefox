@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.7 — 2026-11-15
+
+- A Claude usage or rate limit, unavailable billing credit or temporary outage that
+  arrives before any output no longer holds the chat for an hour as a crashed session
+  (`session_dead`). The request reports the limit, and the next message continues the
+  chat in a fresh live session. Limits after output or a tool handoff keep the hold.
+
 ## 2.0.6 — 2026-11-14
 
 - After a reboot, a ChatGPT that opened a few seconds before the GateFox service ran its
