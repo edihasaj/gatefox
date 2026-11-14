@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.6 — 2026-11-14
+
+- After a reboot, a ChatGPT that opened a few seconds before the GateFox service ran its
+  stock engine, which could take the phone connection from the native relay so that every
+  phone turn failed with "model isn't available". The service now quits and reopens such a
+  brand-new app (at most 90 seconds old) through the gateway at startup. Older apps are left
+  alone and are never force-killed.
+
 ## 2.0.5 — 2026-11-13
 
 - An upstream SSE connection ending mid-frame or mid-character is now a

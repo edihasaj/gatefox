@@ -2,6 +2,9 @@ import { resolve } from "node:path";
 import { loadConfig } from "./config.js";
 import { configureTelemetry } from "./telemetry.js";
 import { presetDesktopEnv } from "./mac-desktop.js";
+import { recoverDesktopLoginRace } from "./desktop-login-race.js";
+import { appPathFromPlan } from "./health-app.js";
+import { readServicePlan } from "./service-plan.js";
 import { activateLoginConsolidation } from "./mac-login-consolidate.js";
 import { activatePendingNativeSharing } from "./service-native-staging.js";
 import { activatePendingClaudeConsolidation } from "./service-claude-staging.js";
@@ -10,6 +13,8 @@ import { runServiceSupervisor } from "./service-supervisor.js";
 export interface ServiceDaemonDependencies {
   /** Sets CODEX_CLI_PATH for the login session; never rejects. It runs before anything else the daemon starts. */
   preset: (stateDirectory: string) => Promise<unknown>;
+  /** Reopens a ChatGPT that won the login race against `preset` (see desktop-login-race.ts); never rejects. */
+  recover: (stateDirectory: string, preset: unknown) => Promise<unknown>;
   activate: typeof activateLoginConsolidation;
   /** Promotes a staged native-sharing request only in the primary LaunchAgent process. */
   activateNative: typeof activatePendingNativeSharing;
@@ -30,13 +35,14 @@ export interface ServiceDaemonDependencies {
  * failing the same way. The original primary job starts at the next login (see docs/services.md for doing it sooner).
  */
 export async function runServiceDaemon(configPath: string, overrides: Partial<ServiceDaemonDependencies> = {}): Promise<void> {
-  const deps: ServiceDaemonDependencies = { preset: stateDirectory => presetDesktopEnv(stateDirectory), activate: activateLoginConsolidation, activateNative: activatePendingNativeSharing, activateClaude: activatePendingClaudeConsolidation, run: runServiceSupervisor, standby: untilStopped,
+  const deps: ServiceDaemonDependencies = { preset: stateDirectory => presetDesktopEnv(stateDirectory), recover: recoverLoginRace, activate: activateLoginConsolidation, activateNative: activatePendingNativeSharing, activateClaude: activatePendingClaudeConsolidation, run: runServiceSupervisor, standby: untilStopped,
     notice: line => { process.stderr.write(line + "\n"); }, ...overrides };
   const path = resolve(configPath); const config = await loadConfig(path);
   // A rollback below records its event before the supervisor configures telemetry for itself.
   configureTelemetry(config.stateDirectory, "service");
   // First, before consolidation, waits, the network or any child: ChatGPT, a login item, can already be starting.
-  await deps.preset(config.stateDirectory);
+  // Only a preset that just set this gateway's own wrapper can make a reopened app use it.
+  await deps.recover(config.stateDirectory, await deps.preset(config.stateDirectory));
   const { plan, restored } = await deps.activate(path);
   if (plan && plan.config === path) {
     const adopted = await deps.activateClaude(path, await deps.activateNative(path, plan));
@@ -46,6 +52,12 @@ export async function runServiceDaemon(configPath: string, overrides: Partial<Se
   if (!restored) throw new Error("Unified service plan is missing or uses another configuration");
   deps.notice("gateway: an interrupted next-login consolidation was rolled back; the original login jobs are back and loaded, except the primary one, which starts at the next login; this job stays idle until then");
   await deps.standby();
+}
+
+/** The default `recover`: only after `preset` set the variable, for the app the service plan names. */
+async function recoverLoginRace(stateDirectory: string, preset: unknown): Promise<void> {
+  if (preset !== "set") return;
+  try { await recoverDesktopLoginRace(appPathFromPlan(await readServicePlan(stateDirectory))); } catch { /* Health still reports a stock engine. */ }
 }
 
 /**

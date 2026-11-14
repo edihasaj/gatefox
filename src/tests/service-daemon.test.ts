@@ -67,6 +67,19 @@ test("the daemon presets the login environment before it activates, runs or wait
   } finally { await f.remove(); }
 });
 
+test("the login-race recovery sees the preset's result and finishes before activation", async () => {
+  const f = await configured();
+  try {
+    const order: string[] = [];
+    await runServiceDaemon(f.config, {
+      preset: async () => { order.push("preset"); return "set"; },
+      recover: async (state, preset) => { assert.equal(state, f.directory); order.push(`recover:${String(preset)}`); },
+      activate: async () => { order.push("activate"); return { plan: f.plan, restored: false }; }, run: async () => { order.push("run"); },
+    });
+    assert.deepEqual(order, ["preset", "recover:set", "activate", "run"]);
+  } finally { await f.remove(); }
+});
+
 test("the daemon attempts staged native adoption after login activation and before starting its supervisor", async () => {
   const f = await configured();
   try {

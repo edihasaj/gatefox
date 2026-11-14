@@ -33,6 +33,23 @@ runs at every service start no longer writes the agent; it removes a managed one
 start. A plist at that label without the gateway's marker is left alone and reported as
 `unmanaged`.
 
+## Reopening a ChatGPT that won the race
+
+`launchctl setenv` only reaches apps that start afterwards. After a reboot, macOS can open
+ChatGPT a few seconds before the service runs (13 seconds on Studio on 13 November 2026).
+That app keeps its stock engine: gateway chats are missing on that Mac, and the stock engine
+can take the Mac's single remote-control connection from the [native relay](native-remote.md),
+so the phone loses the gateway models and every turn fails with "model isn't available".
+
+Right after the preset sets the variable, the daemon checks the process table once. When the
+app named by the service plan runs a stock `app-server` child and no `codex-shim` child, and
+both the app and that engine started at most 90 seconds ago, it sends the app SIGTERM (a
+normal quit), waits up to 15 seconds and reopens it with `/usr/bin/open`. The new app finds
+the variable and starts through the gateway, and the relay reconnects. An older app, an app
+already on the gateway, or one that does not quit is left alone; it is never force-killed.
+The result is the `desktop_login_race` event ([diagnostics](diagnostics.md)). The window means
+no chat can have started on the stock engine; outside it, `gateway health` keeps its warning.
+
 ## Standalone registration
 
 **Standalone registration (no unified service and no pending login plan)** keeps the
