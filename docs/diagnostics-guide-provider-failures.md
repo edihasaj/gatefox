@@ -38,6 +38,13 @@ instead of combining unknown names, duplicate IDs and malformed calls into one
 message. Tool names and arguments remain private. A deliberately blocked tool
 name closes its live CLI without treating that controlled stop as a process
 crash; the failed response is still final and never replays itself.
+`claude_tool_correction` records fixed outcomes and attempt counts for native CLI
+correction of an unavailable private gateway tool. `native_rejected` confirms the
+CLI's error feedback, and `recovered` identifies a later declared tool or completion.
+Missing proof, a mixed batch, a reused ID, a rejection timeout or an exhausted
+budget still stops the request. These records contain no names, IDs, arguments,
+provider error text or caller content. An observed rejection is not necessarily
+a failed request when native correction succeeds.
 
 `tool_identity_failure` separates Responses catalog/name matching failures from
 malformed arguments and other `invalid_tool_call` errors. Its `upstreamCode` is

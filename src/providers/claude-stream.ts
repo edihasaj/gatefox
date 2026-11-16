@@ -9,6 +9,7 @@ import { claudeUsageEvent, type ClaudeLimit } from "./claude-usage.js";
 import { claudeToolNameCategory } from "./claude-tool-rejection.js";
 import { claudeNativeToolName } from "./claude-tool-names.js";
 import { telemetry } from "../telemetry.js";
+import { ClaudeToolCorrection } from "./claude-tool-correction.js";
 
 /** Native token counts of one API message. */
 export interface ClaudeTokens { input?: number; cacheRead?: number; cacheWrite?: number; output: number }
@@ -95,27 +96,32 @@ export class ClaudeMessageStream {
   private readonly nativeNames: Set<string>;
   private readonly threadKey?: string;
   private rejectionReported = false;
+  private readonly correction: ClaudeToolCorrection;
   /** A non-text block started after text was streamed, so the next text begins a new paragraph. */
   private split = false;
   /** Historical aliases are for replay; live calls must address this CLI's actual registered catalog. */
-  private validateName(name: unknown): void {
+  private validateName(name: unknown, id?: unknown): void {
+    if (this.correction.admit(name, id)) return;
     if (this.nativeMcpOnly && (typeof name !== "string" || !this.nativeNames.has(name))) {
       nativeClaudeCalls([{ name: typeof name === "string" ? name : undefined, id: "rejected", input: {} }], []);
     }
     if (typeof name !== "string" || !this.bindings.get(name))
       nativeClaudeCalls([{ name: typeof name === "string" ? name : undefined, id: "rejected", input: {} }], this.tools);
+    this.correction.registered(id);
   }
-  constructor({ tools, summaryVisible, endTurn = false, nativeMcpOnly = false, threadKey }: {
-    tools: OpenAITool[]; summaryVisible: boolean; endTurn?: boolean; nativeMcpOnly?: boolean; threadKey?: string;
+  constructor({ tools, summaryVisible, endTurn = false, nativeMcpOnly = false, threadKey, allowToolCorrection = false }: {
+    tools: OpenAITool[]; summaryVisible: boolean; endTurn?: boolean; nativeMcpOnly?: boolean; threadKey?: string; allowToolCorrection?: boolean;
   }) {
     this.tools = tools; this.summaryVisible = summaryVisible; this.endTurn = endTurn; this.bindings = claudeToolBindings(tools, true);
     this.nativeMcpOnly = nativeMcpOnly; this.nativeNames = new Set(tools.map(claudeNativeToolName)); this.threadKey = threadKey;
+    this.correction = new ClaudeToolCorrection(allowToolCorrection, this.nativeNames, threadKey);
   }
   /** Text streamed so far, for the final result's consistency check. */
   get text(): string { return this.raw; }
 
   /** Measured input counts remain usable for safety checks even when parsing later fails. */
-  get observedTokens(): Partial<ClaudeTokens> | undefined { return this.measured ? { ...this.measured } : undefined; }
+  get observedTokens(): Partial<ClaudeTokens> | undefined { return this.correction.total(this.measured); }
+  waitForNativeFrame<T>(next: Promise<T>): Promise<T> { return this.correction.wait(next); }
 
   /** Idempotent, content-free observation before a live transport rejects a foreign tool. */
   observeUsage(message: Record<string, unknown>): void {
@@ -153,8 +159,11 @@ export class ClaudeMessageStream {
     if (typeof message.fast_mode_state === "string" && fastStates.has(message.fast_mode_state)) step.fastState = message.fast_mode_state;
     const limit = claudeUsageEvent(message); if (limit) { this.limit = limit; step.limit = limit; }
     const context = claudeContextFailure(message); if (context) throw context;
+    // Preserve native failures; a refusal, cancellation or auth error never becomes a correction retry.
+    if (message.type === "assistant") { const failure = claudeFailure(message, this.limit); if (failure) throw failure; }
+    if (message.type === "result" && (message.is_error || message.subtype !== "success")) throw claudeResultFailure(message, this.limit);
+    this.correction.observe(message);
     if (message.type === "assistant") {
-      const failure = claudeFailure(message, this.limit); if (failure) throw failure;
       this.assistant(message.message, step);
     } else if (message.type === "stream_event" && message.event && typeof message.event === "object") this.event(message.event as Record<string, unknown>, step);
     else if (message.type === "result") this.result(message, step);
@@ -172,7 +181,7 @@ export class ClaudeMessageStream {
       if (block.type !== "text" && this.raw) this.split = true;
       if (block.type !== "tool_use" || !message || message.ended) return;
       // A foreign tool fails at once, before the CLI can act on it.
-      this.validateName(block.name);
+      this.validateName(block.name, block.id);
       message.blocks.set(Number(event.index), { id: String(block.id), name: block.name as string, json: "" });
     } else if (event.type === "content_block_delta") {
       const delta = (event.delta || {}) as { type?: unknown; text?: unknown; partial_json?: unknown };
@@ -195,7 +204,7 @@ export class ClaudeMessageStream {
       if (typeof stop === "string") message.stop = stop;
       // Another stop (max_tokens) still makes the CLI run the complete calls on the gateway MCP server and wait forever.
       if (message.stop !== undefined && message.blocks.size) { message.ending = message.stop === "tool_use" ? "all" : "complete"; this.finish(message, step, message.ending); }
-      else if (this.endTurn && message.stop === "end_turn" && !message.ended) { message.ended = true; step.end = { kind: "end_turn", usage: claudeUsage(message.tokens), tokens: message.tokens }; }
+      else if (this.endTurn && message.stop === "end_turn" && !message.ended) { message.ended = true; const tokens = this.correction.finish(message.tokens); step.end = { kind: "end_turn", usage: claudeUsage(tokens), tokens }; }
     } else if (event.type === "message_stop" && message && message.blocks.size) {
       this.finish(message, step, message.stop === undefined || message.stop === "tool_use" ? "final" : "complete");
     }
@@ -207,7 +216,7 @@ export class ClaudeMessageStream {
     if (!uses.length) return;
     const message = this.message; const orphans: typeof uses = [];
     for (const use of uses) {
-      this.validateName(use.name);
+      this.validateName(use.name, use.id);
       const block = message && !message.ended ? [...message.blocks.values()].find(block => block.id === use.id) : undefined;
       if (block) block.input = use.input;
       else if (message && !message.ended) {
@@ -217,8 +226,10 @@ export class ClaudeMessageStream {
     if (message?.ending && !message.ended) this.finish(message, step, message.ending);
     // Without partial messages a complete assistant line is all there is, so it ends the request itself.
     if (orphans.length && !step.end) {
-      const tokens = tokensOf(value.usage);
-      step.end = { kind: "tool_use", calls: nativeClaudeCalls(orphans as Array<{ id?: string; name?: string; input?: unknown }>, this.tools), usage: claudeUsage(tokens), tokens };
+      if (this.correction.complete(orphans as Array<{ id: string; name: string }>, tokensOf(value.usage))) { this.measured = undefined; this.last = undefined; return; }
+      const calls = nativeClaudeCalls(orphans as Array<{ id?: string; name?: string; input?: unknown }>, this.tools);
+      const tokens = this.correction.finish(tokensOf(value.usage));
+      step.end = { kind: "tool_use", calls, usage: claudeUsage(tokens), tokens };
     }
   }
 
@@ -234,8 +245,9 @@ export class ClaudeMessageStream {
     if (mode === "complete" && !(blocks = blocks.filter(block => block.input !== undefined)).length) return;
     const parse = (json: string) => { try { return json.trim() ? JSON.parse(json) as unknown : {}; } catch { return undefined; } };
     message.ended = true;
+    if (this.correction.complete(blocks, message.tokens || message.base)) { this.measured = undefined; this.last = undefined; return; }
     const calls = nativeClaudeCalls(blocks.map(block => ({ id: block.id, name: block.name, input: block.input === undefined ? parse(block.json) : block.input })), this.tools);
-    const tokens = message.tokens || message.base;
+    const tokens = this.correction.finish(message.tokens || message.base);
     step.end = { kind: "tool_use", calls, usage: claudeUsage(tokens), tokens };
   }
 
@@ -246,7 +258,7 @@ export class ClaudeMessageStream {
     if (!text.startsWith(this.raw)) throw new ProviderError("inconsistent_stream", "Claude final text differs from streamed text");
     if (text.length > this.raw.length) { step.events.push({ type: "text", text: text.slice(this.raw.length) }); this.raw = text; }
     // The last API message is this request's cost; result.usage sums every message of the turn.
-    const tokens = this.last || tokensOf(result.usage);
+    const tokens = this.last ? this.correction.finish(this.last) : tokensOf(result.usage);
     step.end = { kind: "result", result, usage: claudeUsage(tokens), tokens };
   }
 }

@@ -8,6 +8,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { createInterface } from 'node:readline';
 import { ClaudeRelay } from '../dist/providers/claude-relay.js';
 import { claudeCliArgs, claudeMcpCatalog, gatewaySystemPrompt } from '../dist/providers/claude-control.js';
 import { claudeNativeToolName, claudeWireToolName as claudeToolName, legacyClaudeToolName } from '../dist/providers/claude-tool-names.js';
@@ -39,7 +40,7 @@ for (const [index, [label, name, selectedTool]] of cases.entries()) {
   const relay = new ClaudeRelay(key, () => {}); await relay.listen(socket);
   relay.expect([{ id: callId, name: claudeToolName(selectedTool) }]);
   relay.deliver(new Map([[callId, [{ type: 'text', text: marker }]]]));
-  let requests = 0, relayResultSeen = false, declarationPresent = false, nonGatewayTools = 0, nativeSearchTools = 0;
+  let requests = 0, relayResultSeen = false, nativeErrorResultSeen = false, declarationPresent = false, nonGatewayTools = 0, nativeSearchTools = 0;
   const server = createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     if (req.url.includes('count_tokens')) { res.setHeader('content-type', 'application/json'); res.end('{"input_tokens":10}'); return; }
@@ -82,6 +83,13 @@ for (const [index, [label, name, selectedTool]] of cases.entries()) {
     ENABLE_TOOL_SEARCH: 'false', MCP_CONNECTION_NONBLOCKING: '0' } });
   child.stderr.on('data', chunk => { diagnostic = (diagnostic + chunk.toString()).slice(-8192); });
   child.stdout.on('data', chunk => { if (requests === 0) diagnostic = (diagnostic + chunk.toString()).slice(-8192); });
+  createInterface({ input: child.stdout }).on('line', line => {
+    try {
+      const frame = JSON.parse(line);
+      if (frame.type === 'user') nativeErrorResultSeen ||= frame.message?.content?.some(block =>
+        block.type === 'tool_result' && block.tool_use_id === callId && block.is_error === true) === true;
+    } catch { /* Only fixed observations leave this probe. */ }
+  });
   child.stdin.on('error', () => {});
   child.stdin.end(JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: prompt }] } }) + '\n');
   let timedOut = false;
@@ -92,7 +100,7 @@ for (const [index, [label, name, selectedTool]] of cases.entries()) {
       : /root.*dangerously|dangerously.*root/i.test(diagnostic) ? 'root_permissions'
       : /permission|trust|workspace/i.test(diagnostic) ? 'permission_or_trust'
       : /authentication|login|api.?key/i.test(diagnostic) ? 'authentication' : requests === 0 ? 'unclassified_startup_failure' : undefined;
-    const result = { label, requests, declarationPresent, nonGatewayTools, nativeSearchTools, relayResultSeen, exitCode, timedOut, startupFailure };
+    const result = { label, requests, declarationPresent, nonGatewayTools, nativeSearchTools, relayResultSeen, nativeErrorResultSeen, exitCode, timedOut, startupFailure };
     results.push(result); console.log(JSON.stringify(result));
   } finally {
     clearTimeout(timer); try { process.kill(-child.pid, 'SIGTERM'); } catch {}
@@ -104,3 +112,4 @@ await writeFile(join(root, 'receipt.json'), JSON.stringify(report, null, 2));
 assert.ok(results[0].declarationPresent && results[0].relayResultSeen, 'Canonical control must reach the virtual MCP relay');
 assert.ok(results.slice(0, 3).every(result => result.relayResultSeen && !result.timedOut && result.nonGatewayTools === 0), 'Every registered name shape must reach only the virtual MCP relay');
 assert.ok(results.slice(3).every(result => !result.relayResultSeen && !result.timedOut), 'Unregistered names must not reach the relay');
+assert.ok(results.slice(3).every(result => result.nativeErrorResultSeen), 'Unknown calls must get the CLI native tool error');

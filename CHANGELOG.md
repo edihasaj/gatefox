@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+- Claude can correct an unavailable private gateway tool within the same turn,
+  using the native CLI's error feedback, with at most two corrections. Caller
+  actions and previous results are never replayed. Native tools, mixed batches
+  and repeated failures still stop safely, and usage includes every model call.
+
 ## 2.0.8 — 2026-11-16
 
 - On macOS Claude hosts, GateFox offers the native login Keychain unlock dialog

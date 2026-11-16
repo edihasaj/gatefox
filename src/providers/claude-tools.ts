@@ -13,6 +13,7 @@ import { connect, type Socket } from "node:net";
 import { createInterface } from "node:readline";
 
 const tools = JSON.parse(await readFile(process.argv[2], "utf8")) as Array<Record<string, unknown>>;
+const registered = new Set(tools.map(tool => tool.name));
 const send = (message: Record<string, unknown>) => { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n"); };
 let relay: Socket | undefined;
 if (process.argv[3]) {
@@ -51,6 +52,10 @@ lines.on("line", line => {
   else if (message.method === "tools/list") result = { tools: catalog };
   else if (message.method === "ping") result = {};
   else if (message.method === "tools/call") {
+    if (!registered.has(message.params?.name)) {
+      send({ id: message.id, error: { code: -32602, message: "Tool is not in the gateway catalog. Choose a declared gateway tool." } });
+      return;
+    }
     const toolUseId = message.params?._meta?.["claudecode/toolUseId"];
     // Never execute or fabricate a result: only the caller's output, via the gateway, answers a call.
     relay?.write(JSON.stringify({ call: message.id, name: message.params?.name, ...(typeof toolUseId === "string" ? { toolUseId } : {}) }) + "\n");

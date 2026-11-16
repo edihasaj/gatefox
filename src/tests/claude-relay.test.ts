@@ -109,6 +109,7 @@ createInterface({input:child.stdout}).on('line',line=>appendFileSync(${JSON.stri
 const send=m=>child.stdin.write(JSON.stringify({jsonrpc:'2.0',...m})+'\\n');
 send({id:1,method:'initialize',params:{}});send({id:2,method:'tools/list'});
 send({id:3,method:'tools/call',params:{name:'alpha',arguments:{secret:'never forwarded'},_meta:{'claudecode/toolUseId':'toolu_1'}}});
+send({id:4,method:'tools/call',params:{name:'unknown',arguments:{secret:'also never forwarded'},_meta:{'claudecode/toolUseId':'toolu_unknown'}}});
 setInterval(()=>{},1000);\n`);
   const parent = spawn(process.execPath, [parentScript], { stdio: "ignore" });
   const exited = new Promise<string | null>(resolve => parent.once("exit", (_code, signal) => resolve(signal)));
@@ -116,12 +117,13 @@ setInterval(()=>{},1000);\n`);
     await until(() => frames.length === 2);
     assert.deepEqual(frames, [{ hello: "secret-key" }, { call: 3, name: "alpha", toolUseId: "toolu_1" }]);
     const answered = async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean);
-    while ((await answered()).length < 2) await sleep(5);
+    while ((await answered()).length < 3) await sleep(5);
     const listed = JSON.parse((await answered())[1]) as { result: { tools: Array<{ _meta?: Record<string, unknown> }> } };
     assert.equal(listed.result.tools[0]._meta?.["anthropic/maxResultSizeChars"], 2000000);
     socket!.destroy();
     assert.equal(await exited, "SIGKILL");
-    const answers = (await answered()).map(line => JSON.parse(line) as { id?: number });
-    assert.deepEqual(answers.map(answer => answer.id), [1, 2], "the call was never answered");
+    const answers = (await answered()).map(line => JSON.parse(line) as { id?: number; error?: { code?: number } });
+    assert.deepEqual(answers.map(answer => answer.id), [1, 2, 4], "the registered call was never answered");
+    assert.equal(answers[2].error?.code, -32602, "unknown calls get a native MCP error without reaching the relay");
   } finally { parent.kill("SIGKILL"); server.close(); await rm(directory, { recursive: true, force: true }); }
 });

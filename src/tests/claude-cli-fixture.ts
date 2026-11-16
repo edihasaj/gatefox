@@ -8,6 +8,8 @@ export interface FixtureReply {
   thinking?: string;
   text?: string;
   calls?: Array<{ tool: string; input: Record<string, unknown> }>;
+  /** Rejects one unknown private tool inside this native turn, then selects the next reply. */
+  nativeToolError?: boolean;
   /** A text block streamed between the first tool_use block and the next. */
   between?: string;
   /** Streams text until interrupted, after the reply's text and then its thinking block. */
@@ -218,6 +220,12 @@ async function fixtureMain(): Promise<void> {
     if (!calls.length) {
       out({ type: "result", subtype: "success", is_error: false, result: reply.text ?? "", usage: usage(7), modelUsage: {} });
       if (!live) process.exit(0);
+      return;
+    }
+    if (reply.nativeToolError) {
+      out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: calls[0].id, is_error: true, content: "Unknown synthetic tool" }] } });
+      waitingTools = false;
+      await play(nextReply());
       return;
     }
     out({ type: "tool_progress", tool_use_id: calls[0].id, elapsed_time_seconds: 30 });
