@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include "login-keychain.h"
 
 enum {
     maximum_launcher_size = 64 * 1024,
@@ -212,6 +213,8 @@ static int select_tool_runtime(const char *node) {
 }
 
 int main(int argc, char *argv[]) {
+    if (argc == 2 && strcmp(argv[1], "--login-keychain-status") == 0) return login_keychain(0);
+    if (argc == 2 && strcmp(argv[1], "--unlock-login-keychain") == 0) return login_keychain(1);
     if (argc < 2 || !is_expected_mode(argv[1]) || !validate_launcher(argv[0])) {
         fail();
     }

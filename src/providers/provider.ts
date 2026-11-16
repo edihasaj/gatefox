@@ -3,7 +3,7 @@ import type { ProviderNetworkCode, ProviderNetworkStage } from "../provider-netw
 export interface ProviderStreamDiagnostic { events: number; lastEvent?: string; reasoningItems: number; textDeltas: number; toolCalls: number }
 /** A provider's policy decision about one request, as opposed to a broken session or transport. */
 export const providerRefusal = (error: unknown): boolean => error instanceof ProviderError && error.upstream?.reason === "reasoning_extraction";
-export type ProviderUpstreamReason = "login_unavailable" | "session_expired" | "credential_revoked" | "upstream_rejected" | "reasoning_extraction" | "unknown";
+export type ProviderUpstreamReason = "login_unavailable" | "keychain_locked" | "session_expired" | "credential_revoked" | "upstream_rejected" | "reasoning_extraction" | "unknown";
 export class ProviderError extends Error {
   constructor(readonly code: string, message: string, readonly status = 502,
     readonly upstream?: { code?: string; event?: string; requestId?: string; retryAfterMs?: number; subtype?: string; httpStatus?: number; stream?: ProviderStreamDiagnostic;

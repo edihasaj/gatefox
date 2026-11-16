@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- On macOS Claude hosts, GateFox offers the native login Keychain unlock dialog
+  once per GUI login when needed. Other service components start without waiting.
+  A Claude login failure with a proven local lock now explains how to unlock the
+  Keychain instead of asking for another account login. Passwords remain with macOS.
 - GateFox is the canonical command in help, setup examples, managed launcher
   migrations and app runtime messages. Historical launchers remain supported.
 - `gatefox migrate` previews reversible canonical path aliases for existing

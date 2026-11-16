@@ -11,7 +11,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(name: "GatewayApp"),
-        .executableTarget(name: "GatewayService"),
+        .executableTarget(name: "GatewayService", linkerSettings: [.linkedFramework("Security"), .linkedFramework("CoreFoundation")]),
         .executableTarget(name: "GatewayUpdateInstaller"),
         .testTarget(name: "GatewayAppTests", dependencies: ["GatewayApp"]),
     ]

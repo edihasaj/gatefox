@@ -23,7 +23,7 @@ const upstreamCodes = new Set([
   "cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "forced_tool_mismatch", "tool_choice_none",
   "usage_limit_reached", "subscription_sharing_usage_limit_exceeded", "subscription_sharing_unsupported_capability", "billing_hard_limit_reached", "billing_not_active",
 ]);
-const claudeCredentialReasons = new Set(["login_unavailable", "session_expired", "credential_revoked", "upstream_rejected", "unknown"]);
+const claudeCredentialReasons = new Set(["login_unavailable", "keychain_locked", "session_expired", "credential_revoked", "upstream_rejected", "unknown"]);
 const streamEvents = new Set([
   "response.created", "response.queued", "response.in_progress", "response.output_item.added", "response.output_item.done",
   "response.output_text.delta", "response.output_text.done", "response.content_part.added", "response.content_part.done",

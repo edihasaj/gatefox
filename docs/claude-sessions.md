@@ -327,6 +327,11 @@ envelopes into fixed reasons: `login_unavailable`, `session_expired`,
 `credential_revoked`, `upstream_rejected`, or `unknown`. It never saves the
 diagnostic text. Local `claude auth status` reports credential presence; it does
 not prove that an inference request will authenticate.
+On macOS, a proven `login_unavailable` failure also checks local login Keychain
+status through the app-owned helper. A locked Keychain gets an unlock instruction
+and `upstreamReason: keychain_locked`, without retrying the failed request.
+The unified service offers one native unlock dialog per GUI login; see
+[login Keychain access](macos-background-item.md#claude-login-keychain-access).
 An unclassified failure therefore suggests retrying and signing in if it
 persists, rather than asserting that the saved login has expired.
 

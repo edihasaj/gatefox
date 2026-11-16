@@ -18,7 +18,7 @@ const sentinel = 'sentinel value: $not-expanded';
 
 test.before(() => {
   const compile = spawnSync('/usr/bin/xcrun', [
-    'clang', '-std=c17', '-Wall', '-Wextra', '-Werror', source, '-o', template,
+    'clang', '-std=c17', '-Wall', '-Wextra', '-Werror', source, '-framework', 'Security', '-framework', 'CoreFoundation', '-o', template,
   ], { encoding: 'utf8' });
   assert.equal(compile.status, 0, compile.stderr);
   const dylib = join(dirname(realpathSync(process.execPath)), '..', 'lib', basename(sharedDylib));
