@@ -73,7 +73,8 @@ probe executes no caller tool and uses no account or paid inference. Run it with
 against a synthetic local API. It checks live and one-shot correction, correction
 after an earlier caller result, usage accounting, exhausted budgets, mixed batches,
 native-tool confinement and cancellation. It executes no caller action or paid
-inference. Pass the same `--claude` and fresh `/tmp` `--root` options.
+inference. Pass the same `--claude` and fresh `/tmp` `--root` options. Add
+`--package /absolute/installed/release/package` to check installed provider code.
 
 ## Chat Completions tool-call shapes
 
