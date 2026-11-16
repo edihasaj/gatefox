@@ -1,6 +1,7 @@
 # Changelog
 
-## Unreleased
+## 2.0.9 — 2026-11-16
+
 - Claude can correct an unavailable private gateway tool within the same turn,
   using the native CLI's error feedback, with at most two corrections. Caller
   actions and previous results are never replayed. Native tools, mixed batches
