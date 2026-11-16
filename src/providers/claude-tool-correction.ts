@@ -15,6 +15,7 @@ export class ClaudeToolCorrection {
   private readonly rejected = new Set<string>();
   private readonly costs: ClaudeTokens[] = [];
   private deadline?: number;
+  get hasCorrections(): boolean { return this.costs.length > 0; }
   constructor(private readonly enabled: boolean, private readonly nativeNames: Set<string>, private readonly threadKey?: string) {}
 
   admit(name: unknown, id: unknown): boolean {

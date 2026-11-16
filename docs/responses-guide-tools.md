@@ -47,6 +47,9 @@ accepted. The failed call never reaches the caller, and GateFox never guesses
 an alias, fabricates a tool result, resends caller output or restarts inference.
 The model selects a declared tool or answers using the CLI's own error feedback.
 All native model calls count toward request usage, including rejected calls.
+If correction ends in a direct answer, the CLI's final-message text is checked
+against that message's streamed text. Earlier visible text remains in the caller's
+response exactly once; an inconsistent final message still fails.
 
 Mixed batches containing valid and invalid calls, malformed identities, reused
 call IDs, non-gateway native tools, missing rejection proof and exhausted
