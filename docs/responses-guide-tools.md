@@ -40,6 +40,22 @@ translate during replay, but are not advertised as extra tools or accepted on a
 live stream unless they are the current registered name. This avoids opaque hashes
 on ordinary model-selected actions while preserving exact validation. Gateway does
 not guess a replacement for an unavailable tool or automatically replay a failed turn.
+For an unregistered name shaped like a private `mcp__gateway__…` tool, GateFox
+allows up to two native corrections in the same CLI turn. The CLI must report
+an error result for that exact rejected call before another model message is
+accepted. The failed call never reaches the caller, and GateFox never guesses
+an alias, fabricates a tool result, resends caller output or restarts inference.
+The model selects a declared tool or answers using the CLI's own error feedback.
+All native model calls count toward request usage, including rejected calls.
+
+Mixed batches containing valid and invalid calls, malformed identities, reused
+call IDs, non-gateway native tools, missing rejection proof and exhausted
+correction budgets remain final failures. Cancellation and provider refusals
+remain authoritative. New session readers wait at most ten seconds for rejection
+confirmation; retained older readers still have the caller's ordinary deadline.
+The private virtual MCP server also rejects an unregistered name before relaying
+anything. Registered calls always wait for the client's actual execution result.
+
 Running CLIs keep their already registered naming mode, including adopted older
 sessions. The readable catalog applies when a new session starts; installing this
 change does not force a naming-related reseed of an active chat.
@@ -53,6 +69,11 @@ with CLI 2.1.299 and a synthetic API that only the registered
 qualified/local caller aliases produced internal CLI tool errors instead. The
 probe executes no caller tool and uses no account or paid inference. Run it with
 `--claude /absolute/claude --root /tmp/fresh-tool-identity-probe`.
+`scripts/probe-claude-tool-correction.mjs` runs the real provider and unmodified CLI
+against a synthetic local API. It checks live and one-shot correction, correction
+after an earlier caller result, usage accounting, exhausted budgets, mixed batches,
+native-tool confinement and cancellation. It executes no caller action or paid
+inference. Pass the same `--claude` and fresh `/tmp` `--root` options.
 
 ## Chat Completions tool-call shapes
 

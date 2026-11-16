@@ -295,7 +295,11 @@ The live CLI sees only the gateway's MCP tools: it runs with `--tools ""`,
 `--allowedTools` limited to the gateway, `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` and
 `ENABLE_TOOL_SEARCH=false`, as one-shot CLIs now do too. A tool_use for anything else
 kills the session as soon as the gateway reads that line, and the request fails with
-`invalid_tool_call`. No gateway CLI inherits the host's `CLAUDECODE`,
+`invalid_tool_call`. An unregistered private gateway name can instead receive up to
+two [native tool corrections](responses-guide-tools.md#claude-tool-declarations-and-call-identity)
+inside the same turn. Only a confirmed CLI error for that exact unavailable call
+permits continuation; mixed valid/invalid batches and native tools still fail.
+No caller action or previous tool result is replayed. No gateway CLI inherits the host's `CLAUDECODE`,
 `CLAUDE_CODE_*` or `CLAUDE_AGENT_SDK_*` variables; the gateway sets its own, including
 `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH`, so caller tool descriptions are not cut.
 Nothing is written to `~/.claude`: sessions use `--no-session-persistence` and a

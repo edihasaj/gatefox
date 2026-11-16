@@ -259,7 +259,8 @@ export class ClaudeSession {
     const { turn } = attached;
     try {
       for (;;) {
-        const step = turn.stream.accept(await this.next(attached));
+        const next = this.next(attached);
+        const step = turn.stream.accept(await (turn.stream.waitForNativeFrame?.(next) ?? next));
         if (step.limit) void turn.onUsage(step.limit);
         for (const window of step.contextWindows || []) turn.onContextWindow(window.model, window.contextWindow);
         if (!step.end) { for (const event of step.events) { if (event.type === "text") attached.text += event.text; yield event; } continue; }
