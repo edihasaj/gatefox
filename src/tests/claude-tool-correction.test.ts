@@ -114,7 +114,8 @@ test("unknown tools can be corrected into text without duplicating earlier visib
   parser.accept(frame({ type: "message_start", message: { id: "fixed", usage } }));
   const last = parser.accept(frame({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Done." } }));
   parser.accept(frame({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage }));
-  const result = parser.accept({ type: "result", subtype: "success", result: "Checking.Done.", usage });
+  assert.throws(() => parser.accept({ type: "result", subtype: "success", result: "different text", usage }), /differs from streamed text/);
+  const result = parser.accept({ type: "result", subtype: "success", result: "Done.", usage });
   assert.equal(result.end?.kind, "result"); assert.equal(result.end?.tokens.output, 10);
   assert.equal([...first.events, ...last.events].filter(event => event.type === "text").map(event => event.text).join(""), "Checking.\n\nDone.");
 });

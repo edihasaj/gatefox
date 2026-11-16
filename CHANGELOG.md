@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- A direct answer after native tool correction keeps earlier streamed text and
+  validates the CLI's final-message snapshot without duplicating output.
+
 ## 2.0.9 — 2026-11-16
 
 - Claude can correct an unavailable private gateway tool within the same turn,

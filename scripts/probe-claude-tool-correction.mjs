@@ -28,7 +28,7 @@ const native = 'mcp__gateway__probe_read', missing = 'mcp__gateway__not_register
 const results = [];
 configureTelemetry(root, 'probe');
 
-for (const label of ['live_corrects', 'live_after_output', ...(PreviousProvider ? ['adopted_live_after_output'] : []), 'oneshot_corrects', 'live_exhausted', 'mixed_batch', 'native_tool', 'cancel_after_rejection']) {
+for (const label of ['live_corrects', 'live_text_corrects', 'live_after_output', ...(PreviousProvider ? ['adopted_live_after_output'] : []), 'oneshot_corrects', 'live_exhausted', 'mixed_batch', 'native_tool', 'cancel_after_rejection']) {
   let requests = 0, nativeRejections = 0, relayResults = 0, callerDispatches = 0;
   let sent = false; const controller = new AbortController();
   const server = createServer(async (req, res) => {
@@ -49,6 +49,10 @@ for (const label of ['live_corrects', 'live_after_output', ...(PreviousProvider 
       : requests === (after ? 3 : 2) ? [{ type: 'tool_use', id: 'toolu_valid', name: native, input: {} }]
       : [{ type: 'text', text: 'DONE' }];
     if (label === 'mixed_batch') content.unshift({ type: 'tool_use', id: 'toolu_valid_sibling', name: native, input: {} });
+    if (label === 'live_text_corrects') {
+      if (requests === 1) content.unshift({ type: 'text', text: 'Before.' });
+      else content = [{ type: 'text', text: 'DONE' }];
+    }
     const stop = content.some(block => block.type === 'tool_use') ? 'tool_use' : 'end_turn';
     const message = { id: `msg_${requests}`, type: 'message', role: 'assistant', model: body.model, content,
       stop_reason: stop, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 2 } };
@@ -110,6 +114,10 @@ exec ${quote(values.claude)} "$@"
     assert.ok(events.some(event => event.type === 'text' && event.text.includes('DONE')));
     assert.equal(events.find(event => event.type === 'done').usage.input_tokens, 20);
     assert.equal(events.find(event => event.type === 'done').usage.output_tokens, 4);
+  } else if (label === 'live_text_corrects') {
+    assert.equal(error, undefined); assert.equal(callerDispatches, 0); assert.equal(requests, 2);
+    assert.equal(nativeRejections, 1);
+    assert.equal(events.filter(event => event.type === 'text').map(event => event.text).join(''), 'Before.\n\nDONE');
   } else if (label.endsWith('live_after_output')) {
     assert.equal(error, undefined); assert.equal(callerDispatches, 2); assert.equal(requests, 4);
     assert.equal(nativeRejections, 1); assert.equal(relayResults, 2);

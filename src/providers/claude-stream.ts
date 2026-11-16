@@ -92,6 +92,7 @@ export class ClaudeMessageStream {
   private readonly bindings: Map<string, OpenAITool | undefined>;
   private message?: Message; private last?: ClaudeTokens; private limit?: ClaudeLimit; private raw = "";
   private measured?: Partial<ClaudeTokens>;
+  private resultTextStart = 0;
   private readonly nativeMcpOnly: boolean;
   private readonly nativeNames: Set<string>;
   private readonly threadKey?: string;
@@ -174,6 +175,7 @@ export class ClaudeMessageStream {
     const message = this.message;
     if (event.type === "message_start") {
       const native = (event.message || {}) as { id?: unknown; usage?: unknown };
+      this.resultTextStart = this.raw.length;
       // The start snapshot's output count is provisional; the final count arrives in message_delta.
       this.message = { id: typeof native.id === "string" ? native.id : undefined, base: { ...tokensOf(native.usage), output: 0 }, blocks: new Map() };
     } else if (event.type === "content_block_start") {
@@ -255,8 +257,15 @@ export class ClaudeMessageStream {
     const windows = resultWindows(result); if (windows.length) step.contextWindows = windows;
     if (result.is_error || result.subtype !== "success") throw claudeResultFailure(result, this.limit);
     const text = typeof result.result === "string" ? result.result : this.raw;
-    if (!text.startsWith(this.raw)) throw new ProviderError("inconsistent_stream", "Claude final text differs from streamed text");
-    if (text.length > this.raw.length) { step.events.push({ type: "text", text: text.slice(this.raw.length) }); this.raw = text; }
+    // After native tool rejection the CLI reports the final API message's text,
+    // while the caller has already seen any text preceding the rejected call.
+    const prefix = text.startsWith(this.raw) || !this.correction.hasCorrections ? this.raw : this.raw.slice(this.resultTextStart);
+    if (!text.startsWith(prefix)) throw new ProviderError("inconsistent_stream", "Claude final text differs from streamed text");
+    const suffix = text.slice(prefix.length);
+    if (suffix) {
+      step.events.push({ type: "text", text: this.correction.hasCorrections && this.split ? `\n\n${suffix}` : suffix });
+      this.raw += suffix; this.split = false;
+    }
     // The last API message is this request's cost; result.usage sums every message of the turn.
     const tokens = this.last ? this.correction.finish(this.last) : tokensOf(result.usage);
     step.end = { kind: "result", result, usage: claudeUsage(tokens), tokens };
