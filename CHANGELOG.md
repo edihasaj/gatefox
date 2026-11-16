@@ -1,16 +1,19 @@
 # Changelog
 
 ## Unreleased
-- Claude can correct an unavailable private gateway tool within the same turn,
-  using the native CLI's error feedback, with at most two corrections. Caller
-  actions and previous results are never replayed. Native tools, mixed batches
-  and repeated failures still stop safely, and usage includes every model call.
 - GateFox is the canonical command in help, setup examples, managed launcher
   migrations and app runtime messages. Historical launchers remain supported.
 - `gatefox migrate` previews reversible canonical path aliases for existing
   installations. Explicit application requires stopped clients and services,
   records ownership for rollback, and preserves the original storage, executor
   identity, preferences, saved chats and macOS security identities.
+
+## 2.0.9 — 2026-11-16
+
+- Claude can correct an unavailable private gateway tool within the same turn,
+  using the native CLI's error feedback, with at most two corrections. Caller
+  actions and previous results are never replayed. Native tools, mixed batches
+  and repeated failures still stop safely, and usage includes every model call.
 
 ## 2.0.8 — 2026-11-16
 
