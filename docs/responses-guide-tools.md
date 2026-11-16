@@ -75,6 +75,8 @@ after an earlier caller result, usage accounting, exhausted budgets, mixed batch
 native-tool confinement and cancellation. It executes no caller action or paid
 inference. Pass the same `--claude` and fresh `/tmp` `--root` options. Add
 `--package /absolute/installed/release/package` to check installed provider code.
+`--previous-package /absolute/older/release/package` also checks correction on an
+adopted older CLI after the client has already executed a tool, preserving its PID.
 
 ## Chat Completions tool-call shapes
 
