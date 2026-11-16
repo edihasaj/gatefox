@@ -1,14 +1,17 @@
 # Changelog
 
 ## Unreleased
-- A direct answer after native tool correction keeps earlier streamed text and
-  validates the CLI's final-message snapshot without duplicating output.
 - GateFox is the canonical command in help, setup examples, managed launcher
   migrations and app runtime messages. Historical launchers remain supported.
 - `gatefox migrate` previews reversible canonical path aliases for existing
   installations. Explicit application requires stopped clients and services,
   records ownership for rollback, and preserves the original storage, executor
   identity, preferences, saved chats and macOS security identities.
+
+## 2.1.0 — 2026-11-16
+
+- A direct answer after native tool correction keeps earlier streamed text and
+  validates the CLI's final-message snapshot without duplicating output.
 
 ## 2.0.9 — 2026-11-16
 
