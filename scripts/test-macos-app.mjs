@@ -7,7 +7,7 @@ const env = { ...process.env };
 if (!env.DEVELOPER_DIR && existsSync(developer)) env.DEVELOPER_DIR = developer;
 execFileSync('swift', ['test', '--build-system', 'native', '--package-path', 'native/macos'], { env, stdio: 'inherit' });
 execFileSync(process.execPath, ['--test', 'scripts/tests/macos-app-backend.test.mjs',
-  'scripts/tests/macos-service-launcher.test.mjs', 'scripts/tests/macos-update-installer.test.mjs',
+  'scripts/tests/macos-service-launcher.test.mjs', 'scripts/tests/macos-login-keychain.test.mjs', 'scripts/tests/macos-update-installer.test.mjs',
   'scripts/tests/macos-app-production.test.mjs', 'scripts/tests/sign-macos-app.test.mjs',
   'scripts/tests/release-macos-app.test.mjs', 'scripts/tests/release-package.test.mjs',
   'scripts/tests/provider-schedule.test.mjs'], {

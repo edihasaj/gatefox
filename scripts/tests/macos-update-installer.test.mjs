@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test, { after } from 'node:test';
 
 const root = new URL('../..', import.meta.url).pathname;
-const bin = execFileSync('swift', ['build', '--package-path', 'native/macos', '--show-bin-path'], {
+const bin = execFileSync('swift', ['build', '--build-system', 'native', '--package-path', 'native/macos', '--show-bin-path'], {
   cwd: root, encoding: 'utf8',
 }).trim();
 const installer = join(bin, 'GatewayUpdateInstaller');

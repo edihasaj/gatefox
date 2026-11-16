@@ -82,6 +82,39 @@ New registrations prefer the managed `gatefox` command. Fresh installations use
 Historical command aliases and ownership markers remain readable so existing
 background registrations and rollback receipts continue working without a restart.
 
+## Claude login Keychain access
+
+On a host with Claude subscriptions, the unified daemon checks the macOS **login**
+Keychain in its own security session. If it is locked and the session has GUI
+access, the existing app-owned `GatewayService` helper offers the native macOS
+unlock dialog. Inference and other service components start without waiting for
+the dialog. GateFox never receives the password or reads credentials for this
+check, and it does not change Keychain lock settings or add another login job.
+
+A private `login-keychain-prompt.json` receipt records only the boot UUID and
+security-session ID. It limits prompting to once per GUI login, including after
+service restarts, cancellation, timeout or a failed unlock. After cancellation,
+unlock the login Keychain manually in Keychain Access. Headless sessions never
+prompt. A later GUI login can offer the dialog again.
+
+The helper must ship beside the app-owned Node runtime; older apps and ordinary
+Node installations leave status unknown. The read-only helper mode is
+`GatewayService --login-keychain-status`; `--unlock-login-keychain` asks the
+system to unlock only an existing locked login Keychain in a graphical session.
+Neither mode takes a password or arbitrary Keychain path.
+
+When Claude itself reports `login_unavailable` and that same inference process's
+Keychain check reports locked, the client receives a Keychain unlock explanation
+instead of another sign-in instruction. Diagnostics retain the fixed
+`upstreamReason: keychain_locked`. The failed request stays final: this check
+does not replay inference, switch accounts or treat local unlock as proof of
+successful provider authentication. Sleep/timeout locking and a different login
+Keychain password can still require native macOS action; this is recovery, not
+an unattended password store.
+Local `login_keychain` telemetry records only fixed outcomes, whether the session
+has graphical access and whether a prompt was attempted. It excludes session IDs,
+boot identifiers, passwords and credential data.
+
 ## Signing
 
 Build a local app from a verified gateway release, then sign that build with a

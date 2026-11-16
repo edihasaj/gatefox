@@ -25,6 +25,7 @@ import { claudeReplayBudget, ClaudeReplayBlocked, type ClaudeReplayBudget } from
 import { providerCommand } from "../provider-tool-runtime.js";
 import { claudeLiveWarmup } from "./claude-cache-warmup.js";
 import { CliContinuityUnavailable, standaloneCliReasons, unidentifiedCliHistory } from "./cli-continuity.js";
+import { explainClaudeKeychainFailure } from "../mac-login-keychain.js";
 
 export function claudeEffort(config: ProviderConfig | undefined, request: ResponsesRequest): string | undefined {
   const effort = (request.reasoning as { effort?: string } | undefined)?.effort;
@@ -98,6 +99,7 @@ export class ClaudeSubscription implements Provider {
     const budget = claudeReplayBudget(this.scope(), providerConversationId(context), claudeCliModel(request.model), Buffer.byteLength(JSON.stringify(request.input)));
     const finishActivity = outsideReplayBudget.has(context.requestKind) ? () => {} : budget.track();
     try { yield* this.inferWithBudget(request, signal, context, budget); }
+    catch (error) { throw await explainClaudeKeychainFailure(error); }
     finally { finishActivity(); }
   }
   private async *inferWithBudget(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext, budget: ClaudeReplayBudget): AsyncGenerator<InferenceEvent> {

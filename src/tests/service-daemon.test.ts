@@ -107,3 +107,20 @@ test("the daemon passes an adopted Claude plan to the supervisor without changin
       run: async () => assert.fail("foreign plan must not run") }), /another configuration/);
   } finally { await f.remove(); }
 });
+
+test("a pending native unlock dialog never holds up the supervisor", async () => {
+  const f = await configured(); let finish!: () => void; let offered = false; let ran = false;
+  const pending = new Promise<void>(resolve => { finish = resolve; });
+  try {
+    await runServiceDaemon(f.config, { preset: async () => {}, recover: async () => {},
+      activate: async () => ({ plan: f.plan, restored: false }), activateNative: async (_path, plan) => plan,
+      activateClaude: async (_path, plan) => plan,
+      unlockKeychain: async config => { offered = true; assert.equal(config.stateDirectory, f.directory); await pending; },
+      run: async () => { assert.equal(offered, true); ran = true; } });
+    assert.equal(ran, true);
+    finish();
+    await runServiceDaemon(f.config, { preset: async () => {}, recover: async () => {},
+      activate: async () => ({ plan: f.plan, restored: false }), activateNative: async (_path, plan) => plan,
+      activateClaude: async (_path, plan) => plan, unlockKeychain: async () => { throw Error("unavailable"); }, run: async () => {} });
+  } finally { finish(); await f.remove(); }
+});

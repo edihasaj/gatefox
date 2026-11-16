@@ -9,6 +9,7 @@ import { activateLoginConsolidation } from "./mac-login-consolidate.js";
 import { activatePendingNativeSharing } from "./service-native-staging.js";
 import { activatePendingClaudeConsolidation } from "./service-claude-staging.js";
 import { runServiceSupervisor } from "./service-supervisor.js";
+import { offerLoginKeychainUnlock } from "./mac-login-keychain.js";
 
 export interface ServiceDaemonDependencies {
   /** Sets CODEX_CLI_PATH for the login session; never rejects. It runs before anything else the daemon starts. */
@@ -24,6 +25,7 @@ export interface ServiceDaemonDependencies {
   /** Holds the process until launchd stops it; see untilStopped. */
   standby: () => Promise<void>;
   notice: (line: string) => void;
+  unlockKeychain: typeof offerLoginKeychainUnlock;
 }
 
 /**
@@ -36,7 +38,7 @@ export interface ServiceDaemonDependencies {
  */
 export async function runServiceDaemon(configPath: string, overrides: Partial<ServiceDaemonDependencies> = {}): Promise<void> {
   const deps: ServiceDaemonDependencies = { preset: stateDirectory => presetDesktopEnv(stateDirectory), recover: recoverLoginRace, activate: activateLoginConsolidation, activateNative: activatePendingNativeSharing, activateClaude: activatePendingClaudeConsolidation, run: runServiceSupervisor, standby: untilStopped,
-    notice: line => { process.stderr.write(line + "\n"); }, ...overrides };
+    notice: line => { process.stderr.write(line + "\n"); }, unlockKeychain: offerLoginKeychainUnlock, ...overrides };
   const path = resolve(configPath); const config = await loadConfig(path);
   // A rollback below records its event before the supervisor configures telemetry for itself.
   configureTelemetry(config.stateDirectory, "service");
@@ -47,6 +49,8 @@ export async function runServiceDaemon(configPath: string, overrides: Partial<Se
   if (plan && plan.config === path) {
     const adopted = await deps.activateClaude(path, await deps.activateNative(path, plan));
     if (adopted.config !== path) throw new Error("Unified service plan is missing or uses another configuration");
+    // UI must not hold up native execution, inference or other providers. No new startup job.
+    void deps.unlockKeychain(config).catch(() => {});
     await deps.run(adopted, config.stateDirectory); return;
   }
   if (!restored) throw new Error("Unified service plan is missing or uses another configuration");
