@@ -1,10 +1,12 @@
 # Changelog
 
-## Unreleased
+## 2.0.8 — 2026-11-16
+
 - On macOS Claude hosts, GateFox offers the native login Keychain unlock dialog
   once per GUI login when needed. Other service components start without waiting.
   A Claude login failure with a proven local lock now explains how to unlock the
   Keychain instead of asking for another account login. Passwords remain with macOS.
+
 ## 2.0.7 — 2026-11-15
 
 - A Claude usage or rate limit, unavailable billing credit or temporary outage that
