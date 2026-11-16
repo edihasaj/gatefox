@@ -7,7 +7,7 @@ import { join, resolve, delimiter } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
-const { values } = parseArgs({ options: { claude: { type: 'string' }, root: { type: 'string' }, package: { type: 'string' } } });
+const { values } = parseArgs({ options: { claude: { type: 'string' }, root: { type: 'string' }, package: { type: 'string' }, 'previous-package': { type: 'string' } } });
 assert.ok(values.claude?.startsWith('/') && values.root?.startsWith('/tmp/'), 'Pass --claude EXECUTABLE --root FRESH_TMP_DIRECTORY');
 const root = resolve(values.root); await mkdir(root, { mode: 0o700 });
 const bin = join(root, 'bin'); await mkdir(bin, { mode: 0o700 });
@@ -21,12 +21,14 @@ const { ClaudeSubscription } = await load('providers/claude.js');
 const { claudeLive } = await load('providers/claude-live.js');
 const { toolCorrectionLimits } = await load('providers/claude-tool-correction.js');
 const { configureTelemetry, flushTelemetry } = await load('telemetry.js');
+assert.ok(!values['previous-package'] || values['previous-package'].startsWith('/'), '--previous-package must be absolute');
+const PreviousProvider = values['previous-package'] ? (await import(pathToFileURL(join(values['previous-package'], 'dist/providers/claude.js')).href)).ClaudeSubscription : undefined;
 const tools = [{ type: 'function', name: 'probe_read', parameters: { type: 'object', properties: {} } }];
 const native = 'mcp__gateway__probe_read', missing = 'mcp__gateway__not_registered';
 const results = [];
 configureTelemetry(root, 'probe');
 
-for (const label of ['live_corrects', 'live_after_output', 'oneshot_corrects', 'live_exhausted', 'mixed_batch', 'native_tool', 'cancel_after_rejection']) {
+for (const label of ['live_corrects', 'live_after_output', ...(PreviousProvider ? ['adopted_live_after_output'] : []), 'oneshot_corrects', 'live_exhausted', 'mixed_batch', 'native_tool', 'cancel_after_rejection']) {
   let requests = 0, nativeRejections = 0, relayResults = 0, callerDispatches = 0;
   let sent = false; const controller = new AbortController();
   const server = createServer(async (req, res) => {
@@ -40,7 +42,7 @@ for (const label of ['live_corrects', 'live_after_output', 'oneshot_corrects', '
     relayResults = Math.max(relayResults, feedback.filter(block => block.type === 'tool_result' && JSON.stringify(block.content).includes('SYNTHETIC_CALLER_RESULT')).length);
     requests++;
     if (label === 'cancel_after_rejection' && requests === 2) { sent = true; controller.abort(); return; }
-    const after = label === 'live_after_output';
+    const after = label.endsWith('live_after_output');
     const invalid = label === 'live_exhausted' || requests === (after ? 2 : 1);
     let content = invalid ? [{ type: 'tool_use', id: `toolu_invalid_${requests}`, name: label === 'native_tool' ? 'Bash' : missing, input: {} }]
       : after && requests === 1 ? [{ type: 'tool_use', id: 'toolu_prior', name: native, input: {} }]
@@ -71,8 +73,11 @@ export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 exec ${quote(values.claude)} "$@"
 `;
   await writeFile(join(bin, 'claude'), wrapper, { mode: 0o700 });
-  const provider = new ClaudeSubscription({ id: label, type: 'claude-subscription', models: { fixture: 'claude-sonnet-4-5' },
-    claudeSessions: { warmup: 0, ...(label === 'oneshot_corrects' ? { mode: 'oneshot' } : {}) } });
+  const config = { id: label, type: 'claude-subscription', models: { fixture: 'claude-sonnet-4-5' },
+    claudeSessions: { warmup: 0, ...(label === 'oneshot_corrects' ? { mode: 'oneshot' } : {}) } };
+  const provider = new ClaudeSubscription(config);
+  const previous = label === 'adopted_live_after_output' ? new PreviousProvider(config) : undefined;
+  let firstPid, adoptedPid;
   const input = [{ role: 'user', content: 'Use the supplied probe tool, then finish.' }];
   const context = { threadId: label }; const events = []; let error;
   const timeout = setTimeout(() => controller.abort(), 60_000);
@@ -80,7 +85,10 @@ exec ${quote(values.claude)} "$@"
     const delivered = new Set();
     for (let round = 0; round < 3; round++) {
       const current = [];
-      for await (const event of provider.infer({ model: 'claude-sonnet-4-5', input, tools }, controller.signal, context)) { current.push(event); events.push(event); }
+      for await (const event of (round === 0 && previous ? previous : provider).infer({ model: 'claude-sonnet-4-5', input, tools }, controller.signal, context)) { current.push(event); events.push(event); }
+      const pid = claudeLive({ max: 6, parkMinutes: 60 }).sessions()[0]?.pid;
+      if (round === 0) firstPid = pid;
+      if (round === 1) adoptedPid = pid;
       const calls = current.filter(event => event.type === 'tool'); callerDispatches += calls.length;
       if (!calls.length) break;
       assert.equal(calls.length, 1); assert.equal(calls[0].call.function.name, 'probe_read');
@@ -102,10 +110,11 @@ exec ${quote(values.claude)} "$@"
     assert.ok(events.some(event => event.type === 'text' && event.text.includes('DONE')));
     assert.equal(events.find(event => event.type === 'done').usage.input_tokens, 20);
     assert.equal(events.find(event => event.type === 'done').usage.output_tokens, 4);
-  } else if (label === 'live_after_output') {
+  } else if (label.endsWith('live_after_output')) {
     assert.equal(error, undefined); assert.equal(callerDispatches, 2); assert.equal(requests, 4);
     assert.equal(nativeRejections, 1); assert.equal(relayResults, 2);
     assert.ok(events.some(event => event.type === 'text' && event.text.includes('DONE')));
+    assert.ok(firstPid); assert.equal(adoptedPid, firstPid, 'The earlier CLI must be reused');
   } else if (label === 'oneshot_corrects') {
     assert.equal(error, undefined); assert.equal(callerDispatches, 1); assert.ok(nativeRejections >= 1);
   } else {
