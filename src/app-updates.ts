@@ -95,7 +95,7 @@ async function defaultAppPath(installation: ManagedInstallation): Promise<string
   const suffix = "/Contents/Resources/backend/runtime";
   return target?.endsWith(suffix) ? target.slice(0, -suffix.length) : undefined;
 }
-async function defaultVerifyApp(app: string, expectedTeam = trustedTeam, candidate = true): Promise<string> {
+export async function defaultVerifyApp(app: string, expectedTeam = trustedTeam, candidate = true): Promise<string> {
   if (process.platform !== "darwin") throw new Error("not signed");
   const requirement = `anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and identifier "${appIdentifier}"`;
   const verified = await runCommand("/usr/bin/codesign", ["--verify", "--deep", "--strict", `-R=${requirement}`, app], { timeoutMs: 30_000 });

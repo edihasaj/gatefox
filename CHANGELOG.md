@@ -8,6 +8,12 @@
 - Desktop and SSH registration name the plain ChatGPT chat app (no Codex) instead
   of failing with `ENOENT …/codex-cli/bin/codex`.
 - Two timing-sensitive tests no longer fail on a loaded CI runner.
+- `gatefox setup --local` takes a signed-in Mac to one Login Item, a connected
+  ChatGPT and an installed, verified GateFox.app in one command.
+- `gatefox setup --from-host HOST` copies another Mac's accounts, models and
+  routing over SSH, without sign-ins or API keys, and lists what to sign in.
+- `gatefox login codex… --no-browser` accepts the pasted `127.0.0.1` callback
+  address when the browser runs on another device.
 
 ## 2.1.2 — 2026-11-17
 
