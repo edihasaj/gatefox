@@ -69,8 +69,11 @@ The combined list needs the native engine's model cache (`models_cache.json` or
 its configured `model_catalog_json`). On a Mac whose app has never been signed
 in that cache does not exist yet, so a desktop (stdio) session runs the original
 engine unchanged and records `native_catalog_unavailable`: the app opens, shows
-only its own models and can sign in. Quit and reopen it once the cache exists to
-get the gateway rows. An SSH listener still refuses to start without the cache.
+only its own models and can sign in. When the cache then appears (right after
+sign-in) and no chat has started since that session began, the adapter quits
+ChatGPT normally and reopens it once, so the next window has the gateway rows; it
+records `native_catalog_ready`. If a chat has started, it leaves the app alone:
+quit and reopen it yourself. An SSH listener still refuses to start without the cache.
 
 The example lists the four models available during the October 23 check. It
 does not automatically select a newer release or invent a missing family. Update

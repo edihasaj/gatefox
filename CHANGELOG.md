@@ -7,6 +7,13 @@
   installations. Explicit application requires stopped clients and services,
   records ownership for rollback, and preserves the original storage, executor
   identity, preferences, saved chats and macOS security identities.
+- After the first sign-in on a new Mac, ChatGPT reopens itself once with the
+  gateway models, as long as no chat has started yet.
+- `gatefox login claude-… --account-email EMAIL` pre-fills the address and signs
+  out a login that landed on another account; the app's sign-in checks it too.
+- Desktop and SSH registration name the plain ChatGPT chat app (no Codex) instead
+  of failing with `ENOENT …/codex-cli/bin/codex`.
+- Two timing-sensitive tests no longer fail on a loaded CI runner.
 
 ## 2.1.2 — 2026-11-17
 

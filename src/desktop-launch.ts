@@ -11,11 +11,20 @@ import { nativeEngineExecutable } from "./native-engine-path.js";
 import { appServerSessionShellGuard } from "./codex-invocation.js";
 import { wrapperHomeGuard } from "./native-home-env.js";
 
+/**
+ * The macOS ChatGPT download without Codex (bundle `com.openai.chat`) installs at the same path as the Codex app but has
+ * no `codex-cli`, so the gateway has nothing to wrap. Name that case instead of failing with a bare ENOENT.
+ */
+export async function requireCodexDesktopApp(app: string, exists: (path: string) => Promise<boolean> = path => access(path).then(() => true, () => false)): Promise<void> {
+  if (!await exists(resolve(app, "Contents/MacOS/ChatGPT"))) throw new Error(`No ChatGPT app at ${app}. Install the Codex app (ChatGPT for macOS with Codex) from https://openai.com/codex/ and open it once.`);
+  if (!await exists(resolve(app, "Contents/Resources/codex-cli/bin/codex"))) throw new Error(`${app} is the ChatGPT chat app without Codex. Quit it, move it to the Trash and install the Codex app from https://openai.com/codex/; it keeps the name ChatGPT.`);
+}
+
 export async function prepareDesktop(configPath: string, app = "/Applications/ChatGPT.app"): Promise<{ binary: string; wrapper: string }> {
   if (process.platform !== "darwin") throw new Error("Desktop activation currently supports macOS");
   const config = await loadConfig(configPath); const binary = resolve(app, "Contents/MacOS/ChatGPT");
   const cli = fileURLToPath(new URL("./cli.js", import.meta.url)); const codex = resolve(app, "Contents/Resources/codex-cli/bin/codex");
-  await access(binary); await access(cli); await access(codex);
+  await requireCodexDesktopApp(app); await access(cli);
   // ChatGPT launches its shell launcher, but shared-native ownership is held by the signed engine it loads.
   // Give app-server sessions that canonical engine while leaving every other command on the caller's original launcher.
   const engine = await nativeEngineExecutable(codex);

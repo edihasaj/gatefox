@@ -83,6 +83,10 @@ gateway desktop register
 ```
 
 For a secondary Codex account, use `gateway login codex --account-email EMAIL`.
+Claude accepts the same option: it pre-fills the address, and because the browser
+signs in whichever Claude account it already has, the gateway checks the signed-in
+email afterwards. A different account is signed out again and the command fails;
+sign in from a private window or after switching the browser's account.
 The gateway verifies that email in the signed identity token before saving its
 separate registration. A different account is rejected. Browser sign-in waits
 up to fifteen minutes; an expired callback requires a fresh sign-in.
