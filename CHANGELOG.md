@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+- `gatefox service install` works again on a Mac that has never had the
+  service. It failed with `Value of "this" must be of type Performance`
+  because the service clock was passed without its receiver.
+
 ## 2.1.0 — 2026-11-16
 
 - A direct answer after native tool correction keeps earlier streamed text and

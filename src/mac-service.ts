@@ -115,6 +115,9 @@ async function originalStillRunning(identity: ProcessIdentity | undefined, tools
  * The legacy plist replacement transaction. Its fakes make the two teardown proofs testable without touching launchd.
  * It never bootstraps either definition until launchd no longer has the old job and its recorded process identity is gone.
  */
+/** Monotonic clock for service tools. Passing `performance.now` unbound throws "Value of "this" must be of type Performance". */
+export const serviceClock = (): number => performance.now();
+
 export async function replaceLegacyService(existing: string | undefined, contents: string, tools: LegacyReplacementTools, expected?: ServiceStatus): Promise<void> {
   let disabled = false; let teardownProven = false; let replacementAttempted = false;
   let original: ProcessIdentity | undefined;
@@ -354,7 +357,7 @@ async function serviceOperation(action: string | undefined, configPath: string, 
       backup: async value => { await mkdir(dirname(legacyBackup), { recursive: true, mode: 0o700 }); await writeFile(legacyBackup, value, { mode: 0o600 }); },
       discardBackup: () => unlink(legacyBackup).catch(() => undefined),
       bootstrap: () => exec("/bin/launchctl", ["bootstrap", domain, path], { timeout: 10000 }).then(() => undefined),
-      sleep: delay, now: performance.now,
+      sleep: delay, now: serviceClock,
     }, current);
   }
   if (!current.installed && existing === contents) { await exec("/bin/launchctl", ["enable", target], { timeout: 5000 }); await exec("/bin/launchctl", ["bootstrap", domain, path], { timeout: 10000 }); }
