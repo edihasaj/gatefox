@@ -1,17 +1,20 @@
 # Changelog
 
 ## Unreleased
-- New Codex models now appear on a Mac where an account is rarely used. The
-  five-minute model check skipped any Codex account whose sign-in token had
-  expired, so GPT-6.2 showed on some Macs and not others. It now renews such a
-  token itself, at most every six hours, only on mains power and while keeping
-  the Mac awake.
 - GateFox is the canonical command in help, setup examples, managed launcher
   migrations and app runtime messages. Historical launchers remain supported.
 - `gatefox migrate` previews reversible canonical path aliases for existing
   installations. Explicit application requires stopped clients and services,
   records ownership for rollback, and preserves the original storage, executor
   identity, preferences, saved chats and macOS security identities.
+
+## 2.1.4 — 2026-11-17
+
+- New Codex models now appear on a Mac where an account is rarely used. The
+  five-minute model check skipped any Codex account whose sign-in token had
+  expired, so GPT-6.2 showed on some Macs and not others. It now renews such a
+  token itself, at most every six hours, only on mains power and while keeping
+  the Mac awake.
 
 ## 2.1.3 — 2026-11-17
 
