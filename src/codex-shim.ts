@@ -10,6 +10,8 @@ import { loadConfig } from "./config.js";
 import { configureTelemetry, telemetry } from "./telemetry.js";
 import { startErrorReports } from "./error-report.js";
 import { NativeCatalogUnavailableError, prepareNativeCatalog } from "./native-catalog.js";
+import { appPathFromEngine, watchNativeCacheForRelaunch } from "./native-cache-relaunch.js";
+import { homedir } from "node:os";
 import { emitMessage } from "./app-server-connection.js";
 import { shimSession } from "./shim-session.js";
 import { unixSocketPath, serveUnix } from "./unix-transport.js";
@@ -178,7 +180,13 @@ export async function codexShim(argv: string[]): Promise<void> {
     else env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = remoteControlEnv;
     const child = spawn(executable, forwarded, { stdio: "inherit", env });
     child.once("error", () => { process.stderr.write("gateway: Original Codex executable is unavailable\n"); });
-    const [code, signal] = await once(child, "exit"); process.exitCode = typeof code === "number" ? code : signal === "SIGINT" ? 130 : 1; return;
+    // Once the app signs in and writes its cache, reopen it so the next adapter has gateway models (native-cache-relaunch.ts).
+    const appPath = appPathFromEngine(executable);
+    const stopWatching = appPath && error.source ? watchNativeCacheForRelaunch({ cachePath: error.source, appPath, appPid: process.ppid, startedAtMs: Date.now(),
+      sessionsDirectory: resolve(process.env.CODEX_HOME || resolve(homedir(), ".codex"), "sessions") }) : () => {};
+    try { const [code, signal] = await once(child, "exit"); process.exitCode = typeof code === "number" ? code : signal === "SIGINT" ? 130 : 1; }
+    finally { stopWatching(); }
+    return;
   }
   const nativeArgs = normalizeCodexFeatureArgs(preflightArgs, prepared.settings);
   const controller = new AbortController(); const stop = () => controller.abort();

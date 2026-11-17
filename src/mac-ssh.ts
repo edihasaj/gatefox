@@ -1,4 +1,5 @@
 import { lstat, readFile, mkdir, open, rename, realpath, access } from "node:fs/promises";
+import { requireCodexDesktopApp } from "./desktop-launch.js";
 import { constants } from "node:fs";
 import { resolve, dirname, isAbsolute } from "node:path";
 import { homedir } from "node:os";
@@ -35,6 +36,7 @@ export async function macSsh(action: string, configPath: string, original?: stri
   }
   if (!original || !isAbsolute(original) || resolve(original) === path) throw new Error("SSH registration requires --codex with the absolute original CLI path");
   const bundled = resolve(app, "Contents/Resources/codex-cli/bin/codex");
+  await requireCodexDesktopApp(app);
   for (const binary of [original, bundled]) { const info = await lstat(binary); if (!info.isFile() && !info.isSymbolicLink()) throw new Error("Original Codex command must be an executable file"); await access(binary, constants.X_OK); }
   if (await realpath(original) === path) throw new Error("Original Codex command points back to the SSH adapter");
   await loadConfig(configPath);

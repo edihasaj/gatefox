@@ -505,6 +505,7 @@ final class GatewayConnectionsModel: ObservableObject {
         case "invalid_models": return "Choose at least one valid model before saving."
         case "missing_cli": return "Install the required provider command, then try again."
         case "auth_failed", "authentication_failed": return "Sign-in did not complete. Try again."
+        case "account_mismatch": return "The browser signed in a different account, so that login was signed out. Sign in again with the expected account; a private browser window avoids the saved one."
         case "discovery_failed": return "Models could not be discovered. Check the connection and try again."
         case "external_credential": return "This connection uses credentials managed outside GateFox."
         case "last_provider": return "Keep at least one connection in this gateway."

@@ -155,3 +155,19 @@ test("a linked state ancestor cannot redirect API-key replacement", async () => 
   const result = await handleManagement({ operation: "authenticate", configPath: path, providerId: "api", revision: inspected.result.revision, provider: { apiKey: "replacement" } });
   assert.equal(result.ok, false); assert.equal(await readFile(sentinel, "utf8"), "foreign-sentinel\n");
 });
+
+test("a Claude sign-in that lands on another account than the expected email is signed out and reported", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gateway-management-auth-")); const draftPath = join(root, "draft.json");
+  const draft = await handleManagement({ operation: "prepare", configPath: draftPath, provider: { label: "Claude 2", type: "claude-subscription", accountEmail: "right@example.test" } }, { lookupCli: async () => true });
+  assert.equal(draft.ok, true); if (!draft.ok) return;
+  for (const [signedIn, ok] of [["work@example.test", false], ["Right@Example.test", true]] as const) {
+    const calls: string[][] = [];
+    const result = await handleManagement({ operation: "authenticate", configPath: draftPath, draftId: draft.result.draft!.id }, {
+      lookupCli: async () => true,
+      runLogin: async (_command, args, env) => { calls.push(args); if (args[1] === "login") { await mkdir(env.CLAUDE_CONFIG_DIR!, { recursive: true }); await writeFile(join(env.CLAUDE_CONFIG_DIR!, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: signedIn } })); } },
+    });
+    assert.equal(result.ok, ok, signedIn);
+    if (!result.ok) { assert.equal(result.error.code, "account_mismatch"); assert.deepEqual(calls.map(args => args[1]), ["login", "logout"]); }
+    else assert.deepEqual(calls.map(args => args[1]), ["login"]);
+  }
+});

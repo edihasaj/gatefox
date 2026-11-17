@@ -62,7 +62,7 @@ export async function combinedNativeCatalog(executable: string, args: string[], 
 
 /** The native engine has no model cache yet, as on a Mac whose app was never signed in. */
 export class NativeCatalogUnavailableError extends Error {
-  constructor() { super("The native model catalog is unavailable; use ordinary Codex until its model cache is ready"); this.name = "NativeCatalogUnavailableError"; }
+  constructor(readonly source?: string) { super("The native model catalog is unavailable; use ordinary Codex until its model cache is ready"); this.name = "NativeCatalogUnavailableError"; }
 }
 
 export async function prepareNativeCatalog(executable: string, args: string[], config: GatewayConfig): Promise<{ path: string; settings: ObjectValue; native: ObjectValue[] }> {
@@ -73,7 +73,7 @@ export async function prepareNativeCatalog(executable: string, args: string[], c
   try {
     if ((await stat(source)).size > 16 * 1024 * 1024) throw new Error();
     cached = object(JSON.parse(await readFile(source, "utf8")));
-  } catch { throw new NativeCatalogUnavailableError(); }
+  } catch { throw new NativeCatalogUnavailableError(source); }
   if (!Array.isArray(cached.models)) throw new Error("Native model catalog has no model metadata");
   const native = cached.models.map(object);
   const nativeIDs = new Set(native.map(model => model.slug));

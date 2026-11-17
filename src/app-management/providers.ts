@@ -7,6 +7,7 @@ import type { ProviderConfig, ProviderKind } from "../config.js";
 import type { CatalogEntry, ManagementDependencies, ManagedModel, ManagedProvider, Prerequisite } from "./types.js";
 import { ManagementError } from "./errors.js";
 import { providerCommand, type ProviderTool } from "../provider-tool-runtime.js";
+import { accountEmail } from "../availability/quota.js";
 import { pickerHidden } from "../model-auto-latest/metadata.js";
 import { grokLoginEnvironment, hasGrokLogin } from "../providers/grok-home.js";
 
@@ -160,6 +161,14 @@ export async function runSubscriptionLogin(provider: ProviderConfig, deps: Manag
     : ["login", "--web-flow", "--no-auto-update"];
   const executable = await providerCommand(command as ProviderTool);
   await (deps.runLogin || childLogin)(executable, args, env, deps.signal);
+  // Claude signs in whichever account the browser already has: check a known email against the expected one.
+  if (provider.type === "claude-subscription" && expectedEmail) {
+    const actual = await accountEmail(provider);
+    if (actual && actual.toLowerCase() !== expectedEmail.toLowerCase()) {
+      await (deps.runLogin || childLogin)(executable, ["auth", "logout"], env, deps.signal).catch(() => {});
+      throw new ManagementError("account_mismatch");
+    }
+  }
 }
 async function openBrowser(url: string): Promise<void> { await childLogin("/usr/bin/open", [url], process.env); }
 

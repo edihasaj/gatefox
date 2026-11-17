@@ -177,7 +177,8 @@ test("Codex counters persist across restart and are discarded when their credent
   // Unreadable credentials: no old observation, and nothing new is recorded.
   await rec(store, config, { kind: "codex", primary }); assert.equal(store.snapshot([config]).length, 1);
   if (process.getuid?.() !== 0) {
-    const file = join(directory, "registration.json"); await chmod(file, 0o000);
+    // Linux file timestamps tick coarsely (a few ms): wait so the permission change gets a new ctime, as it would in real use.
+    const file = join(directory, "registration.json"); await new Promise(done => setTimeout(done, 25)); await chmod(file, 0o000);
     assert.deepEqual(store.snapshot([config]), [], "a credential file the gateway cannot read has no counters");
     const unreadable = await readFile(join(directory, "provider-usage.json"), "utf8"); await rec(store, config, { kind: "codex", secondary });
     assert.equal(await readFile(join(directory, "provider-usage.json"), "utf8"), unreadable, "nothing is recorded for an unreadable file");

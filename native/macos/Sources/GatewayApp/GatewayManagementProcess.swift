@@ -173,6 +173,7 @@ actor GatewayManagementCommand: GatewayManagementRunning {
         case "timed_out": return "The connection operation took too long. Try again."
         case "configuration_changed": return "Gateway settings changed. Refresh and try again."
         case "auth_failed": return "Sign-in did not complete. Try again."
+        case "account_mismatch": return "The browser signed in a different account, so that login was signed out. Sign in again with the expected account; a private browser window avoids the saved one."
         case "discovery_failed": return "Models could not be discovered. Check the connection and try again."
         case "missing_cli": return "A required provider command is unavailable."
         case "external_credential": return "This connection uses externally managed credentials."

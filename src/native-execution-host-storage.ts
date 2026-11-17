@@ -32,7 +32,8 @@ export function nativeHomeOwnerPath(nativeHome: string): string {
 }
 /** writePrivateJson replaces the receipt by atomic rename, so a reader can see two inodes across lstat and open. */
 const replacedDuringRead = Symbol("native-owner-replaced");
-const replacementRetries = 8;
+// Bounded: a reader racing repeated atomic renames retries; a runner under load can need more than a few tries.
+const replacementRetries = 32;
 export async function readNativeHomeOwner(nativeHome: string): Promise<NativeHomeOwner | undefined> {
   return readReceipt(nativeHomeOwnerPath(nativeHome));
 }
@@ -41,7 +42,7 @@ async function readReceipt(path: string, ownerPath = path): Promise<NativeHomeOw
   for (let attempt = 0; attempt < replacementRetries; attempt++) {
     const owner = await readReceiptOnce(path, ownerPath);
     if (owner !== replacedDuringRead) return owner;
-    await new Promise(done => setTimeout(done, attempt));
+    await new Promise(done => setTimeout(done, Math.min(attempt, 8)));
   }
   throw new Error("Native execution ownership receipt is invalid");
 }

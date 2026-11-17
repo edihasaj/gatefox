@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { accountEmail } from "./availability/quota.js";
 import { parseArgs } from "node:util";
 import { resolve, dirname } from "node:path";
 import { readFile, writeFile, stat, mkdir } from "node:fs/promises";
@@ -153,7 +154,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (values.model && !["codex-config", "claude-config", "catalog"].includes(command) && !apiMode) throw new Error("--model is only valid for codex-config, claude-config, catalog or desktop api-mode on");
   if ((values.select || values.load) && command !== "discover") throw new Error("--select and --load are only valid for discover");
   if (values["no-browser"] && command !== "login") throw new Error("--no-browser is only valid for login");
-  if (values["account-email"] !== undefined && command !== "login") throw new Error("--account-email is only valid for Codex subscription login");
+  if (values["account-email"] !== undefined && command !== "login") throw new Error("--account-email is only valid for Codex and Claude subscription login");
   if (values.file) {
     if (command !== "token" || values.config) throw new Error("--file is only valid for token without --config");
     process.stdout.write(await readClientToken(resolve(values.file)) + "\n"); return;
@@ -297,12 +298,22 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (command === "login") {
     const provider = config.providers.find(p => p.id === id);
     if (!provider) throw new Error("login requires a configured provider ID");
-    if (values["account-email"] !== undefined && provider.type !== "codex-subscription") throw new Error("--account-email is only valid for Codex subscription login");
+    if (values["account-email"] !== undefined && provider.type !== "codex-subscription" && provider.type !== "claude-subscription") throw new Error("--account-email is only valid for Codex and Claude subscription login");
     if (provider.type === "claude-subscription" || provider.type === "copilot-subscription") {
       const copilot = provider.type === "copilot-subscription";
       const command = await providerCommand(copilot ? "copilot" : "claude");
-      const child = spawn(command, copilot ? ["login", "--no-auto-update"] : ["auth", "login"], { stdio: "inherit", env: copilot ? copilotEnvironment(provider.authDirectory) : { ...process.env, DISABLE_AUTOUPDATER: "1", ...(provider.authDirectory ? { CLAUDE_CONFIG_DIR: provider.authDirectory } : {}) } });
-      await new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("exit", code => code === 0 ? resolve() : reject(new Error(`${copilot ? "Copilot" : "Claude"} login failed`))); });
+      const expected = copilot ? undefined : values["account-email"];
+      const env = copilot ? copilotEnvironment(provider.authDirectory) : { ...process.env, DISABLE_AUTOUPDATER: "1", ...(provider.authDirectory ? { CLAUDE_CONFIG_DIR: provider.authDirectory } : {}) };
+      const runCli = (args: string[], failure: string) => new Promise<void>((resolve, reject) => { const child = spawn(command, args, { stdio: "inherit", env }); child.once("error", reject); child.once("exit", code => code === 0 ? resolve() : reject(new Error(failure))); });
+      await runCli(copilot ? ["login", "--no-auto-update"] : ["auth", "login", ...(expected ? ["--email", expected] : [])], `${copilot ? "Copilot" : "Claude"} login failed`);
+      // Claude signs in whichever account the browser already has, so an expected email is checked afterwards, like Codex's.
+      if (expected) {
+        const actual = await accountEmail(provider);
+        if (actual && actual.toLowerCase() !== expected.toLowerCase()) {
+          await runCli(["auth", "logout"], "Claude logout failed").catch(() => {});
+          throw new Error(`${provider.id}: signed in as ${actual}, not ${expected}; that login was signed out. Sign in again in a private browser window or after switching the browser to ${expected}.`);
+        }
+      }
     } else if (provider.type === "codex-subscription") {
       const control = new AbortController(); const interrupt = () => control.abort(); process.once("SIGINT", interrupt);
       try { await signIn(provider.credentialFile!, provider.agentName || "GateFox", async url => {

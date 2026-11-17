@@ -9,6 +9,7 @@ const messages: Record<string, string> = {
   invalid_provider: "The provider details are invalid.",
   authentication_failed: "Sign-in did not complete.",
   auth_failed: "Sign-in did not complete.",
+  account_mismatch: "The browser signed in a different account, so that login was signed out. Sign in again with the expected account; a private browser window avoids the saved one.",
   missing_cli: "The required command-line tool is unavailable.",
   key_required: "An API key is required.",
   invalid_url: "The provider URL is invalid.",
