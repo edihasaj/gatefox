@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { forwardPastedCallback } from "./login-paste.js";
 import { accountEmail } from "./availability/quota.js";
 import { parseArgs } from "node:util";
 import { resolve, dirname } from "node:path";
@@ -59,6 +60,8 @@ const help = `GateFox — local subscription and API inference
   gatefox migrate [--apply] [--revert] [--json]   Preview or explicitly publish canonical paths; never starts or stops a service
   gatefox init [--config PATH]
   gatefox setup --from-config PATH [--config DESTINATION]
+  gatefox setup --from-host HOST [--config PATH]   Copy another Mac's accounts, models and routing over SSH (no sign-ins or keys)
+  gatefox setup --local [--config PATH] [--app PATH]   After sign-in: install the service, connect ChatGPT, merge to one Login Item and install GateFox.app (macOS)
   gatefox setup --client --port PORT --token-file PATH [--config DESTINATION]
   gatefox desktop [--config PATH] [--native-home PATH]
   gatefox desktop register|unregister|status
@@ -124,7 +127,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     config: { type: "string" }, port: { type: "string" }, json: { type: "boolean" }, since: { type: "string" }, disable: { type: "boolean" }, model: { type: "string" }, "no-browser": { type: "boolean" }, "account-email": { type: "string" }, select: { type: "string" }, load: { type: "boolean" },
     endpoint: { type: "string" }, "token-file": { type: "string" }, catalog: { type: "string" }, file: { type: "string" },
     "from-config": { type: "string" }, "native-home": { type: "string" }, app: { type: "string" }, codex: { type: "string" },
-    client: { type: "boolean" }, state: { type: "string" },
+    client: { type: "boolean" }, local: { type: "boolean" }, "from-host": { type: "string" }, state: { type: "string" },
     "tunnel-id": { type: "string" }, host: { type: "string" }, "remote-port": { type: "string" }, reverse: { type: "boolean" }, "ssh-config": { type: "string" },
     apply: { type: "boolean" }, revert: { type: "boolean" }, "next-login": { type: "boolean" }, "on-restart": { type: "boolean" }, "with-gateway": { type: "boolean" }, force: { type: "boolean" }, interrupt: { type: "boolean" },
   } });
@@ -149,7 +152,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (values.codex && !["ssh", "native", "executor-host"].includes(command)) throw new Error("--codex is only valid for ssh, native, or executor-host");
   if (values["from-config"] && command !== "setup") throw new Error("--from-config is only valid for setup");
   if (values["native-home"] && !["desktop", "native", "executor-host"].includes(command)) throw new Error("--native-home is only valid for desktop, native, or executor-host");
-  if (values.app && !["desktop", "desktop-restore"].includes(command)) throw new Error("--app is only valid for desktop");
+  if (values.app && !["desktop", "desktop-restore"].includes(command) && !(command === "setup" && values.local)) throw new Error("--app is only valid for desktop or setup --local");
+  if (values["from-host"] && (command !== "setup" || values.local || values["from-config"] || values.client || values.port)) throw new Error("--from-host is only valid for setup, without --local, --from-config, --client or --port");
+  if (values.local && (command !== "setup" || values["from-config"] || values.client || values.port)) throw new Error("--local is only valid for setup, without --from-config, --client or --port");
   if (values.state && command !== "desktop-preset") throw new Error("--state is only valid for the internal desktop preset");
   if (values.port && !["serve", "tunnel", "setup"].includes(command)) throw new Error("--port is only valid for serve, setup or tunnel");
   if (values.client && command !== "setup") throw new Error("--client is only valid for setup");
@@ -189,7 +194,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (command === "ssh") { process.stdout.write(JSON.stringify(await macSsh(id, path, values.codex)) + "\n"); return; }
   if (command === "uninstall") { process.stdout.write(JSON.stringify(await uninstallGateway(path), null, 2) + "\n"); return; }
   if (command === "setup") {
-    if (!values["from-config"]) throw new Error("setup requires --from-config; use gateway init for a new registration");
+    if (values["from-host"]) { const { setupFromHost } = await import("./setup-from-host.js"); process.stdout.write(JSON.stringify(await setupFromHost(values["from-host"], path), null, 2) + "\n"); return; }
+    if (values.local) { const { setupLocal } = await import("./setup-local.js"); process.stdout.write(JSON.stringify(await setupLocal(path, values.app || "/Applications/ChatGPT.app"), null, 2) + "\n"); return; }
+    if (!values["from-config"]) throw new Error("setup requires --local, --from-host or --from-config; use gateway init for a new registration");
     process.stdout.write(JSON.stringify(await setupGateway(resolve(values["from-config"]), path, values.client), null, 2) + "\n"); return;
   }
   if (command === "desktop") {
@@ -319,15 +326,21 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       }
     } else if (provider.type === "codex-subscription") {
       const control = new AbortController(); const interrupt = () => control.abort(); process.once("SIGINT", interrupt);
+      // Remote setup (SSH): the browser runs on another computer, so its redirect to this Mac's loopback fails there.
+      // With --no-browser the user can paste that failed address here, and it is delivered to the waiting callback.
+      let stopPaste = () => {};
       try { await signIn(provider.credentialFile!, provider.agentName || "GateFox", async url => {
-        if (values["no-browser"]) process.stdout.write(`Continue with ChatGPT:\n${url}\n`);
+        if (values["no-browser"]) {
+          process.stdout.write(`Continue with ChatGPT:\n${url}\nIf the browser is on another computer, its final page fails to load: paste that page's http://127.0.0.1 address here and press Enter.\n`);
+          stopPaste = forwardPastedCallback(url, process.stdin);
+        }
         else {
           process.stderr.write("Continue with ChatGPT in the browser. Waiting for authorization...\n");
           const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "rundll32" : "xdg-open";
           const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
           await promisify(execFile)(opener, args, { timeout: 10000 });
         }
-      }, control.signal, values["account-email"]); } finally { process.off("SIGINT", interrupt); }
+      }, control.signal, values["account-email"]); } finally { stopPaste(); process.off("SIGINT", interrupt); }
     } else if (provider.type === "grok-subscription") {
       // The CLI owns the credential file; the gateway only prepares the private home and inherits
       // the terminal so the device code is visible and the user can confirm it.

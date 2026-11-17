@@ -37,7 +37,9 @@ Connections identifies whether this Mac hosts its own providers or consumes a
 shared gateway. Hosts edit their local connections and selected models. Pure
 shared clients show the serving hostname and a read-only catalog, with retry
 when the gateway cannot be reached. SSH chats use their remote Mac's gateway;
-installing the control panel does not copy connections between Macs.
+installing the control panel does not copy connections between Macs; use
+`gatefox setup --from-host HOST` to copy settings (not sign-ins) from another Mac,
+and `gatefox setup --local` to install the app together with the service.
 
 The wizard and connection editors share the same field styling, with matching
 text and secure-entry insets, a visible focus border, and a minimum height aligned

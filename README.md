@@ -68,6 +68,18 @@ gatefox desktop register           # add the models to the Codex app
 gatefox doctor                     # check everything
 ```
 
+On a further Mac, `gatefox setup --from-host OTHER-MAC` copies the other Mac's
+accounts, models and routing over SSH (never its sign-ins or API keys) and lists
+the sign-ins still needed. After signing in, `gatefox setup --local` installs the
+service, connects ChatGPT, merges everything into one Login Item and installs
+GateFox.app:
+
+```sh
+gatefox setup --from-host studio   # settings only; prints what to sign in
+gatefox login claude-primary --account-email you@example.com
+gatefox setup --local              # quit ChatGPT first
+```
+
 Quit Codex once and reopen it. New models appear after the native ones, with
 labels such as **Claude · Opus 5.5**.
 

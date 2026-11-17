@@ -91,6 +91,28 @@ The gateway verifies that email in the signed identity token before saving its
 separate registration. A different account is rejected. Browser sign-in waits
 up to fifteen minutes; an expired callback requires a fresh sign-in.
 
+`gatefox login codex… --no-browser` prints the sign-in address for another
+device. Signing in there ends on a `http://127.0.0.1:PORT/auth/callback?…` page
+that cannot load; paste that address into the waiting terminal and the login
+finishes. Only this sign-in's callback is accepted.
+
+`gatefox setup --from-host HOST` reads the GateFox configuration of another Mac
+over SSH (`ssh HOST` must work without a prompt) and merges its accounts, models,
+model picker, latest-model and managed routing settings into this Mac's
+configuration. This Mac keeps its own port, state directory, tailnet listener and
+availability tools, and its providers that the other Mac lacks. Sign-ins and API
+keys are never copied: Claude sign-in folders move to this home, Codex and API
+key credentials point into this Mac's state, and the command lists each
+`gatefox login …` and key file still needed. The merged file is validated before
+it replaces the current one.
+
+`gatefox setup --local [--app PATH]` finishes a signed-in Mac in one step: it
+installs the service, registers the ChatGPT desktop adapter, merges the startup
+jobs into one Login Item and installs the published GateFox.app (checked against
+the release's SHA256SUMS, Developer ID and notarization) into `~/Applications`,
+then opens it. It refuses while ChatGPT runs. A Mac that is already merged only
+gets a missing app.
+
 For an existing development setup, `gateway setup --from-config PATH` copies only
 gateway-owned registrations, the client token, and private preferences into the
 installed data directory. It never copies native Codex authentication or settings.
