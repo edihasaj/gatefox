@@ -7,6 +7,9 @@
   installations. Explicit application requires stopped clients and services,
   records ownership for rollback, and preserves the original storage, executor
   identity, preferences, saved chats and macOS security identities.
+
+## 2.1.2 — 2026-11-17
+
 - The ChatGPT app opens on a Mac where it has never been signed in. The desktop
   adapter used to exit with "The native model catalog is unavailable", which the
   app showed as a quit error; it now runs the original engine until the native
