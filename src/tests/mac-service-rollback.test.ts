@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { replaceLegacyService, type LegacyReplacementTools } from "../mac-service.js";
+import { replaceLegacyService, serviceClock, type LegacyReplacementTools } from "../mac-service.js";
 
 type State = "alive" | "gone" | "reused" | "unknown";
 function fixture(options: { state?: State; replacement?: boolean; bootstrapFails?: boolean; bootstrapLoads?: boolean; exitsImmediately?: boolean; reusedAfterDisable?: boolean; stayAlive?: boolean } = {}) {
@@ -124,4 +124,15 @@ test("a loaded job after replacement bootstrap failure is never booted out or ov
   assert.equal(f.calls.includes("discard-backup"), false, "the backup stays after incomplete rollback");
   assert.deepEqual(f.backups, ["old"]);
   assert.ok(f.calls.indexOf("backup") < f.calls.indexOf("write:new"));
+});
+
+test("a first install on a Mac without the service writes and starts it using the real service clock", async () => {
+  const f = fixture();
+  f.tools.status = async () => { f.calls.push("status:absent"); return { installed: false, pid: undefined }; };
+  const { now } = { now: serviceClock };
+  f.tools.now = now;
+  await replaceLegacyService(undefined, "new", f.tools);
+  assert.ok(f.calls.includes("write:new"), f.calls.join(", "));
+  assert.deepEqual(f.calls.slice(-2), ["enable", "bootstrap"]);
+  assert.equal(f.calls.includes("backup"), false);
 });

@@ -7,6 +7,9 @@
   installations. Explicit application requires stopped clients and services,
   records ownership for rollback, and preserves the original storage, executor
   identity, preferences, saved chats and macOS security identities.
+- `gatefox service install` works again on a Mac that has never had the
+  service. It failed with `Value of "this" must be of type Performance`
+  because the service clock was passed without its receiver.
 
 ## 2.1.0 — 2026-11-16
 
