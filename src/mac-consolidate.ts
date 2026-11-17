@@ -9,7 +9,7 @@ import { installRootIn } from "./paths.js";
 import { loadConfig, writePrivateJson } from "./config.js";
 import { gatewayCommand } from "./command.js";
 import { servicePlist } from "./mac-service.js";
-import { bootoutJob } from "./launchctl.js";
+import { bootoutJob, waitForJobsUnloaded } from "./launchctl.js";
 import { consolidationFailureMessage, rollbackConsolidation } from "./mac-consolidate-rollback.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { readServicePlan, serviceLabel, servicePlanPath, serviceStatusPath, validateServicePlan, type ServicePlan, type ServiceComponent } from "./service-plan.js";
@@ -138,6 +138,8 @@ export async function consolidateService(configPath: string, apply = false): Pro
   process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
   try {
     for (const job of jobs) { checkInterrupted(); if (job.loaded) await bootoutJob(`${domain()}/${job.label}`); }
+    checkInterrupted();
+    await waitForJobsUnloaded(jobs.filter(job => job.loaded).map(job => job.label), loaded, delay);
     checkInterrupted();
     await writePrivateJson(servicePlanPath(config.stateDirectory), plan);
     replacementAttempted = true;
