@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.4 — 2026-11-17
+
+- New Codex models now appear on a Mac where an account is rarely used. The
+  five-minute model check skipped any Codex account whose sign-in token had
+  expired, so GPT-6.2 showed on some Macs and not others. It now renews such a
+  token itself, at most every six hours, only on mains power and while keeping
+  the Mac awake.
+
 ## 2.1.3 — 2026-11-17
 
 - After the first sign-in on a new Mac, ChatGPT reopens itself once with the

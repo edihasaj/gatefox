@@ -31,7 +31,7 @@ export const autoLatestHelp = `gateway auto-latest — background upkeep for aut
 
 function defaultTools(): AutoLatestCliTools {
   return {
-    reconcile: async (path, options) => (await import("./model-auto-latest/engine.js")).reconcileAutoLatest(path, options),
+    reconcile: async (path, options) => (await import("./model-auto-latest/engine.js")).reconcileAutoLatest(path, { ...options, refreshDeferred: true }),
     prepareTemp: () => prepareScheduledTemp(),
     trimLog: async path => {
       const { loadConfig } = await import("./config.js");

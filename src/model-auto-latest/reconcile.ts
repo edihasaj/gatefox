@@ -6,6 +6,7 @@ import { providerRoute } from "../app-management/aliases.js";
 import { lockBusyCode, withPrivateFileLock } from "../private-file-lock.js";
 import { applyAutoLatest } from "./apply.js";
 import { discoverAll, discoverableKinds } from "./discovery.js";
+import { refreshDeferred } from "./deferred-refresh.js";
 import { readNativeCatalog } from "./native-cache.js";
 import { rawAutoLatest } from "./settings.js";
 import { statePath, writeState } from "./state.js";
@@ -45,6 +46,12 @@ async function run(configPath: string, options: ReconcileOptions, base: AutoLate
   const providers = snapshot.config.providers.filter(provider => discoverableKinds.has(provider.type));
   const results = await discoverAll(providers, options.discoverModels ?? discoverManagementModels, options.refresh === true, signal,
     { ...(options.perProviderMs !== undefined ? { perProviderMs: options.perProviderMs } : {}), totalMs: options.totalMs ?? 120_000 });
+  if (options.refreshDeferred === true && options.refresh !== true) {
+    // A deferred provider is otherwise skipped silently on every pass, so a quiet account would never see a new model.
+    await refreshDeferred(configPath, providers, results, options.discoverModels ?? discoverManagementModels, signal,
+      { ...(options.perProviderMs !== undefined ? { perProviderMs: options.perProviderMs } : {}), totalMs: options.totalMs ?? 120_000 },
+      Math.floor(now() / 1000), options.deferredRefresh);
+  }
   if (signal?.aborted) return cancelled();
   let checked = 0, failed = 0; const catalogs = new Map<string, CatalogRow[]>();
   for (const provider of providers) {
