@@ -4,6 +4,9 @@
 - `gatefox service install` works again on a Mac that has never had the
   service. It failed with `Value of "this" must be of type Performance`
   because the service clock was passed without its receiver.
+- `gatefox service consolidate --apply` waits until launchd has removed the old
+  jobs before starting the single service. It could fail with `Bootstrap failed:
+  5: Input/output error` and roll back, leaving separate Login Items.
 
 ## 2.1.0 — 2026-11-16
 

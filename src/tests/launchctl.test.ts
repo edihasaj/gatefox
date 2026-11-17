@@ -21,3 +21,16 @@ test("service install, uninstall and consolidation stop jobs only through the ES
   assert.equal(service.match(/bootoutJob\(target\)/g)?.length, 2);
   assert.equal(consolidate.match(/bootoutJob\(`/g)?.length, 2);
 });
+
+test("waitForJobsUnloaded waits until launchd drops every booted-out label before returning", async () => {
+  const { waitForJobsUnloaded } = await import("../launchctl.js");
+  let checks = 0; const waits: number[] = [];
+  const isLoaded = async (label: string) => { checks++; return label === "svc" && checks < 4; };
+  await waitForJobsUnloaded(["svc", "desktop"], isLoaded, async ms => { waits.push(ms); }, 10, 200);
+  assert.deepEqual(waits, [200, 200]);
+});
+
+test("waitForJobsUnloaded fails instead of bootstrapping over a job launchd still has", async () => {
+  const { waitForJobsUnloaded } = await import("../launchctl.js");
+  await assert.rejects(waitForJobsUnloaded(["svc"], async () => true, async () => undefined, 3, 1), /launchd still has svc after bootout/);
+});
