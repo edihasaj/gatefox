@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { loadConfig } from "./config.js";
 import { configureTelemetry, telemetry } from "./telemetry.js";
 import { startErrorReports } from "./error-report.js";
-import { prepareNativeCatalog } from "./native-catalog.js";
+import { NativeCatalogUnavailableError, prepareNativeCatalog } from "./native-catalog.js";
 import { emitMessage } from "./app-server-connection.js";
 import { shimSession } from "./shim-session.js";
 import { unixSocketPath, serveUnix } from "./unix-transport.js";
@@ -158,13 +158,28 @@ export async function codexShim(argv: string[]): Promise<void> {
   // stock engine's startup control; a later enable request can otherwise turn it back on and compete
   // with the registered relay. NativeControl reconnects the registered private socket, and an absent
   // relay fails control requests instead of falling through to the engine.
+  const remoteControlEnv = process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED;
   const registered = await registeredNativeRelay(config);
   if (registered) process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
   const relay = registered;
   if (!config.port) throw new Error("codex-shim requires a fixed gateway port");
   // The same row `gateway desktop register` publishes into the native configuration (native-provider-row.ts).
   const overrides = providerOverrides(nativeProviderRow(config.port, path));
-  const prepared = await prepareNativeCatalog(executable, preflightArgs, config);
+  let prepared: Awaited<ReturnType<typeof prepareNativeCatalog>>;
+  try { prepared = await prepareNativeCatalog(executable, preflightArgs, config); }
+  catch (error) {
+    // A native engine that has never signed in has no model cache. A stdio session then runs the
+    // original engine unchanged, as ordinary Codex would, so the app can open and sign in; the next
+    // launch after its cache exists gets gateway models. A listener has no such fallback.
+    if (!(error instanceof NativeCatalogUnavailableError) || socketPath) throw error;
+    telemetry("native_catalog_unavailable", { outcome: "native_fallback" });
+    const env = { ...process.env };
+    if (remoteControlEnv === undefined) delete env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED;
+    else env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = remoteControlEnv;
+    const child = spawn(executable, forwarded, { stdio: "inherit", env });
+    child.once("error", () => { process.stderr.write("gateway: Original Codex executable is unavailable\n"); });
+    const [code, signal] = await once(child, "exit"); process.exitCode = typeof code === "number" ? code : signal === "SIGINT" ? 130 : 1; return;
+  }
   const nativeArgs = normalizeCodexFeatureArgs(preflightArgs, prepared.settings);
   const controller = new AbortController(); const stop = () => controller.abort();
   process.once("SIGINT", stop); process.once("SIGTERM", stop);
