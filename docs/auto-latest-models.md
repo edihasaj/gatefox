@@ -100,6 +100,15 @@ A slow pass cannot overlap another pass for
 the same configuration. A toggle or manual edit during discovery makes the
 outdated result stale rather than overwriting the edit.
 
+A scheduled check never spends a Codex refresh token on every pass: the token is
+single-use, and a refresh cut off by sleep can sign the account out. A provider
+whose access token has expired is therefore deferred, not failed. An account that
+nobody chats with would stay deferred and never see a new model, so a deferred
+Codex provider gets one renewal at most every six hours, only on mains power, with
+an idle-sleep assertion held while it runs. The attempt is recorded before the
+request, so a failed renewal also waits six hours. Closing the lid can still
+interrupt one renewal. `gatefox auto-latest check` follows the same rule.
+
 There is no guaranteed provider model-release webhook. Five minutes is the
 poll interval, not a promise of instant visibility; provider propagation, sleep,
 authentication and native-cache freshness can delay discovery. The native scope

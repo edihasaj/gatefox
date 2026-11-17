@@ -58,6 +58,13 @@ export interface AutoLatestDependencies {
 export interface ReconcileOptions extends AutoLatestDependencies {
   /** Default false: a scheduled check never refreshes a login. */
   refresh?: boolean;
+  /**
+   * Default false. When true, a provider whose login was too stale to read is retried once with refresh allowed,
+   * at most every six hours, on mains power, while sleep is held off (see deferred-refresh.ts).
+   */
+  refreshDeferred?: boolean;
+  /** Test seam for the deferred renewal's power, sleep and attempt-record effects. */
+  deferredRefresh?: import("./deferred-refresh.js").DeferredRefreshDeps;
   expectedRevision?: string;
   /** How long to wait for another check holding the job lock before reporting busy. */
   lockTimeoutMs?: number;

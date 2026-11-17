@@ -67,9 +67,12 @@ const realTimers: MaintenanceTimers = {
   clear: handle => clearTimeout(handle as NodeJS.Timeout),
 };
 
-/** The production reconcile: metadata only, never refreshes a login, discovery capped at 120 seconds. */
+/**
+ * The production reconcile: metadata only, discovery capped at 120 seconds. Logins are not refreshed, except that a
+ * provider deferred for a stale login is renewed at most every six hours on mains power (deferred-refresh.ts).
+ */
 export function maintenanceReconcileOptions(signal: AbortSignal, extra: Partial<ReconcileOptions> = {}): ReconcileOptions {
-  return { refresh: false, totalMs: maintenanceDiscoveryMs, ...extra, signal };
+  return { refresh: false, refreshDeferred: true, totalMs: maintenanceDiscoveryMs, ...extra, signal };
 }
 
 /** The production policy reader: the real, private configuration, read fresh every tick. */
