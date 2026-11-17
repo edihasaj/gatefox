@@ -1,6 +1,7 @@
 # Changelog
 
-## Unreleased
+## 2.1.3 — 2026-11-17
+
 - After the first sign-in on a new Mac, ChatGPT reopens itself once with the
   gateway models, as long as no chat has started yet.
 - `gatefox login claude-… --account-email EMAIL` pre-fills the address and signs
