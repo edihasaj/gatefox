@@ -337,3 +337,23 @@ test("a custom --listen unix listener survives an install switch", { skip: proce
     assert.deepEqual(await replacementEvents(f.value.stateDirectory, 500, "self_upgrade"), [], "no self upgrade is claimed for a listener that moved to nothing");
   } finally { child.kill("SIGTERM"); await exited; await release.remove(); await control.remove(); f.close(); }
 });
+
+test("a stdio session without a native model cache runs the original engine so the app can open and sign in", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const f = await files();
+  await rename(f.catalog, f.catalog + ".absent");
+  const child = spawn(process.execPath, [f.cli, "codex-shim", "--config", f.config, "--codex", f.backend, "--", "app-server", "--listen", "stdio://"], { stdio: ["pipe", "pipe", "pipe"], env: f.env });
+  let stderr = ""; child.stderr.on("data", chunk => { stderr += chunk; });
+  const lines = createInterface({ input: child.stdout }); const pending = new Map<number, (message: Record<string, unknown>) => void>(); let id = 0;
+  lines.on("line", line => { const message = JSON.parse(line); if (typeof message.id === "number") pending.get(message.id)?.(message); });
+  const rpc = (method: string, params = {}) => new Promise<Record<string, unknown>>(done => { pending.set(++id, done); child.stdin.write(JSON.stringify({ id, method, params }) + "\n"); });
+  try {
+    const models = (await rpc("model/list")).result as { data: Array<{ model: string }> };
+    assert.deepEqual(models.data.map(model => model.model), ["native"], "the original engine answers, with no gateway rows");
+    const info = (await rpc("engine/info")).result as { catalog: unknown[]; remoteControlDisabled: boolean };
+    assert.deepEqual(info.catalog, [], "no gateway catalog override reaches the engine");
+    assert.equal(info.remoteControlDisabled, false);
+    const closed = once(child, "close"); child.stdin.end(); await closed;
+    assert.equal(child.exitCode, 0);
+    assert.doesNotMatch(stderr, /model catalog is unavailable/);
+  } finally { child.kill("SIGKILL"); lines.close(); await f.close(); }
+});

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.2 — 2026-11-17
+
+- The ChatGPT app opens on a Mac where it has never been signed in. The desktop
+  adapter used to exit with "The native model catalog is unavailable", which the
+  app showed as a quit error; it now runs the original engine until the native
+  model cache exists.
+
 ## 2.1.1 — 2026-11-17
 
 - `gatefox service install` works again on a Mac that has never had the

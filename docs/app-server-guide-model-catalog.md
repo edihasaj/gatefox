@@ -65,6 +65,13 @@ the picker requests its list; invalid or unreadable changes retain the last
 valid presentation. Older adapters need normal idle adoption or reconnection
 to load this reader. Loaded chats keep their own model and account.
 
+The combined list needs the native engine's model cache (`models_cache.json` or
+its configured `model_catalog_json`). On a Mac whose app has never been signed
+in that cache does not exist yet, so a desktop (stdio) session runs the original
+engine unchanged and records `native_catalog_unavailable`: the app opens, shows
+only its own models and can sign in. Quit and reopen it once the cache exists to
+get the gateway rows. An SSH listener still refuses to start without the cache.
+
 The example lists the four models available during the October 23 check. It
 does not automatically select a newer release or invent a missing family. Update
 the IDs after checking that account's current catalog.
