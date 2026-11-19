@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { generationsKept, hasUnidentifiedProcess, planGenerations, planReleases, pruneRetained } from "../app-updates/retention.js";
+import { generationsKept, hasUnidentifiedProcess, planBundles, planGenerations, planReleases, pruneRetained } from "../app-updates/retention.js";
 
 const now = Date.UTC(2026, 10, 5);
 const day = 86_400_000;
@@ -81,4 +81,33 @@ test("a process running through current without an open entry point stops all pr
   assert.equal(hasUnidentifiedProcess(files, `41 ${command}`), false);
   assert.equal(hasUnidentifiedProcess(files, `42 ${command}`), true);
   assert.equal(hasUnidentifiedProcess(files, "42 /bin/zsh"), false);
+});
+
+test("bundle planning keeps the protected rollback, one spare and anything in use", () => {
+  const bundle = (id: string) => `.Harness-Gateway-Update-${id}.app`;
+  const entries = ["0a", "1b", "2c", "3d", "4e"].map((id, index) => ({ name: bundle(id), modifiedMs: now - index * day }));
+  entries.push({ name: "GateFox.app", modifiedMs: now - 90 * day }, { name: ".Harness-Gateway-Update.app", modifiedMs: now - 90 * day });
+  assert.deepEqual(planBundles(entries, [bundle("1b")], `n/Users/x/Applications/${bundle("3d")}/Contents/MacOS/node`), [bundle("2c"), bundle("4e")],
+    "1b is protected, 0a is the newest spare, 3d is in use, and other names are never touched");
+  assert.deepEqual(planBundles(entries.slice(0, 1), [], ""), [], "a single bundle always stays");
+});
+
+test("pruning removes old rollback bundles beside the app only when asked", async () => {
+  const w = await world();
+  const apps = join(w.directory, "Applications");
+  try {
+    await mkdir(join(apps, "GateFox.app"), { recursive: true });
+    const ids = ["aa", "bb", "cc", "dd"];
+    for (const [index, id] of ids.entries()) {
+      const path = join(apps, `.Harness-Gateway-Update-${id}.app`); await mkdir(path);
+      const when = new Date(now - index * day); await utimes(path, when, when);
+    }
+    const untouched = await pruneRetained({ installRoot: w.root, stateDirectory: w.state, now, inventory: async () => "" });
+    assert.equal(untouched.bundles, undefined);
+    assert.equal((await readdir(apps)).length, 5);
+    const result = await pruneRetained({ installRoot: w.root, stateDirectory: w.state, now, inventory: async () => "",
+      appDirectory: apps, keepBundles: [join(apps, ".Harness-Gateway-Update-cc.app")] });
+    assert.deepEqual(result.bundles?.sort(), [".Harness-Gateway-Update-bb.app", ".Harness-Gateway-Update-dd.app"]);
+    assert.deepEqual((await readdir(apps)).sort(), [".Harness-Gateway-Update-aa.app", ".Harness-Gateway-Update-cc.app", "GateFox.app"]);
+  } finally { await rm(w.directory, { recursive: true, force: true }); }
 });

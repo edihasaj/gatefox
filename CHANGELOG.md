@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- Updates no longer pile up old rollback copies of the app. Every update left a
+  hidden `.Harness-Gateway-Update-<uuid>.app` of about 700 MB beside GateFox and
+  never removed it; one Mac had 57 of them (38 GB). After each update the old ones
+  are now pruned, keeping the current rollback copy, one spare and any copy still
+  in use.
 - GateFox is the canonical command in help, setup examples, managed launcher
   migrations and app runtime messages. Historical launchers remain supported.
 - `gatefox migrate` previews reversible canonical path aliases for existing

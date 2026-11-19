@@ -289,7 +289,7 @@ async function install(ctx: Context, release: Release, latest: string, deps: App
 async function discardUpdateStage(ctx: Context, pending: NonNullable<UpdateState["pending"]>, deps: AppUpdateDependencies): Promise<void> {
   try {
     await cleanupUpdateStage(ctx.installation.root, pending, { protect: [ctx.app, pending.appStage], ...(deps.removeStage ? { remove: deps.removeStage } : {}) });
-    if (deps.pruneRetained !== false) await pruneRetained({ installRoot: ctx.installation.root, stateDirectory: ctx.snapshot.config.stateDirectory, ...(deps.removeStage ? { remove: deps.removeStage } : {}) });
+    if (deps.pruneRetained !== false) await pruneRetained({ installRoot: ctx.installation.root, stateDirectory: ctx.snapshot.config.stateDirectory, appDirectory: dirname(ctx.app), keepBundles: [pending.appStage], ...(deps.removeStage ? { remove: deps.removeStage } : {}) });
   } catch { /* The installation is complete whatever happens here. */ }
 }
 

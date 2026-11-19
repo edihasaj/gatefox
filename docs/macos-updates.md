@@ -92,6 +92,9 @@ extracted staging files. It only cleans the exact owned `app-update-<uuid>` fold
 whose manifest, archive digest and tree match the completed update. Pending,
 foreign, changed, linked or in-use installation paths are never guessed at.
 The retained rollback app bundle and installed current/previous releases stay.
+Older hidden `.Harness-Gateway-Update-<uuid>.app` rollback bundles beside the app are
+pruned in the same pass: the newest spare is kept, and so is any bundle a running
+process still refers to. Each update leaves one bundle of about 700 MB.
 Cleanup failure does not undo or misreport an otherwise successful update.
 
 Recovery restores only files that still match the transaction's publication

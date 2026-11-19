@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { lstat, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
@@ -9,6 +9,7 @@ const day = 86_400_000;
 const inventoryLimits = { encoding: "utf8" as const, timeout: 10_000, maxBuffer: 64 * 1024 * 1024 };
 const releaseName = /^[0-9]+\.[0-9]+\.[0-9]+$/;
 const generationName = /^shared-v1-[a-z0-9-]+$/;
+const bundleName = /^\.Harness-Gateway-Update-[0-9a-f-]+\.app$/;
 
 export const generationsKept = 12;
 export const generationMinimumAgeMs = 3 * day;
@@ -20,8 +21,14 @@ export interface RetentionOptions {
   /** Everything running processes refer to. Undefined means the inventory is incomplete, which prevents all pruning. */
   inventory?: () => Promise<string | undefined>;
   remove?: (path: string) => Promise<void>;
+  /** Folder holding the live app. Its hidden `.Harness-Gateway-Update-*.app` rollback bundles are pruned when set. */
+  appDirectory?: string;
+  /** Bundles that must stay, such as the rollback bundle of the update that just finished. */
+  keepBundles?: string[];
 }
-export interface RetentionResult { releases: string[]; generations: string[]; skipped?: "inventory_incomplete" | "update_in_progress" }
+export interface RetentionResult {
+  releases: string[]; generations: string[]; bundles?: string[]; skipped?: "inventory_incomplete" | "update_in_progress";
+}
 
 const newestFirst = (left: string, right: string) => {
   const [a, b] = [left, right].map(name => name.split(".").map(Number));
@@ -42,6 +49,19 @@ export function planReleases(names: string[], current: string | undefined, previ
 export function planGenerations(entries: { name: string; modifiedMs: number }[], inventory: string, now: number): string[] {
   return entries.filter(entry => generationName.test(entry.name)).sort((a, b) => b.modifiedMs - a.modifiedMs).slice(generationsKept)
     .filter(entry => now - entry.modifiedMs >= generationMinimumAgeMs && !inventory.includes(entry.name)).map(entry => entry.name);
+}
+
+/**
+ * Keeps protected bundles and the newest other one, then removes older rollback bundles unless a running process refers to
+ * them. Each update leaves one bundle of about 700 MB; 57 of them once held 38 GiB on one Mac.
+ */
+export function planBundles(entries: { name: string; modifiedMs: number }[], keep: string[], inventory: string): string[] {
+  let spare = false;
+  return entries.filter(entry => bundleName.test(entry.name)).sort((a, b) => b.modifiedMs - a.modifiedMs).filter(entry => {
+    if (keep.includes(entry.name)) return false;
+    if (!spare) { spare = true; return false; }
+    return !inventory.includes(`/${entry.name}/`);
+  }).map(entry => entry.name);
 }
 
 /** True when a process runs through `current` with no open entry point, so its source release cannot be identified. */
@@ -107,6 +127,17 @@ export async function pruneRetained(options: RetentionOptions): Promise<Retentio
     const present = entries.filter((entry): entry is { name: string; modifiedMs: number } => !!entry);
     for (const name of planGenerations(present, inventory, options.now ?? Date.now())) {
       try { await remove(join(generations, name)); result.generations.push(name); } catch { /* A later update tries again. */ }
+    }
+    if (options.appDirectory) {
+      const directory = options.appDirectory; result.bundles = [];
+      const keep = (options.keepBundles ?? []).filter(path => resolve(path, "..") === resolve(directory)).map(path => basename(path));
+      const bundles = (await Promise.all((await readdir(directory).catch(() => [] as string[])).filter(name => bundleName.test(name)).map(async name => {
+        const info = await lstat(join(directory, name)).catch(() => undefined);
+        return info?.isDirectory() && !info.isSymbolicLink() ? { name, modifiedMs: info.mtimeMs } : undefined;
+      }))).filter((entry): entry is { name: string; modifiedMs: number } => !!entry);
+      for (const name of planBundles(bundles, keep, inventory)) {
+        try { await remove(join(directory, name)); result.bundles.push(name); } catch { /* A later update tries again. */ }
+      }
     }
   } catch { /* Retention never affects a finished update. */ }
   return result;
