@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- An OpenRouter HTTP 402 that only means the balance cannot cover the request's
+  maximum output ("can only afford N tokens") is no longer reported as "no usable
+  balance". The failure now names the affordable output, and OpenRouter Responses
+  requests retry once with that output limit, so a low but non-empty balance keeps
+  serving turns.
 - Updates no longer pile up old rollback copies of the app. Every update left a
   hidden `.Harness-Gateway-Update-<uuid>.app` of about 700 MB beside GateFox and
   never removed it; one Mac had 57 of them (38 GB). After each update the old ones

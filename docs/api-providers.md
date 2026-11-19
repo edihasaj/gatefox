@@ -180,6 +180,27 @@ Checked 26 October 2026 against [OpenRouter prompt caching](https://openrouter.a
 [Z.AI context caching](https://docs.z.ai/guides/capabilities/cache), and
 [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching).
 
+## OpenRouter balance refusals (HTTP 402)
+
+OpenRouter reserves a request's maximum cost before it runs. Without an explicit
+output limit, that is the model's whole completion window, so a low balance
+that is not empty still refuses every large turn with HTTP 402: "This request
+requires more credits, or fewer max_tokens. You requested up to N tokens, but
+can only afford M." Earlier releases reported every 402 as "The provider
+account has no usable balance", even while the account had credit.
+
+The gateway reads only the affordable count M from that message. The failure
+stays `insufficient_quota`, and its message says how many output tokens the
+balance covers. On an OpenRouter Responses connection, the gateway then retries
+the request once, before any output, with `max_output_tokens` set to M. It does
+not retry when M is below 4,096 tokens or when the request already asked for at
+most M. A 402 without an affordable count is still reported as an empty
+balance. Chat Completions connections report the clearer message but do not
+retry.
+
+Checked 19 November 2026 against a live OpenRouter 402 for an unaffordable
+`max_output_tokens`.
+
 ## Self-hosted session affinity
 
 A self-hosted Chat Completions router that hashes requests by session, such as

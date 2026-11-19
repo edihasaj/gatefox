@@ -56,7 +56,7 @@ const throttleClasses = new Set(["rate_limit_exceeded", "slow_down", "rate_limit
 export const throttleMessage = "Provider is temporarily rate limiting requests; retry shortly";
 
 /** Read only bounded error metadata. Upstream messages may contain caller data. */
-async function httpErrorFields(response: Response): Promise<{ code?: unknown; type?: unknown }> {
+async function httpErrorFields(response: Response): Promise<{ code?: unknown; type?: unknown; affordable?: number }> {
   if (!response.body) return {};
   const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0;
   try {
@@ -67,9 +67,22 @@ async function httpErrorFields(response: Response): Promise<{ code?: unknown; ty
       if (size > errorBodyLimit) { await reader.cancel().catch(() => {}); return {}; }
       chunks.push(next.value);
     }
-    try { const error = object(object(JSON.parse(Buffer.concat(chunks).toString("utf8"))).error); return { code: error.code, type: error.type }; }
+    try {
+      const error = object(object(JSON.parse(Buffer.concat(chunks).toString("utf8"))).error);
+      const affordable = affordableOutputTokens(error.message);
+      return { code: error.code, type: error.type, ...(affordable === undefined ? {} : { affordable }) };
+    }
     catch { return {}; }
   } finally { reader.releaseLock(); }
+}
+
+// OpenRouter answers HTTP 402 both for an empty balance and for a balance that cannot cover the request's
+// maximum output: "This request requires more credits, or fewer max_tokens. You requested up to N tokens,
+// but can only afford M." Only the integer of that fixed phrase is read; the rest of the message never leaves.
+function affordableOutputTokens(message: unknown): number | undefined {
+  if (typeof message !== "string" || message.length > 2000) return undefined;
+  const match = /\bcan only afford (\d{1,9})\b/.exec(message);
+  return match ? Number(match[1]) : undefined;
 }
 
 export async function responsesHttpError(response: Response): Promise<ProviderError> {
@@ -78,7 +91,7 @@ export async function responsesHttpError(response: Response): Promise<ProviderEr
     await response.body?.cancel().catch(() => {});
     return new ProviderError("authentication", "Provider login is missing or expired", response.status);
   }
-  const { code, type } = await httpErrorFields(response);
+  const { code, type, affordable } = await httpErrorFields(response);
   const names = [code, type].filter((name): name is string => typeof name === "string");
   if (response.status === 429) {
     const header = response.headers.get("retry-after");
@@ -99,9 +112,16 @@ export async function responsesHttpError(response: Response): Promise<ProviderEr
   }
   if ([500, 502, 503, 504].includes(response.status)) return new ProviderError("upstream_unavailable", "Provider temporarily failed; retry when it is available", 503,
     { code: typeof code === "string" && knownCodes.has(code) ? code : "unknown", event: "http" });
-  // A client cannot retry its way out of an empty account, so this is final and says what to do.
-  if (response.status === 402 || names.includes("insufficient_balance_error")) return new ProviderError("insufficient_quota", "The provider account has no usable balance. Add credit with the provider, then retry.", 402,
-    { code: "insufficient_quota", event: "http", httpStatus: response.status, ...requestIdOf(response.headers.get("x-request-id")) });
+  // A client cannot retry its way out of an empty account, so this is final and says what to do. A balance that
+  // only falls short of the request's maximum output is not empty: say so, and carry the affordable count so the
+  // provider can retry once with a smaller output limit.
+  if (response.status === 402 || names.includes("insufficient_balance_error")) {
+    const upstream = { code: "insufficient_quota", event: "http", httpStatus: response.status, ...requestIdOf(response.headers.get("x-request-id")),
+      ...(affordable === undefined ? {} : { affordableOutputTokens: affordable }) };
+    return affordable !== undefined && affordable > 0
+      ? new ProviderError("insufficient_quota", `The provider balance cannot cover this request's maximum output; it can afford ${affordable} output tokens. Lower the output limit or add credit.`, 402, upstream)
+      : new ProviderError("insufficient_quota", "The provider account has no usable balance. Add credit with the provider, then retry.", 402, upstream);
+  }
   if (names.includes("context_length_exceeded")) return contextError();
   const rejection = names.find(name => Object.hasOwn(rejections, name));
   const upstream = { code: rejection ?? names.find(name => knownCodes.has(name)) ?? "unknown", event: "http", httpStatus: response.status, ...requestIdOf(response.headers.get("x-request-id")) };

@@ -26,6 +26,9 @@ import { networkProviderError } from "./network-error.js";
 import { networkRetryExpired, networkRetryNow, networkRetrySleep, networkRetryWaitMs } from "./network-retry.js";
 import { throttleRetryExpired, throttleRetryNow, throttleRetrySleep, throttleRetryWaitMs } from "./throttle-retry.js";
 
+/** Below this many affordable output tokens a retry cannot finish a useful turn, so the 402 stays final. */
+const minimumAffordableOutput = 4096;
+
 export class ResponsesAPI implements Provider {
   /** The subscription endpoint's sticky-routing token reaches the caller as a transport event. */
   readonly emitsTransport: boolean;
@@ -226,17 +229,30 @@ export class ResponsesAPI implements Provider {
     const outgoing = !plan && isOpenRouterApi(this.config) ? stableResponsesCatalog(translated) : translated;
     const apiHeaders = !plan ? apiRoutingHeaders(this.config, context, request) : {};
     const cacheTrace = !plan && isOpenRouterApi(this.config) ? apiCacheTrace(this.scope, this.config.id, outgoing, context, apiHeaders["x-session-id"]) : undefined;
-    let response: Response;
-    try {
-      response = await fetch(`${base}/responses`, { method: "POST", redirect: "error", signal,
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...apiHeaders, ...routing }, body: JSON.stringify(outgoing) });
-    } catch (error) {
-      throw networkProviderError(error, "connect") ?? error;
-    }
+    const send = async (payload: unknown): Promise<Response> => {
+      try {
+        return await fetch(`${base}/responses`, { method: "POST", redirect: "error", signal,
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...apiHeaders, ...routing }, body: JSON.stringify(payload) });
+      } catch (error) {
+        throw networkProviderError(error, "connect") ?? error;
+      }
+    };
+    let response = await send(outgoing);
     // When the backend sends them, quota headers are read on success and on failure alike. The live backend may omit them, and
     // then nothing is observed.
     if (plan) try { observeCodexUsage(this.onCodexUsage, codexUsageFromHeaders(response.headers), revision); } catch { /* Observation never fails inference. */ }
-    if (!response.ok) throw await responsesHttpError(response);
+    if (!response.ok) {
+      const failure = await responsesHttpError(response);
+      // OpenRouter reserves the request's maximum output cost up front. Without an explicit limit that is the model's
+      // whole completion window, so a low but non-empty balance refuses every turn with 402. Retry once, before any
+      // output, with the output limit the balance covers; a smaller existing limit is never raised.
+      const affordable = failure.upstream?.affordableOutputTokens;
+      const limit = (outgoing as { max_output_tokens?: unknown }).max_output_tokens;
+      if (plan || !isOpenRouterApi(this.config) || affordable === undefined || affordable < minimumAffordableOutput ||
+        (typeof limit === "number" && limit <= affordable)) throw failure;
+      response = await send({ ...(outgoing as Record<string, unknown>), max_output_tokens: affordable });
+      if (!response.ok) throw await responsesHttpError(response);
+    }
     if (!response.body) throw new ProviderError("incomplete", "Provider returned no stream");
     // Always announce the response head, so the caller's headers never wait for a turn-state that may not come.
     if (plan) { const returned = wrapTurnState(response.headers.get("x-codex-turn-state"), this.scope); yield { type: "transport", ...(returned ? { turnState: returned } : {}) }; }
