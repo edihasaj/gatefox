@@ -16,7 +16,9 @@ export class ProviderError extends Error {
       /** The allowlisted transient codes one connection attempt held, when no single one names the outage. */
       networkCodes?: ProviderNetworkCode[];
       /** Token counts an upstream context overflow reported (numbers only); a Messages client uses them to size its compaction. */
-      contextTokens?: { used: number; maximum: number } }) { super(message); }
+      contextTokens?: { used: number; maximum: number };
+      /** Output tokens a prepaid balance can still cover, from an OpenRouter 402 (number only). */
+      affordableOutputTokens?: number }) { super(message); }
 }
 /** `auxiliary` is a Claude Code side request (title, classifier, summary); it comes only from that client's hint header. */
 export type InferenceRequestKind = "turn" | "compaction" | "prewarm" | "memory" | "auxiliary";
