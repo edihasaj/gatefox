@@ -7,6 +7,11 @@ import { reportException } from "./error-report.js";
 export type Message = Record<string, unknown>;
 export type Id = string | number;
 export type EngineLabel = "native" | "gateway";
+
+/** The direct child exited before acknowledging a request. Its outcome is unknown. */
+export class AppServerExitedError extends Error {
+  constructor() { super("Codex app-server exited"); }
+}
 /** Fixed vocabulary for stops the adapter started itself; an engine-initiated exit reports "none". */
 export type EngineStopReason = "session_end" | "idle" | "replaced" | "stdin_error" | "stream_error" | "spawn_error";
 export const object = (value: unknown): Message => value && typeof value === "object" && !Array.isArray(value) ? value as Message : {};
@@ -94,7 +99,7 @@ export class AppServerConnection {
     this.exited = new Promise(resolve => this.child.once("close", (code, signal) => {
       this.closed = true; this.closedAt = Date.now(); this.exitCode = code; this.exitSignal = signal;
       clearTimeout(this.killTimer); clearTimeout(this.pipeFailureTimer); this.pipeFailureTimer = undefined;
-      for (const request of this.requests.values()) { clearTimeout(request.timer); request.reject(new Error("Codex app-server exited")); }
+      for (const request of this.requests.values()) { clearTimeout(request.timer); request.reject(new AppServerExitedError()); }
       this.requests.clear(); onExit(this); resolve({ code, signal });
     }));
     this.child.once("error", () => { process.stderr.write("gateway: Original Codex executable is unavailable\n"); this.stop("spawn_error"); });

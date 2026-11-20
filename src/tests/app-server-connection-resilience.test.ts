@@ -10,7 +10,7 @@ import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { AppServerConnection, ENGINE_FRAME_LIMIT, isId, jsonLines, object, type Message } from "../app-server-connection.js";
+import { AppServerConnection, AppServerExitedError, ENGINE_FRAME_LIMIT, isId, jsonLines, object, type Message } from "../app-server-connection.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 
 // The adapter gives a broken pipe half a second to turn out to be an engine that was already leaving.
@@ -38,6 +38,7 @@ createInterface({input:process.stdin}).on('line',line=>{
  else if(m.method==='fixture/huge-response'){process.stdout.write(JSON.stringify({id:m.id,result:{fill:'x'.repeat(m.params.padBytes)}})+'\\n');}
  else if(m.method==='fixture/server-request'){waiting={requestId:m.id,serverId:m.params.serverId};send({id:m.params.serverId,method:'fixture/approval',params:{threadId:'chat'}});}
  else if(m.method==='fixture/self-exit'){process.stdout.write(JSON.stringify({id:m.id,result:{}})+'\\n',()=>process.exit(m.params.code||0));}
+ else if(m.method==='fixture/exit-before-reply'){process.exit(7);}
  else if(m.method==='fixture/exit-with-frame'){process.stdin.destroy();process.stdout.write((m.params.messages||[]).map(x=>JSON.stringify(x)).join('\\n')+(m.params.messages&&m.params.messages.length?'\\n':''),()=>process.exit(0));}
  else if(m.method==='fixture/half-frame'){process.stdout.write('{"method":"note/half"');process.stdout.end();}
  else if(m.method==='fixture/huge-server-request'){lastId=m.id;process.stdout.write(JSON.stringify({id:m.id,method:'fixture/approval',params:{threadId:'chat',fill:'x'.repeat(m.params.padBytes)}})+'\\n');}
@@ -121,6 +122,15 @@ test("exitFacts distinguishes engine-initiated exits from adapter stops and thei
     for (const connection of [crashing, stopping]) { connection.stop("session_end"); await connection.exited.catch(() => {}); }
     await f.clean();
   }
+});
+
+test("a child exit rejects its pending request as a controlled adapter error", { timeout: 15000 }, async () => {
+  const f = await fixture(); const connection = new AppServerConnection(f.sdk, [], async () => {}, () => {}, process.env, "gateway");
+  try {
+    await assert.rejects(connection.request("fixture/exit-before-reply", {}), (error: Error & { code?: number }) =>
+      error instanceof AppServerExitedError && error.code === undefined && error.message === "Codex app-server exited");
+    await connection.exited;
+  } finally { connection.stop(); await connection.exited.catch(() => {}); await f.clean(); }
 });
 
 test("a stream that ends inside a JSON frame stops the engine with reason stream_error", { timeout: 15000 }, async () => {
