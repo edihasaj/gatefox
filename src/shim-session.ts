@@ -17,11 +17,17 @@ import { nativeThreadAbsent } from "./native-thread-absence.js";
 import { rpcRejection } from "./rpc-rejection.js";
 import { applyCodexHookCorrections, hasLegacyCodexHookConfig, normalizeCodexFeatureRequest, rewrittenCodexHookScopes, scopedCodexFeatureBase } from "./codex-feature-compat.js";
 import { CompletionReplay, completionReplayStorage } from "./completion-replay.js";
+import { SharedDiscoveryCancelledError } from "./execution-host-client.js";
 
 /** One transport owns its RPC clients, approvals, and cancellation routing. */
 export function operationalStartFailure(error: unknown): boolean {
+  // A discovery the session itself cancelled (stop, abandoned wait) is an expected end, not a host failure.
+  // Matched at the emitting type, with the exact shared message as a fallback for a re-wrapped error; any
+  // other text naming a cancellation stays reportable.
+  if (error instanceof SharedDiscoveryCancelledError) return true;
   const message = error instanceof Error ? error.message : "";
-  return /unavailable|ownership|quiescing|startup settings differ|retry after|is closing|ENOENT|ECONNREFUSED|ECONNRESET/i.test(message);
+  return message === "Shared executor discovery was cancelled"
+    || /unavailable|ownership|quiescing|startup settings differ|retry after|is closing|ENOENT|ECONNREFUSED|ECONNRESET/i.test(message);
 }
 
 /**

@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { startExecutionHost, executionHostHome } from "../execution-host.js";
-import { ExecutionHostClient, setHostWaitForTests } from "../execution-host-client.js";
+import { ExecutionHostClient, SharedDiscoveryCancelledError, setHostWaitForTests } from "../execution-host-client.js";
 import { requestHostKick, watchHostKick } from "../execution-host-kick.js";
 import { writePrivateJson, type GatewayConfig } from "../config.js";
 import { hostRunsInThisProcess } from "./in-process-host.js";
@@ -125,6 +125,9 @@ test("a required host that stays down fails with the same error after the wait, 
     began = Date.now();
     await assert.rejects(ExecutionHostClient.discover(f.configPath, f.nativeHome, f.codex, "gateway", true, controller.signal), /Shared executor host is unavailable/);
     assert.ok(Date.now() - began < 3000, "the wait ended with the signal");
+    // A signal already given up on fails at once, typed as the caller's own cancellation rather than a host failure.
+    const givenUp = new AbortController(); givenUp.abort();
+    await assert.rejects(ExecutionHostClient.discover(f.configPath, f.nativeHome, f.codex, "gateway", true, givenUp.signal), (error: Error) => error instanceof SharedDiscoveryCancelledError);
   } finally { await host?.close(); await f.clean(); }
 });
 

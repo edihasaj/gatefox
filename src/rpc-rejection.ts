@@ -38,6 +38,7 @@ const engineRejections: ReadonlyArray<readonly [string, RegExp, Guard]> = [
   ["thread_not_loaded", /^thread not loaded: /, any],
   ["thread_not_persisted", /^thread is not persisted and cannot be deleted: /, any],
   ["engine_closed", /^Codex app-server (is closed|exited|socket closed)$|^The gateway executor (connection was lost|exited)/, any],
+  ["engine_closed", /^Shared executor discovery was cancelled$/, any],
   ["engine_timeout", /^Codex app-server request timed out$/, any],
   ["invalid_params", /^Invalid request: /, any],
 ];
