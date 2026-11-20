@@ -142,6 +142,7 @@ test("rejection names come only from the fixed list", () => {
     ["thread/read", { code: -32600, message: "thread not loaded: 01a13f34-c570-70b2-8c0d-8a631c6aab5d" }, "thread_not_loaded"],
     ["turn/start", { code: -32001, message: "Codex app-server exited" }, "engine_closed"],
     ["turn/start", { code: -32001, message: "The gateway executor connection was lost; resume this chat to reconnect to its saved or running session." }, "engine_closed"],
+    ["thread/start", { code: -32001, message: "Shared executor discovery was cancelled" }, "engine_closed"],
     ["turn/start", { code: -32001, message: "Codex app-server request timed out" }, "engine_timeout"],
     ["thread/resume", { code: -32600, message: "Invalid request: missing field `threadId`" }, "invalid_params"],
     ["thread/read", { code: -32001, message: "private text /Users/someone/secret" }, "other"],

@@ -31,6 +31,13 @@ type HostLook = { client?: ExecutionHostClient; failure?: Error; retry?: boolean
  * may let an adapter run a private native engine; a host that does not match, a changed socket or any other failure never does.
  */
 const unavailable = (message: string): Error => Object.assign(new Error(message), { hostUnavailable: true });
+/**
+ * The caller aborted discovery (a session stop, an abandoned list, a cut repair): the adapter gave up on its own,
+ * so this is an expected end, not a host failure. Classification at the consumption boundaries matches this type.
+ */
+export class SharedDiscoveryCancelledError extends Error {
+  constructor(message = "Shared executor discovery was cancelled") { super(message); }
+}
 export function hostUnavailable(error: unknown): boolean { return (error as { hostUnavailable?: unknown } | undefined)?.hostUnavailable === true; }
 /** Why a desktop adapter that shares native chats runs its own native engine instead, from a fixed vocabulary. */
 export type NativeFallbackReason = "host_unavailable" | "other" | "native_owner";
@@ -105,15 +112,15 @@ export class ExecutionHostClient {
   static async discover(configPath: string, nativeHome: string, codex: string, capability: ExecutionCapability = "gateway", required = false, signal?: AbortSignal): Promise<ExecutionHostClient | undefined> {
     const home = executionHostHome(configPath, nativeHome); const deadline = Date.now() + hostWaitMs; let kicked = false;
     for (;;) {
-      if (signal?.aborted) throw new Error("Shared executor discovery was cancelled");
+      if (signal?.aborted) throw new SharedDiscoveryCancelledError();
       const pending = ExecutionHostClient.look(home, configPath, nativeHome, codex, capability, required);
       // SocketAppServerConnection has its own connect timeout. A list operation
       // must not inherit it: abandon the wait immediately and close a client that
       // finishes connecting after its caller has gone away.
-      const look = signal ? await Promise.race([pending, new Promise<HostLook>((_, reject) => signal.addEventListener("abort", () => reject(new Error("Shared executor discovery was cancelled")), { once: true }))]).catch(error => {
+      const look = signal ? await Promise.race([pending, new Promise<HostLook>((_, reject) => signal.addEventListener("abort", () => reject(new SharedDiscoveryCancelledError()), { once: true }))]).catch(error => {
         void pending.then(value => value.client?.close(), () => {}); throw error;
       }) : await pending;
-      if (signal?.aborted) { look.client?.close(); throw new Error("Shared executor discovery was cancelled"); }
+      if (signal?.aborted) { look.client?.close(); throw new SharedDiscoveryCancelledError(); }
       if (!look.failure) return look.client;
       if (!required || !look.retry || signal?.aborted || Date.now() >= deadline) throw look.failure;
       if (!kicked) { kicked = true; await requestHostKick(home); }
