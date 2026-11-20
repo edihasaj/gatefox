@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.5 — 2026-11-20
+
+- Phone control of a Mac works again after ChatGPT 26.1111 and 26.1117. Their
+  engines (0.169.0-alpha.11.1 and 0.171.0-alpha.13) were not on the verified list,
+  so the native relay refused to start and the app reported that it could not
+  control the Mac. Both engines are now accepted by the relay and shared by the
+  native host after the remote-control review and shared-native checks.
+
 ## 2.1.4 — 2026-11-17
 
 - New Codex models now appear on a Mac where an account is rarely used. The

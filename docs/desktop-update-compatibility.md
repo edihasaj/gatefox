@@ -82,6 +82,36 @@ rebuilt relay passed its 47 tests and the upstream `remote_control` suite, and
 without `--host-codex`, with the native configuration unchanged, no paid inference and no
 owned process left behind.
 
+Engines 0.169.0-alpha.11.1 (ChatGPT 26.1111.21308) and 0.171.0-alpha.13 (ChatGPT
+26.1117.31558, OpenAI commit `581161ab41e643d942e1e1b5f561034060bf18e3`) reached
+macbook-server and Studio between 14 and 19 Nov 2026. On 19 Nov the 2.1.4 relay on
+Studio refused 0.171.0-alpha.13 ("requires the matching Codex CLI build") and paused as
+`failing`, so the phone reported that the Mac could not be controlled. Unlike earlier
+admissions, `app-server-transport` changed. Relative to the admitted 0.167.0-alpha.4.1:
+
+- `remote_control/auth.rs` builds request headers through a new `request_context` that
+  can add a runtime agent assertion (`x-openai-agent-assertion`). It is used only when
+  the `runtime_agent_instances` feature is enabled. That feature is `UnderDevelopment`
+  and off by default, and no Mac enables it, so the engine still sends the bearer token
+  and `chatgpt-account-id`, as the relay's linked transport does.
+- `protocol.rs` and `websocket.rs` add debug timing for `ThreadItemsList` response
+  writes. Envelopes, sequencing and chunking are unchanged.
+- `state/migrations` adds `0063_session_model_ids` and `0064_thread_listing_indexes`.
+  The relay reads only the registration row from the native database (read-only
+  `sqlite3`) and keeps its own database in the relay home, so neither affects it.
+- The app-server remote-control processor, the v2 `remoteControl/*` protocol and
+  `login/src/auth/storage.rs` (`AuthDotJson`) are byte-identical, and
+  `CHATGPT_ACCOUNT_ID_HEADER` is still `chatgpt-account-id`.
+
+0.169.0-alpha.11.1 has the same `app-server-transport` source as 0.171.0-alpha.13, byte
+for byte; its migrations are unchanged from 0.167.0-alpha.4.1, since 0063 and 0064 arrive
+with 0.171. 2.1.5 admits both engines for
+the relay and the shared host. The 0.171 engine came from the official update ZIP
+(`ChatGPT-darwin-arm64-26.1117.31558.zip`, TeamIdentifier `2DC432GLL2`, notarized,
+binary identical to Studio's). `scripts/e2e-shared-native.mjs` passed all 24 stdio and
+Unix phases against each engine, with and without `--host-codex`. 0.171.0-alpha.13.1
+is tagged upstream but not shipped in an app build yet, so it stays refused.
+
 ## Verify an app update
 
 1. Verify the installed app engine's exact version, OpenAI signature and binary
