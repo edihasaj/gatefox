@@ -101,6 +101,11 @@ engine after leaked sub-agent threads filled the table:
 
 ## Engine exits
 
+If a direct Codex app-server exits before replying, the adapter reports the
+pending request as failed. Its outcome is unknown, so the adapter does not
+resend it. The engine exit is recorded once through engine telemetry. Each
+pending request retains its RPC error without filing a separate exception.
+
 | Event | Fields | Meaning |
 | --- | --- | --- |
 | `engine_exit` | `engine`, `code`?, `signal`?, `uptimeMs`, `activeTurns`, `initiatedBy`, `reason` | One owned engine process ended, exactly once per process. `engine` is `"native"` or `"gateway"`. `activeTurns` counts the native threads or the gateway generation's loaded turns; for a native engine it is counted after that engine's last frames have drained, so a completion the engine wrote just before exiting is not mistaken for a live turn. |
