@@ -17,7 +17,7 @@ export const maximumGatewayInfoProviders = 32;
 export const maximumGatewayInfoModels = 256;
 
 const providerId = /^[a-z][a-z0-9_-]{0,63}$/;
-const kinds = new Set(["claude-subscription", "codex-subscription", "copilot-subscription", "grok-subscription", "responses-api", "anthropic-api", "chat-completions-api"]);
+const kinds = new Set(["claude-subscription", "codex-subscription", "copilot-subscription", "grok-subscription", "gemini-subscription", "responses-api", "anthropic-api", "chat-completions-api"]);
 /** Human-readable text: letters, digits, marks, punctuation, symbols and plain spaces; trimmed, bounded, no control or separator characters. */
 const text = (value: unknown, maximum: number): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= maximum && value === value.trim() && /^[\p{L}\p{N}\p{M}\p{P}\p{S} ]+$/u.test(value);

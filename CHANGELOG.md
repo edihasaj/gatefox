@@ -1,5 +1,37 @@
 # Changelog
 
+## 2.1.7 — 2026-11-21
+
+- A `gemini-subscription` provider spends a Google AI Ultra subscription through the
+  official Gemini CLI (`gemini --acp`), one long-lived session per conversation, sharing
+  the live-session machinery already used by Grok. API keys are never used: every
+  `GEMINI_*`, `GOOGLE_*`, `VERTEX*` and `OTEL_*` variable is removed before the CLI
+  starts, because an ambient `GEMINI_API_KEY` otherwise bills the API silently instead of
+  the subscription. The CLI signs in once into a private gateway-owned home, the
+  credential stays in that home rather than the macOS keychain, and a home that is not
+  signed in fails with 401 before any CLI spawns. The CLI keeps no tools of its own: a
+  gateway-written policy at the CLI's user tier denies every native tool and tells only
+  the caller's `mcp_gateway_*` tools to ask (its bundled default policies otherwise run
+  its read-only tools with no permission request), `tools.exclude` drops the same
+  built-ins from its registry so the model is never offered them, and both
+  system-scope settings paths are pinned to files that do not exist so nothing outside
+  the home can outrank the managed settings. Any announcement of a tool the caller never
+  offered ends the session, every permission is answered by the gateway with
+  `allow_once` at most, and prompts are framed so a caller message beginning with `/`
+  can never reach the CLI as one of its own commands. Sign in with
+  `gateway login gemini`. See [Gemini sessions](docs/gemini-sessions.md).
+- Gemini sessions no longer leave transcripts behind or open a browser. Each CLI process
+  runs in its own disposable home (the CLI records every prompt and cannot be told not
+  to), a refreshed sign-in is copied back atomically under the home lock, and a request
+  with no conversation id closes its session when its turn ends instead of holding a slot
+  for thirty minutes. A saved sign-in that can no longer refresh now fails with 401 instead
+  of opening a browser tab: the CLI's browser opener is a stand-in during inference.
+  Reconnect and `gateway login gemini` answer the CLI's consent question, open the sign-in
+  URL themselves and succeed only when the credential file appears, in an empty private
+  working directory; a `.env` in the Gemini home is refused. A gateway that exits during a
+  sign-in or a session start now kills the CLI and removes its scratch home (with the copied
+  credential) at exit, and the next run sweeps scratch homes a killed gateway left behind.
+
 ## 2.1.6 — 2026-11-20
 
 - An OpenRouter HTTP 402 that only means the balance cannot cover the request's

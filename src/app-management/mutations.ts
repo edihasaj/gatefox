@@ -5,7 +5,7 @@ import { ManagementError, throwIfCancelled } from "./errors.js";
 import { catalogEntry, isManagedCredential, validateRaw, writeCredential } from "./drafts.js";
 import { isApiKind, validModelId } from "./providers.js";
 import type { CatalogEntry, DraftRecord } from "./types.js";
-import { loadAliases, providerRoute, rememberCurrentAliases, rememberProviderAliases, reservedAliases, retiredAlias, retiredAliases, saveAliases, type AliasIdentity } from "./aliases.js";
+import { cliCatalogKind, loadAliases, providerRoute, rememberCurrentAliases, rememberProviderAliases, reservedAliases, retiredAlias, retiredAliases, saveAliases, type AliasIdentity } from "./aliases.js";
 import { chooseLoopbackPort } from "./ports.js";
 import { pickerHidden } from "../model-auto-latest/metadata.js";
 import { dropRawProvider, reseedRawProvider } from "../model-auto-latest/scopes.js";
@@ -20,8 +20,8 @@ function stripHidden<T extends object | undefined>(metadata: T): T {
 const stringArray = (value: unknown): string[] => Array.isArray(value) && value.every(validModelId) && new Set(value).size === value.length ? value : (() => { throw new ManagementError("invalid_request"); })();
 const cachePath = (configPath: string, id: string): string => resolve(dirname(configPath), "app-catalog", `${id}.json`);
 
-/** A Grok catalog is only valid for the private Grok home it was recorded under; other kinds are not route-bound. */
-const routeBound = (provider?: ProviderConfig): provider is ProviderConfig => provider?.type === "grok-subscription";
+/** A CLI subscription catalog is only valid for the private home it was recorded under; other kinds are not route-bound. */
+const routeBound = (provider?: ProviderConfig): provider is ProviderConfig => provider !== undefined && cliCatalogKind(provider);
 
 export async function loadCachedCatalog(configPath: string, id: string, provider?: ProviderConfig): Promise<CatalogEntry[]> {
   try {

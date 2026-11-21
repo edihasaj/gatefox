@@ -3,7 +3,7 @@ import { lstat } from "node:fs/promises";
 import type { GatewayConfig, ProviderConfig } from "../config.js";
 import { readOwnedJson, writeOwnedJson } from "./storage.js";
 
-/** `metadata` is recorded for Grok only: it has no discovery, so the ledger is what restores a re-enabled alias exactly. */
+/** `metadata` is recorded for the CLI subscription kinds only: they have no discovery, so the ledger restores a re-enabled alias exactly. */
 export interface AliasIdentity { route: string; model: string; metadata?: Record<string, unknown> }
 interface AliasLedger { version: 1; aliases: Record<string, AliasIdentity> }
 
@@ -11,8 +11,11 @@ const ledgerPath = (configPath: string): string => resolve(dirname(configPath), 
 const own = <T>(): Record<string, T> => Object.create(null) as Record<string, T>;
 const boundedMetadata = (value: unknown): Record<string, unknown> | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? structuredClone(value) as Record<string, unknown> : undefined;
+/** The subscription kinds whose only model catalog is what the operator configured: no discovery to re-read it. */
+export const cliCatalogKind = (provider: ProviderConfig): boolean => provider.type === "grok-subscription" || provider.type === "gemini-subscription";
+
 function identity(provider: ProviderConfig, alias: string, model: string, route: string): AliasIdentity {
-  const metadata = provider.type === "grok-subscription" ? boundedMetadata(provider.modelMetadata?.[alias]) : undefined;
+  const metadata = cliCatalogKind(provider) ? boundedMetadata(provider.modelMetadata?.[alias]) : undefined;
   return { route, model, ...(metadata ? { metadata } : {}) };
 }
 
@@ -21,8 +24,9 @@ export function providerRoute(provider: ProviderConfig): string {
     credentialFile: provider.credentialFile ? resolve(provider.credentialFile) : undefined,
     authDirectory: provider.authDirectory ? resolve(provider.authDirectory) : undefined,
     baseUrl: provider.baseUrl, apiKeyEnv: provider.apiKeyEnv,
-    // Grok identity is its private home; other kinds omit the key so their existing fingerprints stay valid.
-    ...(provider.type === "grok-subscription" && provider.grokHome ? { grokHome: resolve(provider.grokHome) } : {}) });
+    // A CLI subscription's identity is its private home; other kinds omit the key so their existing fingerprints stay valid.
+    ...(provider.type === "grok-subscription" && provider.grokHome ? { grokHome: resolve(provider.grokHome) } : {}),
+    ...(provider.type === "gemini-subscription" && provider.geminiHome ? { geminiHome: resolve(provider.geminiHome) } : {}) });
 }
 
 export async function loadAliases(configPath: string): Promise<AliasLedger> {

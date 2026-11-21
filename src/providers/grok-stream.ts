@@ -1,9 +1,12 @@
-import type { InferenceEvent, OpenAITool, OpenAIToolCall, Usage } from "../protocol/types.js";
+import type { InferenceEvent, OpenAITool, OpenAIToolCall } from "../protocol/types.js";
 import { ProviderError } from "./provider.js";
 import { nativeClaudeCalls, nativeClaudeReasoning } from "./claude-calls.js";
 
-/** Token counts from the CLI. Grok reports input_tokens including cache reads. */
-export interface GrokTokens { input: number; cacheRead?: number; output: number }
+/** Token counts from the CLI. Grok reports input_tokens including cache reads; the shape is the shared ACP one. */
+import { acpUsage, type AcpTokens } from "./acp-usage.js";
+
+export { acpUsage as grokUsage } from "./acp-usage.js";
+export type GrokTokens = AcpTokens;
 export type GrokStreamEnd = { kind: "tool_use"; calls: OpenAIToolCall[] } | { kind: "end_turn" } | { kind: "result" };
 export interface GrokStep { events: InferenceEvent[]; end?: GrokStreamEnd; /** A use_tool call is complete; the request may end once the CLI goes quiet. */ ready?: boolean }
 
@@ -14,9 +17,6 @@ const maxText = 8 * 1024 * 1024;
 const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const refuse = (code: string) => new ProviderError("invalid_tool_call", "Grok tried to use a tool the gateway does not offer", 502, { code, event: "grok.tool_use" });
-
-export const grokUsage = (tokens: GrokTokens): Usage => ({ input_tokens: tokens.input, output_tokens: tokens.output, total_tokens: tokens.input + tokens.output,
-  ...(tokens.cacheRead === undefined ? {} : { input_tokens_details: { cached_tokens: tokens.cacheRead } }) });
 
 const codes = new Set(["rate_limit", "authentication_failed", "billing_error", "server_error", "overloaded", "invalid_request", "max_output_tokens", "unknown"]);
 /**

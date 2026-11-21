@@ -45,7 +45,9 @@ export function diagnosticDetails(events: TelemetryEvent[]): {
       if (count(event.cacheReadTokens)) { row.cacheReadTokens += event.cacheReadTokens; row.cacheReadSamples++; }
       if (count(event.cacheWriteTokens)) { row.cacheWriteTokens += event.cacheWriteTokens; row.cacheWriteSamples++; }
     }
-    const sessionFailure = ["copilot_session", "claude_session", "grok_cli"].includes(event.event) && ["crashed", "fallback", "blocked", "preserved"].includes(String(event.outcome));
+    // `gemini_session` joins the events whose failures are worth reporting: a live CLI session that crashed is the
+    // conversation dying, not an operational detail, and without this it would be filtered out below.
+    const sessionFailure = ["copilot_session", "claude_session", "grok_cli", "gemini_session"].includes(event.event) && ["crashed", "fallback", "blocked", "preserved"].includes(String(event.outcome));
     const transportFailure = event.event === "unix_session_end" && event.cause === "transport_closed";
     if ((!operational.has(event.event) && !sessionFailure && !transportFailure)
       || (event.event === "request_failed" && event.code === "cancelled")) continue;

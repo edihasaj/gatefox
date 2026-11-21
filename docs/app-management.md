@@ -114,6 +114,18 @@ credential file exists. Their configured models can be disabled and re-enabled
 without losing their aliases or metadata. Grok has no catalog discovery, so
 Refresh stays unavailable.
 
+Gemini subscription connections work the same way against the gateway's private
+Gemini home: the connection reports whether a usable Google credential exists and
+whether the `gemini` CLI is installed. A credential counts only when
+`oauth_creds.json` parses and carries both an access and a refresh token, so a
+partial file is reported as signed out rather than spawning a CLI that would fail
+mid-request. Reconnect runs the CLI's own Google browser sign-in: the CLI asks for
+consent on stdin, which the click answers, and asks its browser opener for the sign-in
+URL, which the app opens itself. The app treats the sign-in as complete only once
+that credential file exists in the CLI's home (never from the exit code), then installs
+it into the gateway's Gemini home. The CLI runs in an empty private folder, not the
+app's working directory. Gemini has no catalog discovery either, so Refresh stays unavailable.
+
 ## Shared-gateway clients
 
 A configuration with `clientOnly: true` shows a read-only shared catalog instead

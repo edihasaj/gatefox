@@ -192,3 +192,15 @@ Each Grok subscription request writes one `grok_cli` event: `model`, `effort`,
 `outputTokens` and `costUsd`, the allowance cost the CLI reported. Failures use
 the upstream events `grok.assistant`, `grok.result` and `grok.tool_use`. See
 [Grok subscription](grok-sessions.md).
+
+## Gemini CLI records
+
+Each Gemini subscription conversation writes `gemini_session` events: `outcome`
+(`spawned`, `continued`, `refused`, `reaped`, `crashed`, `closed`, `interrupted`), a fixed
+`missReason`, `liveSessions`, `toolCalls`, `permissionsAllowed`, `permissionsDenied`,
+`parkedMs`, `inputTokens` and `outputTokens`. The Gemini CLI reports no cost, so there is
+no `costUsd` field to compare with Grok's. Failures use the upstream events
+`gemini.assistant`, `gemini.result` and `gemini.tool_use`. A session that crashed is
+listed among the report's issues, and its conversation is then refused
+`session_continuity_unavailable` rather than replayed. See
+[Gemini subscription](gemini-sessions.md).

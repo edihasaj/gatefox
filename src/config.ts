@@ -9,7 +9,7 @@ import type { AutoLatestSettings } from "./model-auto-latest/types.js";
 import { maximumReleasedAt, minimumReleasedAt } from "./model-auto-latest/metadata.js";
 import { validateManagedRouting, type ManagedRoutingSettings } from "./managed-routing-config.js";
 
-export type ProviderKind = "claude-subscription" | "codex-subscription" | "copilot-subscription" | "responses-api" | "anthropic-api" | "chat-completions-api" | "grok-subscription";
+export type ProviderKind = "claude-subscription" | "codex-subscription" | "copilot-subscription" | "responses-api" | "anthropic-api" | "chat-completions-api" | "grok-subscription" | "gemini-subscription";
 export interface ProviderConfig {
   id: string;
   type: ProviderKind;
@@ -46,6 +46,8 @@ export interface ProviderConfig {
   authDirectory?: string;
   /** Grok subscription only: the private Grok home the gateway signs in once (default <stateDirectory>/grok-home). */
   grokHome?: string;
+  /** Gemini subscription only: the private Gemini CLI home the gateway signs in once (default <stateDirectory>/gemini-home). */
+  geminiHome?: string;
   /**
    * Codex or Claude subscription only: the operator designates this account as the one that serves its vendor's bare model
    * names (a sub-agent's `gpt-5.6-terra` or `claude-opus-5-5`, and an unnamed reviewer). At most one provider per type may
@@ -71,6 +73,8 @@ export interface ProviderConfig {
   copilotSessions?: CopilotSessionConfig;
   /** Grok subscription only: one-shot requests or a live ACP session per conversation (the default). */
   grokSessions?: GrokSessionConfig;
+  /** Gemini subscription only: a live ACP session per conversation (the only transport the Gemini CLI offers here). */
+  geminiSessions?: GeminiSessionConfig;
 }
 export interface ClaudeSessionConfig { mode?: "replay" | "live"; max?: number; parkMinutes?: number; warmup?: number; replayFormat?: "text" | "json" }
 export type ClaudeSessionSettings = Required<ClaudeSessionConfig>;
@@ -99,6 +103,17 @@ export interface GrokSessionConfig { mode?: "oneshot" | "live"; max?: number; pa
 export interface GrokSessionSettings { mode: "oneshot" | "live"; max: number; parkMinutes: number; toolWaitMinutes: number }
 export function grokSessionSettings(provider: Pick<ProviderConfig, "grokSessions">): GrokSessionSettings {
   const value = provider.grokSessions || {};
+  return { mode: value.mode === "oneshot" ? "oneshot" : "live", max: value.max ?? 4, parkMinutes: value.parkMinutes ?? 30, toolWaitMinutes: value.toolWaitMinutes ?? 25 };
+}
+/**
+ * Live Gemini sessions. Validated exactly like `grokSessions`. `live` is the only transport the Gemini CLI offers
+ * through the gateway, so `oneshot` is accepted for symmetry with the other providers and refused at request time
+ * rather than silently ignored.
+ */
+export interface GeminiSessionConfig { mode?: "oneshot" | "live"; max?: number; parkMinutes?: number; toolWaitMinutes?: number }
+export interface GeminiSessionSettings { mode: "oneshot" | "live"; max: number; parkMinutes: number; toolWaitMinutes: number }
+export function geminiSessionSettings(provider: Pick<ProviderConfig, "geminiSessions">): GeminiSessionSettings {
+  const value = provider.geminiSessions || {};
   return { mode: value.mode === "oneshot" ? "oneshot" : "live", max: value.max ?? 4, parkMinutes: value.parkMinutes ?? 30, toolWaitMinutes: value.toolWaitMinutes ?? 25 };
 }
 /** Whether a provider bridges the client's `tool_search` instead of dropping it; `off` and any other value stay today's drop. */
@@ -235,7 +250,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
     if (!provider || !/^[a-z][a-z0-9_-]*$/.test(provider.id)) throw new Error("Provider IDs must use lowercase letters, digits, _ or -");
     if (ids.has(provider.id)) throw new Error(`Duplicate provider ID: ${provider.id}`);
     ids.add(provider.id);
-    if (!["claude-subscription", "codex-subscription", "copilot-subscription", "responses-api", "anthropic-api", "chat-completions-api", "grok-subscription"].includes(provider.type)) throw new Error(`Unsupported provider type: ${provider.type}`);
+    if (!["claude-subscription", "codex-subscription", "copilot-subscription", "responses-api", "anthropic-api", "chat-completions-api", "grok-subscription", "gemini-subscription"].includes(provider.type)) throw new Error(`Unsupported provider type: ${provider.type}`);
     if (provider.maxConcurrent !== undefined && (!Number.isInteger(provider.maxConcurrent) || provider.maxConcurrent < 1 || provider.maxConcurrent > 64)) throw new Error(`${provider.id}: maxConcurrent must be 1 through 64`);
     if (!provider.models || typeof provider.models !== "object" || Array.isArray(provider.models) || !Object.keys(provider.models).length) throw new Error(`${provider.id}: models must be a non-empty alias map`);
     for (const [alias, model] of Object.entries(provider.models)) {
@@ -298,6 +313,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       throw new Error(`${provider.id}: cacheMissLimit must be an integer from 3 to 12`);
     }
     if (provider.grokHome !== undefined && (provider.type !== "grok-subscription" || typeof provider.grokHome !== "string" || !provider.grokHome)) throw new Error(`${provider.id}: grokHome is only valid for grok-subscription providers`);
+    if (provider.geminiHome !== undefined && (provider.type !== "gemini-subscription" || typeof provider.geminiHome !== "string" || !provider.geminiHome)) throw new Error(`${provider.id}: geminiHome is only valid for gemini-subscription providers`);
     if (provider.defaultForBareModels !== undefined) {
       if (provider.type !== "codex-subscription" && provider.type !== "claude-subscription") throw new Error(`${provider.id}: defaultForBareModels is only valid for codex-subscription or claude-subscription providers`);
       if (typeof provider.defaultForBareModels !== "boolean") throw new Error(`${provider.id}: defaultForBareModels must be boolean`);
@@ -337,8 +353,19 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       // A held tool call is a pending MCP request; the gateway closes the session before any client-side timeout could end it on its own.
       if (grok.toolWaitMinutes !== undefined && !integerIn(grok.toolWaitMinutes, 1, 25)) throw new Error(`${provider.id}: grokSessions toolWaitMinutes must be 1 through 25`);
     }
-    return { ...provider, models: { ...provider.models }, ...(sessions ? { claudeSessions: { ...sessions } } : {}), ...(copilot ? { copilotSessions: { ...copilot } } : {}), ...(grok ? { grokSessions: { ...grok } } : {}), ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}),
-      ...(provider.type === "grok-subscription" ? { grokHome: resolve(directory, provider.grokHome ?? join(stateDirectory, "grok-home")) } : {}) };
+    const gemini = provider.geminiSessions;
+    if (gemini !== undefined) {
+      if (provider.type !== "gemini-subscription") throw new Error(`${provider.id}: geminiSessions is only valid for gemini-subscription providers`);
+      if (!gemini || typeof gemini !== "object" || Array.isArray(gemini)) throw new Error(`${provider.id}: geminiSessions must be an object`);
+      if (gemini.mode !== undefined && !["oneshot", "live"].includes(gemini.mode)) throw new Error(`${provider.id}: geminiSessions mode must be oneshot or live`);
+      if (gemini.max !== undefined && !integerIn(gemini.max, 1, 16)) throw new Error(`${provider.id}: geminiSessions max must be 1 through 16`);
+      if (gemini.parkMinutes !== undefined && !integerIn(gemini.parkMinutes, 5, 240)) throw new Error(`${provider.id}: geminiSessions parkMinutes must be 5 through 240`);
+      // A held tool call is a pending MCP request; the gateway closes the session before any client-side timeout could end it on its own.
+      if (gemini.toolWaitMinutes !== undefined && !integerIn(gemini.toolWaitMinutes, 1, 25)) throw new Error(`${provider.id}: geminiSessions toolWaitMinutes must be 1 through 25`);
+    }
+    return { ...provider, models: { ...provider.models }, ...(sessions ? { claudeSessions: { ...sessions } } : {}), ...(copilot ? { copilotSessions: { ...copilot } } : {}), ...(grok ? { grokSessions: { ...grok } } : {}), ...(gemini ? { geminiSessions: { ...gemini } } : {}), ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}),
+      ...(provider.type === "grok-subscription" ? { grokHome: resolve(directory, provider.grokHome ?? join(stateDirectory, "grok-home")) } : {}),
+      ...(provider.type === "gemini-subscription" ? { geminiHome: resolve(directory, provider.geminiHome ?? join(stateDirectory, "gemini-home")) } : {}) };
   });
   const accountEngines = config.accountEngines === undefined ? undefined : validateAccountEngines(config.accountEngines, providers);
   // Two defaults of the same type would make a bare name depend on configuration order, so one designation per vendor is the rule.

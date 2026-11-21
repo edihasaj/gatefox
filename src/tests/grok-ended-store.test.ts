@@ -4,6 +4,8 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { GrokEndedStore, grokEndedFile, grokEndedLimits } from "../providers/grok-ended-store.js";
+import { AcpEndedStore, type AcpEndedStoreOptions } from "../providers/acp-ended-store.js";
+import { GeminiEndedStore } from "../providers/gemini-ended-store.js";
 
 const module = new URL("../providers/grok-ended-store.js", import.meta.url).href;
 const key = (index: number) => index.toString(16).padStart(64, "0");
@@ -140,4 +142,25 @@ test("an interrupted write's temporary files are reclaimed under the lock; a fre
     assert.equal((await stat(file)).mode & 0o777, 0o600);
     assert.ok(![...names].some(name => name.endsWith(".lock")), "the lock is released");
   } finally { Object.assign(grokEndedLimits, defaults); await rm(home, { recursive: true, force: true }); }
+});
+
+test("a reason is stored only from the provider's fixed vocabulary, never as the text the CLI produced", async () => {
+  const home = await folder();
+  try {
+    await GrokEndedStore.forHome(home).finish(key(1), "Grok said: CANARY_PROSE_4711 ran read_file");
+    const saved = await read(home);
+    assert.equal(saved.entries[key(1)]?.reason, "closed", "an unrecognized reason closes the conversation under a fixed code");
+    await GeminiEndedStore.forHome(home).finish(key(3), "rate limit exceeded, retry in 40s CANARY_TWO");
+    assert.equal((await read(home)).entries[key(3)]?.reason, "closed", "the Gemini vocabulary is just as closed");
+    assert.ok(!JSON.stringify(await read(home)).includes("CANARY"), "no provider text ever reaches the file");
+    // A record already on disk that carries prose is read back as `closed`, never as that prose.
+    const poisoned = await read(home); poisoned.entries[key(4)] = { at: Date.now(), reason: "CANARY_ON_DISK", seq: 99 };
+    await writeFile(join(home, grokEndedFile), JSON.stringify(poisoned));
+    assert.equal(await GrokEndedStore.forHome(home).lookup(key(4)), "closed", "prose on disk is never handed to a caller as a reason");
+    // A store handed no vocabulary at all (a provider that forgot one) still fails closed rather than echoing the reason.
+    const shared = new AcpEndedStore(join(home, "shared.json"), { now: () => 1, owner: "1:1" } as unknown as AcpEndedStoreOptions);
+    await shared.finish(key(2), "CANARY_THREE");
+    assert.ok(!(await readFile(join(home, "shared.json"), "utf8")).includes("CANARY_THREE"), "the default stores no caller text");
+    assert.equal(await shared.lookup(key(2)), "closed", "and it reads back as a fixed code");
+  } finally { await rm(home, { recursive: true, force: true }); }
 });
