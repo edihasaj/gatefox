@@ -10,11 +10,13 @@ import { providerCommand, type ProviderTool } from "../provider-tool-runtime.js"
 import { accountEmail } from "../availability/quota.js";
 import { pickerHidden } from "../model-auto-latest/metadata.js";
 import { grokLoginEnvironment, hasGrokLogin } from "../providers/grok-home.js";
+import { hasGeminiLogin } from "../providers/gemini-home.js";
+import { geminiLogin, openGeminiSignInUrl } from "../providers/gemini-login.js";
 
 const apiKinds = new Set<ProviderKind>(["responses-api", "anthropic-api", "chat-completions-api"]);
 const cliFor: Partial<Record<ProviderKind, string>> = { "claude-subscription": "claude", "copilot-subscription": "copilot" };
-/** Grok signs in through its own CLI and has no verified catalog route: it is listed, never probed or signed in here. */
-const existingCliFor: Partial<Record<ProviderKind, string>> = { "grok-subscription": "grok" };
+/** Grok and Gemini sign in through their own CLI and have no verified catalog route: they are listed, never probed or signed in here. */
+const existingCliFor: Partial<Record<ProviderKind, string>> = { "grok-subscription": "grok", "gemini-subscription": "gemini" };
 const modelId = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 
 export const isApiKind = (type: ProviderKind): boolean => apiKinds.has(type);
@@ -114,7 +116,7 @@ export async function managedProvider(provider: ProviderConfig, lookup: Manageme
   const authState = external ? "external-credential" : !available && cli ? "missing-cli" : saved ? "saved" : existing || unchecked ? "unchecked" : "needs-sign-in";
   const authDetail = external ? "Credential is managed outside GateFox." : !available && cli ? `${cli} is not installed.`
     : saved ? "Saved credentials have not been checked."
-    : existing ? "Grok sign-in has not been checked. Manage it with the Grok CLI in this gateway's private home."
+    : existing ? `${existing === "grok" ? "Grok" : "Gemini"} sign-in has not been checked. Manage it with the ${existing} CLI in this gateway's private home.`
     : unchecked ? "Provider sign-in has not been checked. Check connection to verify." : "Sign in is required.";
   return { id: provider.id, label: provider.label || provider.id, type: provider.type, ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}), authState, authDetail,
     models: managedModels(provider, catalog, newDraft), canDiscover: existing === undefined,
@@ -132,7 +134,7 @@ function loginEnvironment(type: ProviderKind, authDirectory?: string): NodeJS.Pr
   return env;
 }
 function scrubAuthOverrides(env: NodeJS.ProcessEnv): void {
-  for (const key of Object.keys(env)) if (key.startsWith("ANTHROPIC_") || key.startsWith("CLAUDE_CODE_") || key.startsWith("COPILOT_PROVIDER_") || key.startsWith("COPILOT_") || ["CLAUDE_CONFIG_DIR", "CLAUDE_MODEL", "GH_TOKEN", "GITHUB_TOKEN", "NODE_DEBUG"].includes(key)) delete env[key];
+  for (const key of Object.keys(env)) if (key.startsWith("ANTHROPIC_") || key.startsWith("CLAUDE_CODE_") || key.startsWith("COPILOT_PROVIDER_") || key.startsWith("COPILOT_") || key.startsWith("GEMINI_") || key.startsWith("GOOGLE_") || key.startsWith("VERTEX") || ["CLAUDE_CONFIG_DIR", "CLAUDE_MODEL", "GH_TOKEN", "GITHUB_TOKEN", "NODE_DEBUG"].includes(key)) delete env[key];
 }
 
 export async function runSubscriptionLogin(provider: ProviderConfig, deps: ManagementDependencies, expectedEmail?: string): Promise<void> {
@@ -147,6 +149,16 @@ export async function runSubscriptionLogin(provider: ProviderConfig, deps: Manag
     await (deps.runLogin || childLoginOpeningURL)(command, args, env, deps.signal);
     // A clean exit is not proof of sign-in: the CLI must have written its credential file.
     if (!await hasGrokLogin(provider.grokHome)) throw new ManagementError("authentication_failed");
+    return;
+  }
+  if (provider.type === "gemini-subscription") {
+    if (!provider.geminiHome) throw new ManagementError("authentication_failed");
+    if (!await (deps.lookupCli || cliAvailable)("gemini")) throw new ManagementError("missing_cli");
+    // The CLI has no login command and asks for consent on stdin, so `childLoginOpeningURL` cannot drive it. A Reconnect click is
+    // the consent; the helper answers it, opens the URL the CLI asks its browser to open, and judges success by the credential.
+    await geminiLogin({ home: provider.geminiHome, signal: deps.signal, openUrl: deps.openBrowser || openGeminiSignInUrl });
+    // A clean exit is not proof of sign-in: the CLI must have written its credential file.
+    if (!await hasGeminiLogin(provider.geminiHome)) throw new ManagementError("authentication_failed");
     return;
   }
   if (provider.type === "codex-subscription") {

@@ -22,6 +22,8 @@ import { macService } from "./mac-service.js";
 import { openCopilot, copilotEnvironment } from "./providers/copilot-client.js";
 import { configPath } from "./paths.js";
 import { ensureGrokHome, grokLoginEnvironment } from "./providers/grok-home.js";
+import { ensureGeminiHome } from "./providers/gemini-home.js";
+import { geminiLogin, openGeminiSignInUrl } from "./providers/gemini-login.js";
 import { setupGateway, setupClient } from "./setup.js";
 import { readClientToken as readPrivateClientToken } from "./config.js";
 import { launchDesktop } from "./desktop-launch.js";
@@ -353,6 +355,18 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       });
       // Only a written credential proves the flow finished; the CLI exit code alone is not enough.
       await ensureGrokHome(provider.grokHome);
+    } else if (provider.type === "gemini-subscription") {
+      // The CLI has no login command and, without a terminal, asks for consent on stdin; the gateway answers it (this command
+      // is the consent), prints and opens the sign-in URL itself, and trusts only the credential that appears afterwards.
+      if (!provider.geminiHome) throw new Error(`${provider.id}: Gemini provider has no private home to sign in`);
+      const control = new AbortController(); const interrupt = () => control.abort(); process.once("SIGINT", interrupt);
+      try {
+        await geminiLogin({ home: provider.geminiHome, signal: control.signal, openUrl: async url => {
+          process.stdout.write(`Continue with Google in the browser on this computer:\n${url}\nWaiting for authorization...\n`);
+          await openGeminiSignInUrl(url).catch(() => { /* The URL above is printed for a terminal user to open. */ });
+        } });
+      } finally { process.off("SIGINT", interrupt); }
+      await ensureGeminiHome(provider.geminiHome);
     } else throw new Error("Configure this API provider's credentialFile or apiKeyEnv instead of subscription login");
     process.stdout.write(`${provider.id}: signed in\n`); return;
   }

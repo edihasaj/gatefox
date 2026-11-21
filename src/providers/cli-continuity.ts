@@ -1,8 +1,11 @@
 import { ProviderError } from "./provider.js";
 
+/** The CLI providers that hold a live session per conversation and refuse rather than replay one. */
+export type CliContinuityProvider = "Claude" | "Copilot" | "Grok" | "Gemini";
+
 /** Final before a hidden one-shot fallback: a client must choose whether to retry/reseed. */
 export class CliContinuityUnavailable extends ProviderError {
-  constructor(provider: "Claude" | "Copilot" | "Grok", reason: string) {
+  constructor(provider: CliContinuityProvider, reason: string) {
     super("invalid_request", provider === "Grok" && reason === "persistent_session_unqualified"
       ? "Grok's one-shot mode (grokSessions.mode: oneshot) supports standalone requests only. Gateway stopped before replaying this conversation. Set grokSessions.mode to live (the default) to continue a conversation with tools, or select another model."
       : provider === "Claude" && reason === "capacity"
