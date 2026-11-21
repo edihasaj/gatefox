@@ -1,6 +1,20 @@
 # Changelog
 
 ## Unreleased
+- Updates no longer pile up old rollback copies of the app. Every update left a
+  hidden `.Harness-Gateway-Update-<uuid>.app` of about 700 MB beside GateFox and
+  never removed it; one Mac had 57 of them (38 GB). After each update the old ones
+  are now pruned, keeping the current rollback copy, one spare and any copy still
+  in use.
+- GateFox is the canonical command in help, setup examples, managed launcher
+  migrations and app runtime messages. Historical launchers remain supported.
+- `gatefox migrate` previews reversible canonical path aliases for existing
+  installations. Explicit application requires stopped clients and services,
+  records ownership for rollback, and preserves the original storage, executor
+  identity, preferences, saved chats and macOS security identities.
+
+## 2.1.7 — 2026-11-21
+
 - A `gemini-subscription` provider spends a Google AI Ultra subscription through the
   official Gemini CLI (`gemini --acp`), one long-lived session per conversation, sharing
   the live-session machinery already used by Grok. API keys are never used: every
@@ -30,17 +44,6 @@
   working directory; a `.env` in the Gemini home is refused. A gateway that exits during a
   sign-in or a session start now kills the CLI and removes its scratch home (with the copied
   credential) at exit, and the next run sweeps scratch homes a killed gateway left behind.
-- Updates no longer pile up old rollback copies of the app. Every update left a
-  hidden `.Harness-Gateway-Update-<uuid>.app` of about 700 MB beside GateFox and
-  never removed it; one Mac had 57 of them (38 GB). After each update the old ones
-  are now pruned, keeping the current rollback copy, one spare and any copy still
-  in use.
-- GateFox is the canonical command in help, setup examples, managed launcher
-  migrations and app runtime messages. Historical launchers remain supported.
-- `gatefox migrate` previews reversible canonical path aliases for existing
-  installations. Explicit application requires stopped clients and services,
-  records ownership for rollback, and preserves the original storage, executor
-  identity, preferences, saved chats and macOS security identities.
 
 ## 2.1.6 — 2026-11-20
 
