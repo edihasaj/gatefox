@@ -10,9 +10,54 @@ import { ResponsesWriter } from "../protocol/responses.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { installClaudeFixture } from "./claude-cli-fixture.js";
 import type { ResponsesInputItem, ResponsesRequest } from "../protocol/types.js";
+import { messagesToResponses } from "../protocol/messages-request.js";
 
 const tools = [{ type: "function" as const, name: "read", parameters: { type: "object", properties: {} } }];
 const user = (content: string): ResponsesInputItem => ({ type: "message", role: "user", content });
+
+test("native Messages rebuilds a changed prefix only after receiving the original pending calls and results", { timeout: 30000 }, async () => {
+  const fixture = await installClaudeFixture({ replies: [
+    { calls: [{ tool: "read", input: { file: "one" } }, { tool: "read", input: { file: "two" } }] },
+    { text: "Recovered" }, { text: "Continued" },
+  ] });
+  const provider = new ClaudeSubscription({ id: `messages-rebuild-${process.pid}`, type: "claude-subscription",
+    models: { fixture: "fixture" }, claudeSessions: { mode: "live", warmup: 0 } });
+  const sessionId = "019a1234-5678-7890-abcd-0123456789ab";
+  const turn = async (messages: unknown[], tool_choice?: unknown) => {
+    const request = messagesToResponses({ model: "fixture", max_tokens: 100, messages, tool_choice,
+      metadata: { user_id: JSON.stringify({ device_id: "d", account_uuid: "a", session_id: sessionId }) },
+      tools: [{ name: "read", input_schema: { type: "object", properties: { file: { type: "string" } } } }] });
+    const writer = new ResponsesWriter("fixture", () => {});
+    for await (const event of provider.infer(request, new AbortController().signal, { clientProtocol: "messages", sessionId })) writer.accept(event);
+    return writer.result().output as ResponsesInputItem[];
+  };
+  const message = (role: string, content: unknown) => ({ role, content });
+  try {
+    const reply = await turn([message("user", "Original history")]);
+    const calls = reply.flatMap(item => item.type === "function_call"
+      ? [{ type: "tool_use", id: String(item.call_id), name: item.name, input: JSON.parse(String(item.arguments)) }] : []);
+    assert.equal(calls.length, 2);
+    const results = calls.map(call => ({ type: "tool_result", tool_use_id: call.id, content: "already executed" }));
+    const changed = message("user", "Updated history");
+    const tail = message("user", [results[1], { type: "text", text: "Scout finished" }, results[0]]);
+    const live = claudeLive({ max: 6, parkMinutes: 60 });
+    const [waiting] = live.sessions();
+    await assert.rejects(turn([changed, message("assistant", [{ ...calls[0], input: { file: "different" } }, calls[1]]), tail]),
+      { missReason: "prefix_diverged" });
+    const continuation = [changed, message("assistant", calls), tail];
+    await assert.rejects(turn(continuation, { type: "any" }), { missReason: "prefix_diverged" });
+    assert.equal(live.sessions()[0], waiting);
+    assert.ok((await turn(continuation)).some(item => item.type === "message"));
+    assert.notEqual(live.sessions()[0], waiting);
+    await turn([...continuation, message("assistant", "Recovered"), message("user", "Continue")]);
+    const capture = await fixture.capture();
+    assert.deepEqual(capture.filter(row => row.start).map(row => row.start), ["live", "live"]);
+    assert.equal(capture.some(row => row.toolResult !== undefined), false, "the old CLI never receives results from changed history");
+  } finally {
+    await claudeLive({ max: 6, parkMinutes: 60 }).stop();
+    await flushTelemetry(); await fixture.restore();
+  }
+});
 
 for (const mismatch of ["missing", "duplicate", "assistant", "forced"] as const) {
   test(`${mismatch} tool continuation preserves the CLI and pending results without one-shot replay`, { timeout: 30000 }, async () => {

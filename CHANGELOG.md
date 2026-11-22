@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Claude Desktop can continue a live chat when it sends revised history with
+  the full result batch for the same pending tool calls. GateFox rebuilds once
+  under the existing cache budget and keeps the saved chat.
 - An expired Claude Code session gets one fresh CLI attempt on the same account
   when the request has yet to produce model output, deliver tool results, or
   queue steering. A successful refresh can continue the task in the same turn.

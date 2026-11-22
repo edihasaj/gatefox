@@ -133,6 +133,26 @@ export function decide(ledger: LedgerState, entries: LedgerEntry[], messages: nu
   return tail.reduce((sum, entry) => sum + entry.count, 0) === messages - from ? { kind: "continue_user", from, items: tail.length } : unexpected;
 }
 
+/** A native Messages client can replace earlier history once it returns the entire pending batch.
+ * Match the original calls as well as their output IDs before discarding a waiting CLI.
+ */
+export function replacedHistoryWithToolResults(ledger: LedgerState, entries: LedgerEntry[], pending: readonly string[], messages: number): boolean {
+  if (!pending.length || pending.length > ledger.items.length) return false;
+  const firstCall = entries.findIndex(entry => entry.kind === "c" && entry.callId === pending[0]);
+  if (firstCall < 0 || !pending.every((id, index) => {
+    const entry = entries[firstCall + index];
+    return entry?.kind === "c" && entry.callId === id && entry.digest === ledger.items[ledger.items.length - pending.length + index];
+  })) return false;
+  const from = firstCall + pending.length;
+  const tail = entries.slice(from);
+  const remaining = new Set(pending);
+  if (remaining.size === pending.length && tail.length === pending.length
+    && tail.every(entry => entry.kind === "o" && remaining.delete(entry.callId!))) {
+    return tail[0].first + tail.reduce((count, entry) => count + entry.count, 0) === messages;
+  }
+  return interleavedToolContinuation(entries, from, pending, messages) !== undefined;
+}
+
 /** An exact pending-output batch followed by new caller messages requires a full-history seed. */
 export function messagesAfterTools(entries: LedgerEntry[], from: number, pending: readonly string[]): boolean {
   const waiting = new Set(pending);

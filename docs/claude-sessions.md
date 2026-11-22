@@ -84,7 +84,11 @@ finishes normally, then the session closes instead of remaining parked in replay
   not infer compaction from prompt text or grant a separate compaction budget for
   that unmarked request. With [hint headers](messages.md#hint-headers) on, the
   summary request is marked as compaction and takes the compaction path instead.
-  Pending tool mismatches still preserve and refuse.
+  While the CLI is waiting for tools, replacement requires the original pending
+  calls (including their inputs) and every result exactly once, with no new
+  assistant output or forced tool choice. A new CLI receives the submitted
+  history and results as history. The old CLI receives no results from that
+  request. Other pending-tool mismatches still preserve and refuse.
   Explicit thread IDs retain the preservation behavior above.
 - **Dead session:** a crashed CLI cannot be preserved. Its existing replay hold
   remains bounded by the shared cache guard and expires one hour after its failure.
