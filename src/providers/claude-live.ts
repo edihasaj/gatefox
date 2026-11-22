@@ -3,7 +3,7 @@ import type { ChatToolSelection } from "../protocol/types.js";
 import { telemetry } from "../telemetry.js";
 import { ProviderError } from "./provider.js";
 import { choiceBlock } from "./claude-render.js";
-import { decide, interleavedToolContinuation, ledgerEntries, messagesAfterTools, queuedToolContinuation, type LedgerDecision, type LedgerPhase, type LedgerEntry } from "./claude-ledger.js";
+import { decide, interleavedToolContinuation, ledgerEntries, messagesAfterTools, queuedToolContinuation, replacedHistoryWithToolResults, type LedgerDecision, type LedgerPhase, type LedgerEntry } from "./claude-ledger.js";
 import { relayContent, type RelayContent } from "./claude-relay.js";
 import { ClaudeSession, SessionStartFailure, sweepSessionDirectories, type SessionEnd } from "./claude-session.js";
 import { closeSessions, evictable, idleMs, pinReplay, recordWarmupCompletion, rememberEnd, replayPinned, sessionRegistry, slotsTaken, warmupCompletions, type SessionRegistry } from "./claude-session-registry.js";
@@ -123,7 +123,9 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
       } else if (interleaved && continuable) {
         plan = { kind: "continue_outputs_with_messages", outputs: interleaved.outputs, from: interleaved.indices[0], indices: interleaved.indices };
       } else reason = decision.reason === "prefix_diverged" && session.compacted ? "context_compacted"
-        : decision.reason === "prefix_diverged" && input.callerHistoryReplacement && session.state === "turn_done" && !session.pending.length
+        : decision.reason === "prefix_diverged" && input.callerHistoryReplacement
+          && ((session.state === "turn_done" && !session.pending.length)
+            || (session.state === "awaiting_outputs" && !forced(input.choice) && replacedHistoryWithToolResults(session.ledger, entries, session.pending, messages)))
           ? "client_history_replaced"
         // Outputs with caller messages that could not continue in place reseed, as the outputs-first shape always did.
         : decision.reason === "unexpected_tail" && session.state === "awaiting_outputs"
@@ -146,7 +148,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
     if (reason) {
       const mismatch = preserved(reason);
       if (mismatch) {
-        telemetry("claude_session", { outcome: "preserved", missReason: mismatch, threadKey: key.slice(0, 8), liveSessions: registry.sessions.size });
+        telemetry("claude_session", { outcome: "preserved", missReason: mismatch, divergedAt, threadKey: key.slice(0, 8), liveSessions: registry.sessions.size });
         throw new ClaudeSessionPreserved(mismatch);
       }
       // Validate the replacement before retiring the existing session. A refused or

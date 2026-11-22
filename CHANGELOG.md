@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.9 — 2026-11-22
+
+- Claude Desktop can continue a live chat when it sends revised history with
+  the full result batch for the same pending tool calls. GateFox rebuilds once
+  under the existing cache budget and keeps the saved chat.
 
 ## 2.1.8 — 2026-11-22
 
