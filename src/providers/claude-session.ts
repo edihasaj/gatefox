@@ -133,6 +133,8 @@ export class ClaudeSession {
   private message?: string; private messageTool = false; private endedMessage?: string; private fastState?: string;
   private parkTimer?: NodeJS.Timeout; private interruptTimer?: NodeJS.Timeout; private exit?: Promise<void>; private closing?: Promise<void>;
   private settled = new Set<() => void>(); private retiring?: string; private parkMs?: number;
+  /** Unavailable calls withheld from the caller whose native CLI rejection has not been seen yet. */
+  private unconfirmed = new Set<string>();
   private onUsage?: (limit: ClaudeLimit) => Promise<void>;
   private constructor(private readonly options: SessionOptions) { this.key = options.key; this.fingerprint = options.fingerprint; this.window = options.window; this.effort = options.effort; }
 
@@ -229,6 +231,7 @@ export class ClaudeSession {
     if (turn.signal.aborted) throw cancelled();
     const attached: Attached = { turn, queue: [], text: "", onAbort: () => this.abort(attached) };
     this.attached = attached; this.state = "generating"; this.messageTool = false; this.onUsage = turn.onUsage;
+    turn.stream.expectRejections?.(this.unconfirmed); this.unconfirmed = new Set();
     turn.signal.addEventListener("abort", attached.onAbort, { once: true });
     if ("outputs" in turn.begin) {
       if (turn.begin.user?.length) {
@@ -297,6 +300,7 @@ export class ClaudeSession {
     this.ledger = { items: [...turn.prefix, ...echoDigests(attached.text, calls)] };
     this.pending = calls.map(call => call.id); this.state = calls.length ? "awaiting_outputs" : "turn_done";
     this.endedMessage = this.message; this.messageTool = false;
+    this.unconfirmed = new Set(turn.stream.withheldCalls ?? []);
     turn.onEnd("ended", end.tokens);
     // Lines read past the end are between-request lines: checked, and their rate limits kept.
     for (const message of attached.queue.splice(0)) this.detached(message, eventType(message));
@@ -405,6 +409,14 @@ export class ClaudeSession {
    */
   private detached(message: Record<string, unknown>, event: unknown): void {
     const limit = claudeUsageEvent(message); if (limit) void this.onUsage?.(limit).catch(() => {});
+    if (message.type === "user" && this.unconfirmed.size) {
+      const content = (message.message as { content?: unknown } | undefined)?.content;
+      for (const block of Array.isArray(content) ? content : []) {
+        if (block?.type !== "tool_result" || !this.unconfirmed.delete(block.tool_use_id)) continue;
+        // Only the CLI's own error may answer a withheld call; anything else means it ran.
+        if (block.is_error !== true) { void this.close("crashed", "unconfirmed_rejection", true); return; }
+      }
+    }
     if (this.state === "interrupting") {
       if (message.type !== "result") return;
       this.state = "turn_done"; clearTimeout(this.interruptTimer); for (const done of [...this.settled]) done();

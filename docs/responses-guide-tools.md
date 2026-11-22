@@ -51,9 +51,19 @@ If correction ends in a direct answer, the CLI's final-message text is checked
 against that message's streamed text. Earlier visible text remains in the caller's
 response exactly once; an inconsistent final message still fails.
 
-Mixed batches containing valid and invalid calls, malformed identities, reused
-call IDs, non-gateway native tools, missing rejection proof and exhausted
-correction budgets remain final failures. Cancellation and provider refusals
+A batch of several unavailable private names is corrected the same way; the
+CLI must reject every one of them. In a live session, a parallel batch that mixes
+declared calls with unavailable private names forwards only the declared calls.
+The unavailable calls are withheld from the caller, and the CLI answers each with
+its own `No such tool available` error, which the model reads together with the
+caller's results. The CLI prints that error in block order, so after a declared
+call it arrives only once the caller's result has been delivered. The next request
+on that session therefore requires the CLI's error for every withheld call before
+it accepts another model message, a result, or a successful result for that call.
+A one-shot CLI is stopped at the tool turn and cannot deliver that feedback, so a
+mixed batch there, and on adopted older live sessions, stays a final failure.
+Malformed identities, reused call IDs, non-gateway native tools, missing rejection
+proof and exhausted correction budgets remain final failures. Cancellation and provider refusals
 remain authoritative. New session readers wait at most ten seconds for rejection
 confirmation; retained older readers still have the caller's ordinary deadline.
 The private virtual MCP server also rejects an unregistered name before relaying

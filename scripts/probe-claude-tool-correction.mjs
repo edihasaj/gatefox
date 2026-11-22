@@ -28,7 +28,7 @@ const native = 'mcp__gateway__probe_read', missing = 'mcp__gateway__not_register
 const results = [];
 configureTelemetry(root, 'probe');
 
-for (const label of ['live_corrects', 'live_text_corrects', 'live_after_output', ...(PreviousProvider ? ['adopted_live_after_output'] : []), 'oneshot_corrects', 'live_exhausted', 'mixed_batch', 'native_tool', 'cancel_after_rejection']) {
+for (const label of ['live_corrects', 'live_text_corrects', 'live_after_output', ...(PreviousProvider ? ['adopted_live_after_output'] : []), 'oneshot_corrects', 'live_exhausted', 'mixed_batch', 'oneshot_mixed_batch', 'native_tool', 'cancel_after_rejection']) {
   let requests = 0, nativeRejections = 0, relayResults = 0, callerDispatches = 0;
   let sent = false; const controller = new AbortController();
   const server = createServer(async (req, res) => {
@@ -48,7 +48,7 @@ for (const label of ['live_corrects', 'live_text_corrects', 'live_after_output',
       : after && requests === 1 ? [{ type: 'tool_use', id: 'toolu_prior', name: native, input: {} }]
       : requests === (after ? 3 : 2) ? [{ type: 'tool_use', id: 'toolu_valid', name: native, input: {} }]
       : [{ type: 'text', text: 'DONE' }];
-    if (label === 'mixed_batch') content.unshift({ type: 'tool_use', id: 'toolu_valid_sibling', name: native, input: {} });
+    if (label.endsWith('mixed_batch') && requests === 1) content.unshift({ type: 'tool_use', id: 'toolu_valid_sibling', name: native, input: {} });
     if (label === 'live_text_corrects') {
       if (requests === 1) content.unshift({ type: 'text', text: 'Before.' });
       else content = [{ type: 'text', text: 'DONE' }];
@@ -78,7 +78,7 @@ exec ${quote(values.claude)} "$@"
 `;
   await writeFile(join(bin, 'claude'), wrapper, { mode: 0o700 });
   const config = { id: label, type: 'claude-subscription', models: { fixture: 'claude-sonnet-4-5' },
-    claudeSessions: { warmup: 0, ...(label === 'oneshot_corrects' ? { mode: 'oneshot' } : {}) } };
+    claudeSessions: { warmup: 0, ...(label.startsWith('oneshot') ? { mode: 'oneshot' } : {}) } };
   const provider = new ClaudeSubscription(config);
   const previous = label === 'adopted_live_after_output' ? new PreviousProvider(config) : undefined;
   let firstPid, adoptedPid;
@@ -123,6 +123,11 @@ exec ${quote(values.claude)} "$@"
     assert.equal(nativeRejections, 1); assert.equal(relayResults, 2);
     assert.ok(events.some(event => event.type === 'text' && event.text.includes('DONE')));
     assert.ok(firstPid); assert.equal(adoptedPid, firstPid, 'The earlier CLI must be reused');
+  } else if (label === 'mixed_batch') {
+    // The declared sibling reaches the caller; the CLI's own error for the unavailable call reaches the model with its result.
+    assert.equal(error, undefined); assert.equal(callerDispatches, 2); assert.equal(requests, 3);
+    assert.equal(nativeRejections, 1); assert.equal(relayResults, 2);
+    assert.ok(firstPid); assert.equal(adoptedPid, firstPid, 'The same CLI continues after the withheld call');
   } else if (label === 'oneshot_corrects') {
     assert.equal(error, undefined); assert.equal(callerDispatches, 1); assert.ok(nativeRejections >= 1);
   } else {

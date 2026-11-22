@@ -57,3 +57,23 @@ test("native correction does not bypass an explicit forced tool selection", asyn
     assert.equal((await fixture.capture()).filter(entry => entry.toolResult !== undefined).length, 0);
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await fixture.restore(); }
 });
+
+for (const order of ["declared first", "unavailable first"]) test(`a live mixed batch (${order}) forwards the declared call once and the CLI's own rejection reaches the model`, async () => {
+  const read = { tool: "read", input: { synthetic: true } }, invented = { tool: "Grep", input: {} };
+  const fixture = await installClaudeFixture({ replies: [{ calls: order === "declared first" ? [read, invented] : [invented, read], unavailable: ["Grep"] }, { text: "DONE" }] });
+  const provider = new ClaudeSubscription({ id: "mixed-correction", type: "claude-subscription", models: { fixture: "fixture" }, claudeSessions: { warmup: 0 } });
+  try {
+    const events: InferenceEvent[] = [];
+    const first = await turn(provider, [user], events);
+    const calls = events.filter((event): event is { type: "tool"; call: OpenAIToolCall } => event.type === "tool");
+    assert.deepEqual(calls.map(event => event.call.function.name), ["read"]);
+    const pid = [...sessionRegistry().sessions.values()][0].pid;
+    const final = await turn(provider, [user, ...first, ...output(first)]);
+    assert.ok(JSON.stringify(final).includes("DONE"));
+    assert.equal([...sessionRegistry().sessions.values()][0].pid, pid);
+    const capture = await fixture.capture();
+    assert.equal(capture.filter(entry => entry.start).length, 1);
+    assert.deepEqual(capture.filter(entry => entry.nativeRejection).map(entry => entry.nativeRejection), ["Grep"]);
+    assert.equal(capture.filter(entry => entry.toolResult !== undefined).length, 1, "the caller executed only the declared call, once");
+  } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await fixture.restore(); }
+});

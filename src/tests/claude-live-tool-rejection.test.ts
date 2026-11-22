@@ -124,13 +124,13 @@ return delegate.attach(input,signal);}};}`, { mode: 0o600 });
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await fixture.restore(); }
 });
 
-test("an unavailable tool beside a valid sibling forwards neither call", { timeout: 30000 }, async () => {
-  const fixture = await installClaudeFixture({ replies: [{ calls: [{ tool: "read", input: {} }, { tool: "missing", input: {} }] }] });
+test("an unavailable tool beside a valid sibling forwards only the valid call", { timeout: 30000 }, async () => {
+  const fixture = await installClaudeFixture({ replies: [{ calls: [{ tool: "read", input: {} }, { tool: "missing", input: {} }], unavailable: ["missing"] }] });
   try {
     const events: InferenceEvent[] = [];
-    await assert.rejects(turn(provider(), [user("read")], events), /unavailable_gateway_tool/);
-    assert.equal(events.some(event => event.type === "tool"), false);
-    assert.equal((await fixture.capture()).filter(entry => entry.toolResult !== undefined).length, 0);
+    await turn(provider(), [user("read")], events);
+    assert.deepEqual(events.flatMap(event => event.type === "tool" ? [event.call.function.name] : []), ["read"]);
+    assert.equal((await fixture.capture()).filter(entry => entry.toolResult !== undefined).length, 0, "nothing runs before the caller's result");
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await fixture.restore(); }
 });
 

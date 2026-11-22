@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- A live Claude chat no longer fails with `unavailable_gateway_tool` when Claude
+  sends a parallel batch that mixes a declared tool with a private gateway name
+  it invented. GateFox forwards the declared calls, withholds the invented one,
+  and requires the CLI's own "No such tool available" error for it before the
+  model continues. One-shot mode still refuses such a batch.
 - Claude Desktop can continue a live chat when it sends revised history with
   the full result batch for the same pending tool calls. GateFox rebuilds once
   under the existing cache budget and keeps the saved chat.
