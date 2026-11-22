@@ -1,5 +1,12 @@
 # Changelog
 
+
+## 2.1.8 — 2026-11-22
+
+- An expired Claude Code session gets one fresh CLI attempt on the same account
+  before model output, tool-result delivery, or queued steering. A successful
+  refresh lets the original request continue.
+
 ## 2.1.7 — 2026-11-21
 
 - A `gemini-subscription` provider spends a Google AI Ultra subscription through the

@@ -18,7 +18,8 @@ import { claudeCliArgs, claudeEnv, claudeMcpCatalog, claudeSystemPrompt, userLin
 import { ClaudeMessageStream, resultWindows, type ClaudeStreamEnd, type ClaudeTokens } from "./claude-stream.js";
 import { choiceBlock, leadingInstructions, markCustomCalls, renderConversation, renderItems, renderSelected, type ClaudeConversation, type ClaudeImages, type ReplayFormat } from "./claude-render.js";
 import { compactionCheckpoint, retireScope, refusalHoldRelease, prepareClaudeToolNames } from "./claude-session-registry.js";
-import { isReplaySafeAuthentication } from "./claude-auth.js";
+import { isReplaySafeAuthentication, markReplaySafeAuthentication, nativeAuthenticationFailure } from "./claude-auth.js";
+import { isNativeOutput } from "./claude-native-output.js";
 import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveModule, type ClaudeLiveOutcome } from "./claude-live-contract.js";
 import { telemetry } from "../telemetry.js";
 import { claudeReplayBudget, ClaudeReplayBlocked, type ClaudeReplayBudget } from "./claude-replay-budget.js";
@@ -66,7 +67,8 @@ interface Run {
 const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const credentialRecovery = (error: unknown): ProviderError | undefined =>
-  error instanceof ProviderError && error.upstream?.code === "authentication_failed" && error.upstream.reason === "upstream_rejected" ? error : undefined;
+  error instanceof ProviderError && error.upstream?.code === "authentication_failed"
+    && (error.upstream.reason === "upstream_rejected" || error.upstream.reason === "session_expired") ? error : undefined;
 /** Wait before one fresh CLI attempt without leaving an uncancellable timer behind. */
 async function credentialBackoff(signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) return false;
@@ -209,13 +211,13 @@ export class ClaudeSubscription implements Provider {
           }
           throw cancelled();
         }
-        if (!authVisible && !recovery && await beginRecovery(error)) continue;
+        if (!authVisible && isReplaySafeAuthentication(error) && await beginRecovery(error)) continue;
         if (error instanceof ProviderError && error.upstream?.code === "forced_tool_mismatch") throw new CliContinuityUnavailable("Claude", "forced_tool_mismatch");
         if (recovering && !recoveryReported) {
           recoveryReported = true;
           telemetry("claude_credential_recovery", { reason: recovery?.upstream?.reason, attempt: 2, outcome: "failed" });
-          // A second native 401 is the same final authentication failure that started recovery.
-          if (credentialRecovery(error)) throw recovery!;
+          // Preserve the initial failure when both attempts report the same credential state.
+          if (credentialRecovery(error)?.upstream?.reason === recovery?.upstream?.reason) throw recovery!;
         }
         throw error;
       }
@@ -281,6 +283,7 @@ export class ClaudeSubscription implements Provider {
     const stream = new ClaudeMessageStream({ tools: run.tools, summaryVisible: run.summaryVisible, endTurn: !run.fast, threadKey: run.threadKey, allowToolCorrection: true });
     let failure: Error | undefined; let refused = false; let exitCode: number | null = null; let fastState: string | undefined; let interrupted = false; let settle: NodeJS.Timeout | undefined;
     let end: ClaudeStreamEnd | undefined; let resultSubtype: string | undefined; let resultError = false; let tokens: ClaudeTokens | undefined; const began = Date.now();
+    let nativeOutput = false;
     // Report the tier Claude actually served: Fast only while fast mode stayed on.
     const served = (): { serviceTier?: PublicServiceTier } => run.fast ? { serviceTier: fastState === "on" ? "priority" : "default" } : {};
     const running = () => child.exitCode === null && child.signalCode === null;
@@ -313,6 +316,7 @@ export class ClaudeSubscription implements Provider {
           break;
         }
         if (message.type === "result") { resultSubtype = String(message.subtype); resultError = message.is_error === true; }
+        if (!nativeOutput && isNativeOutput(message, (message.event as { type?: unknown } | undefined)?.type)) nativeOutput = true;
         const step = stream.accept(message);
         // Stop before the CLI can act on complete calls; the pending MCP calls never get an answer.
         if (step.end?.kind === "tool_use") kill();
@@ -337,6 +341,7 @@ export class ClaudeSubscription implements Provider {
       yield { type: "done", usage: end.usage, accounting: { cacheWriteTokens: end.tokens.cacheWrite }, ...served() };
     } catch (error) {
       refused = providerRefusal(error);
+      if (!nativeOutput && nativeAuthenticationFailure(error)) markReplaySafeAuthentication(error);
       throw error;
     } finally {
       signal.removeEventListener("abort", cancel); lines.close(); clearTimeout(settle);

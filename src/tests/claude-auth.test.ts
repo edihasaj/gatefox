@@ -8,9 +8,10 @@ import { installClaudeFixture } from "./claude-cli-fixture.js";
 import type { InferenceEvent } from "../protocol/types.js";
 
 const generic401 = "Failed to authenticate. API Error: 401 native private diagnostic";
-const permanent = [
+const expiredSession = "OAuth session expired and could not be refreshed";
+const loginDiagnostics = [
   ["Not logged in", "login_unavailable"],
-  ["OAuth session expired and could not be refreshed", "session_expired"],
+  [expiredSession, "session_expired"],
   ["Failed to authenticate. API Error: 401 OAuth token has expired", "session_expired"],
   ["Failed to authenticate. API Error: 401 Refresh token expired", "session_expired"],
   ["Please run /login · API Error: 401 Refresh token has been revoked", "credential_revoked"],
@@ -30,8 +31,8 @@ async function infer(instance: ClaudeSubscription, signal = new AbortController(
   return events;
 }
 
-test("classifies only native authentication envelopes, with explicit permanent states ahead of CLI 401", () => {
-  for (const [text, reason] of permanent) {
+test("classifies only native authentication envelopes, with explicit credential states ahead of CLI 401", () => {
+  for (const [text, reason] of loginDiagnostics) {
     const error = claudeAuthenticationFailure(failure(text))!;
     assert.equal(error.upstream?.reason, reason);
     assert.match(error.message, /requires login/);
@@ -69,6 +70,30 @@ test("a generic native 401 gets exactly one fresh one-shot attempt and safe fixe
   } finally { await fixture.restore(); }
 });
 
+test("an expired session gets a fresh CLI and can finish the original request", async () => {
+  const fixture = await installClaudeFixture({ replies: [{ authenticationFailed: expiredSession }, { text: "recovered" }] });
+  configureTelemetry(fixture.directory, "test"); const since = Date.now();
+  try {
+    assert.equal((await infer(provider())).at(-1)?.type, "done");
+    const starts = (await fixture.capture()).filter(entry => entry.start === "oneshot");
+    assert.equal(new Set(starts.map(entry => entry.pid)).size, 2);
+    await flushTelemetry();
+    const recovery = (await readTelemetry(fixture.directory, since)).filter(event => event.event === "claude_credential_recovery");
+    assert.deepEqual(recovery.map(event => [event.reason, event.outcome]), [["session_expired", "attempted"], ["session_expired", "recovered"]]);
+  } finally { await fixture.restore(); }
+});
+
+test("an expired session still reports a login failure when the replacement CLI also fails", async () => {
+  const fixture = await installClaudeFixture({ replies: [
+    { authenticationFailed: expiredSession }, { authenticationFailed: expiredSession }, { text: "must not run" },
+  ] });
+  try {
+    await assert.rejects(infer(provider()), error => error instanceof ProviderError && error.code === "authentication" &&
+      error.upstream?.reason === "session_expired" && /requires login/.test(error.message));
+    assert.equal((await fixture.capture()).filter(entry => entry.start === "oneshot").length, 2);
+  } finally { await fixture.restore(); }
+});
+
 test("recovery reports success before a consumer stops at its done event", async () => {
   const fixture = await installClaudeFixture({ replies: [{ authenticationFailed: generic401 }, { text: "recovered" }] });
   configureTelemetry(fixture.directory, "test"); const since = Date.now();
@@ -97,7 +122,8 @@ test("a consumer that stops before done does not report recovery", async () => {
 
 test("permanent, unknown, billing and usage failures do not get a credential retry", async () => {
   const cases = [
-    ...permanent.map(([diagnostic, reason]) => ({ reply: { authenticationFailed: diagnostic }, code: "authentication", reason })),
+    ...loginDiagnostics.filter(([, reason]) => reason !== "session_expired")
+      .map(([diagnostic, reason]) => ({ reply: { authenticationFailed: diagnostic }, code: "authentication", reason })),
     { reply: { authenticationFailed: "a private unclassified failure" }, code: "authentication", reason: "unknown" },
     { reply: { failureCode: "billing_error" }, code: "insufficient_quota", reason: undefined },
     { reply: { failureCode: "rate_limit" }, code: "rate_limit_exceeded", reason: undefined },
@@ -122,6 +148,17 @@ test("any yielded reasoning or text prevents credential recovery", async () => {
       assert.equal((await fixture.capture()).filter(entry => entry.start === "oneshot").length, 1);
     } finally { await fixture.restore(); }
   }
+});
+
+test("hidden one-shot reasoning prevents an expired-session retry", async () => {
+  const fixture = await installClaudeFixture({ replies: [
+    { thinking: "private", authenticationAfterThinking: expiredSession }, { text: "must not run" },
+  ] });
+  try {
+    await assert.rejects(infer(provider(), undefined, { reasoning: { summary: "none" } }),
+      error => error instanceof ProviderError && error.upstream?.reason === "session_expired");
+    assert.equal((await fixture.capture()).filter(entry => entry.start === "oneshot").length, 1);
+  } finally { await fixture.restore(); }
 });
 
 test("cancelling during credential backoff starts no replacement", async () => {

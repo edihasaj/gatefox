@@ -3,8 +3,8 @@ import { ProviderError } from "./provider.js";
 export type ClaudeCredentialReason = "login_unavailable" | "session_expired" | "credential_revoked" | "upstream_rejected" | "unknown";
 
 /**
- * Live-session authentication failures the session itself proved happened before any model output, tool
- * result delivery or queued steering. Only these may skip the crash hold and take the bounded automatic
+ * Authentication failures the CLI reader proved happened before any model output and, for a live session,
+ * before tool-result delivery or queued steering. Only these can take the bounded automatic
  * recovery. The mark lives here, not on the wire error: a session from an older release never sets it,
  * so an adopted session defaults to the conservative behavior.
  */
