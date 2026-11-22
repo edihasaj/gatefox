@@ -59,9 +59,9 @@ test("two corrections are bounded and cannot reuse a rejected call ID", () => {
   assert.throws(() => message(reused, ["mcp__gateway__read"]), unavailable);
 });
 
-test("mixed calls, native tools, aliases and malformed identities stay final", () => {
-  for (const names of [["mcp__gateway__missing", "mcp__gateway__read"], ["mcp__gateway__read", "mcp__gateway__missing"],
-    ["mcp__gateway__missing", "mcp__gateway__other"]]) assert.throws(() => message(stream(), names), unavailable);
+test("outside a live session, mixed calls, native tools, aliases and malformed identities stay final", () => {
+  for (const names of [["mcp__gateway__missing", "mcp__gateway__read"], ["mcp__gateway__read", "mcp__gateway__missing"]])
+    assert.throws(() => message(stream(), names), unavailable);
   for (const name of ["Bash", "Read", "ToolSearch", "read", "functions.read", "mcp__foreign__read", "mcp__gateway__bad.name"])
     assert.throws(() => message(stream(), [name]), (error: unknown) => error instanceof ProviderError && error.code === "invalid_tool_call");
   const parser = stream(); parser.accept(frame({ type: "message_start", message: { id: "m", usage } }));

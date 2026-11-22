@@ -10,6 +10,8 @@ export interface FixtureReply {
   calls?: Array<{ tool: string; input: Record<string, unknown> }>;
   /** Rejects one unknown private tool inside this native turn, then selects the next reply. */
   nativeToolError?: boolean;
+  /** Calls to these tools are unregistered: the CLI answers each with its own error, in block order, and runs the rest. */
+  unavailable?: string[];
   /** A text block streamed between the first tool_use block and the next. */
   between?: string;
   /** Streams text until interrupted, after the reply's text and then its thinking block. */
@@ -47,7 +49,7 @@ export interface FixtureEntry {
   descriptionLimit?: string; system?: string;
   /** Names (never values) of the Claude Code session variables the CLI inherited. */
   claudeVars?: string[];
-  control?: string; effort?: string; user?: number; heads?: string[]; toolResult?: string; exit?: string;
+  control?: string; effort?: string; user?: number; heads?: string[]; toolResult?: string; exit?: string; nativeRejection?: string;
   /** Whether the latest earlier live CLI was still alive when this one-shot CLI started. */
   priorLiveAlive?: boolean;
 }
@@ -205,7 +207,7 @@ async function fixtureMain(): Promise<void> {
     if (reply.thinking) thinking(reply.thinking);
     if (reply.text) text(reply.text);
     if (reply.foreign) { event({ type: "content_block_start", index, content_block: { type: "tool_use", id: "toolu_foreign", name: reply.foreign, input: {} } }); return; }
-    const calls = ((reply.calls || []) as Json[]).map((entry, n) => ({ id: `toolu_${process.pid}_${counter}_${n}`, name: `mcp__gateway__${names.get(entry.tool) ?? entry.tool}`, input: entry.input }));
+    const calls = ((reply.calls || []) as Json[]).map((entry, n) => ({ id: `toolu_${process.pid}_${counter}_${n}`, tool: entry.tool as string, name: `mcp__gateway__${names.get(entry.tool) ?? entry.tool}`, input: entry.input }));
     waitingTools = calls.length > 0;
     for (const [n, entry] of calls.entries()) {
       if (n === 1 && reply.between) text(reply.between);
@@ -231,6 +233,11 @@ async function fixtureMain(): Promise<void> {
     out({ type: "tool_progress", tool_use_id: calls[0].id, elapsed_time_seconds: 30 });
     const delivered: Json[] = [];
     for (const entry of calls) {
+      if ((reply.unavailable as string[] | undefined)?.includes(entry.tool)) {
+        log({ nativeRejection: entry.tool });
+        out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: entry.id, is_error: true, content: "<tool_use_error>Error: No such tool available</tool_use_error>" }] } });
+        continue;
+      }
       const response = await call("tools/call", { name: entry.name.replace("mcp__gateway__", ""), arguments: entry.input, _meta: { "claudecode/toolUseId": entry.id, progressToken: entry.id } });
       log({ toolResult: (response.result.content as Json[]).map(part => part.type === "text" ? part.text : `[${part.type} ${part.mimeType}]`).join("") });
       delivered.push(...response.result.content);

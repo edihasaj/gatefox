@@ -123,6 +123,10 @@ export class ClaudeMessageStream {
   /** Measured input counts remain usable for safety checks even when parsing later fails. */
   get observedTokens(): Partial<ClaudeTokens> | undefined { return this.correction.total(this.measured); }
   waitForNativeFrame<T>(next: Promise<T>): Promise<T> { return this.correction.wait(next); }
+  /** A live session passes the calls an earlier request withheld; the CLI must reject each before its next model message. */
+  expectRejections(ids: Iterable<string>): void { this.correction.expectRejections(ids); }
+  /** Unavailable calls this request withheld from the caller while forwarding their declared siblings. */
+  get withheldCalls(): string[] { return this.correction.withheld; }
 
   /** Idempotent, content-free observation before a live transport rejects a foreign tool. */
   observeUsage(message: Record<string, unknown>): void {
@@ -228,8 +232,9 @@ export class ClaudeMessageStream {
     if (message?.ending && !message.ended) this.finish(message, step, message.ending);
     // Without partial messages a complete assistant line is all there is, so it ends the request itself.
     if (orphans.length && !step.end) {
-      if (this.correction.complete(orphans as Array<{ id: string; name: string }>, tokensOf(value.usage))) { this.measured = undefined; this.last = undefined; return; }
-      const calls = nativeClaudeCalls(orphans as Array<{ id?: string; name?: string; input?: unknown }>, this.tools);
+      const forwarded = this.correction.complete(orphans as Array<{ id: string; name: string; input?: unknown }>, tokensOf(value.usage));
+      if (!forwarded.length) { this.measured = undefined; this.last = undefined; return; }
+      const calls = nativeClaudeCalls(forwarded, this.tools);
       const tokens = this.correction.finish(tokensOf(value.usage));
       step.end = { kind: "tool_use", calls, usage: claudeUsage(tokens), tokens };
     }
@@ -247,8 +252,9 @@ export class ClaudeMessageStream {
     if (mode === "complete" && !(blocks = blocks.filter(block => block.input !== undefined)).length) return;
     const parse = (json: string) => { try { return json.trim() ? JSON.parse(json) as unknown : {}; } catch { return undefined; } };
     message.ended = true;
-    if (this.correction.complete(blocks, message.tokens || message.base)) { this.measured = undefined; this.last = undefined; return; }
-    const calls = nativeClaudeCalls(blocks.map(block => ({ id: block.id, name: block.name, input: block.input === undefined ? parse(block.json) : block.input })), this.tools);
+    const forwarded = this.correction.complete(blocks, message.tokens || message.base);
+    if (!forwarded.length) { this.measured = undefined; this.last = undefined; return; }
+    const calls = nativeClaudeCalls(forwarded.map(block => ({ id: block.id, name: block.name, input: block.input === undefined ? parse(block.json) : block.input })), this.tools);
     const tokens = this.correction.finish(message.tokens || message.base);
     step.end = { kind: "tool_use", calls, usage: claudeUsage(tokens), tokens };
   }

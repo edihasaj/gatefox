@@ -41,8 +41,11 @@ crash; the failed response is still final and never replays itself.
 `claude_tool_correction` records fixed outcomes and attempt counts for native CLI
 correction of an unavailable private gateway tool. `native_rejected` confirms the
 CLI's error feedback, and `recovered` identifies a later declared tool or completion.
-Missing proof, a mixed batch, a reused ID, a rejection timeout or an exhausted
-budget still stops the request. These records contain no names, IDs, arguments,
+`withheld` marks a live mixed batch whose declared calls were forwarded while its
+unavailable calls waited for the CLI's own error in the next request. Missing proof,
+a mixed batch outside a live session, a reused ID, a rejection timeout or an
+exhausted budget still stops the request (`mixed_calls`, `unconfirmed_rejection`,
+`reused_id`, `rejection_timeout`, `exhausted`). These records contain no names, IDs, arguments,
 provider error text or caller content. An observed rejection is not necessarily
 a failed request when native correction succeeds.
 
