@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- An expired Claude Code session gets one fresh CLI attempt on the same account
+  when the request has yet to produce model output, deliver tool results, or
+  queue steering. A successful refresh can continue the task in the same turn.
 - Updates no longer pile up old rollback copies of the app. Every update left a
   hidden `.Harness-Gateway-Update-<uuid>.app` of about 700 MB beside GateFox and
   never removed it; one Mac had 57 of them (38 GB). After each update the old ones

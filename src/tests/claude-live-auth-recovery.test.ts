@@ -94,8 +94,10 @@ test("a permanent native login failure before output lets the next request retry
   } finally { await h.done(); }
 });
 
-test("a recovered generic 401 leaves no hold, so the next message on the thread succeeds", { timeout: 30000 }, async () => {
-  const h = await harness("recovered", { replies: [{ authenticationFailed: generic401 }, { text: "recovered" }, { text: "next answer" }] });
+const expiredSession = "OAuth session expired and could not be refreshed";
+
+test("a recovered expired session leaves no hold, so the next message on the thread succeeds", { timeout: 30000 }, async () => {
+  const h = await harness("recovered", { replies: [{ authenticationFailed: expiredSession }, { text: "recovered" }, { text: "next answer" }] });
   try {
     const first = [user("first")], recovered = await h.turn(first);
     assert.match(text(recovered), /recovered/);
@@ -115,8 +117,8 @@ test("hidden reasoning before an authentication failure keeps the hold and start
   } finally { await h.done(); }
 });
 
-test("authentication failing after delivered tool results keeps the hold and starts no one-shot", { timeout: 30000 }, async () => {
-  const h = await harness("outputs", { replies: [{ calls: [{ tool: "read", input: {} }] }, { authenticationFailed: generic401 }, { text: "must not run" }] });
+test("expiry after delivered tool results keeps the hold and starts no one-shot", { timeout: 30000 }, async () => {
+  const h = await harness("outputs", { replies: [{ calls: [{ tool: "read", input: {} }] }, { authenticationFailed: expiredSession }, { text: "must not run" }] });
   try {
     const first = [user("Read")], output = await h.turn(first, { tools });
     await assert.rejects(h.turn([...first, ...output, ...results(output)], { tools }), authentication);

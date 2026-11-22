@@ -339,20 +339,19 @@ The unified service offers one native unlock dialog per GUI login; see
 An unclassified failure therefore suggests retrying and signing in if it
 persists, rather than asserting that the saved login has expired.
 
-An explicit generic upstream HTTP 401, identified by the CLI's native error
-prefix, gets one fresh one-shot attempt after a cancellable two-second wait.
-This recovery is allowed only before any inference event has reached the caller.
-The same model, instructions, history and tools are used, and a failed live
-session closes before the replacement starts. Text, reasoning or a dispatched
-tool makes the failure final for this request. Missing, expired, revoked and
-unclassified logins also remain final, as do billing and subscription limits.
-A second failure preserves its original error. Recovery never resumes a stopped
-goal, answers an approval, or replays an executed command.
+A native expired-session error or an explicit generic upstream HTTP 401 gets one
+fresh one-shot attempt after a cancellable two-second wait. The replacement lets
+Claude Code load the account's saved credentials and handle its own refresh.
+It uses the same model, instructions, history and tools. A failed live session
+closes before the replacement starts. Recovery is allowed only before model
+output or, in a live session, tool-result delivery or queued steering. Missing,
+revoked and unclassified logins remain final, as do billing and subscription
+limits. If the fresh CLI still needs a login, the request reports that failure.
 
 A native authentication failure before any inference output, tool-result delivery
 or queued steering closes the live session without a crash hold. A later caller
-request can therefore try the saved login again, including after the bounded
-upstream-401 recovery succeeds. The failed request remains final when it is not
+request can therefore try the saved login again, including after bounded
+credential recovery succeeds. The failed request remains final when it is not
 eligible for that existing recovery. Authentication failures after output or a
 tool handoff retain the crash hold because the turn may have advanced. The cache
 guard still checks any replacement history. When the CLI exits with an unread
