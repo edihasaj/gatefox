@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- Gemini sign-in no longer ends with "127.0.0.1 refused to connect" in the browser. The
+  login helper stopped the Gemini CLI the moment its credential appeared, before the CLI
+  cached the Google account and redirected the browser to its success page. It now waits
+  for both (at most 15 seconds), so the account is installed with the credential and the
+  browser shows Google's success page.
 - A live Claude chat no longer fails with `unavailable_gateway_tool` when Claude
   sends a parallel batch that mixes a declared tool with a private gateway name
   it invented. GateFox forwards the declared calls, withholds the invented one,

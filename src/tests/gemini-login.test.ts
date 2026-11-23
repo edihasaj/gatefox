@@ -33,8 +33,24 @@ test("login answers the consent question, opens the URL the CLI asks its browser
     assert.equal((await stat(join(home, ".gemini/oauth_creds.json"))).mode & 0o777, 0o600);
     assert.equal(await hasGeminiLogin(home), true);
     assert.deepEqual(await recorded(home), [], "what the CLI recorded during login stayed in its disposable home");
+    assert.ok(log.some(entry => entry.op === "browser-answered"), "the CLI answered the browser's callback before it was ended");
+    assert.deepEqual(JSON.parse(await readFile(join(home, ".gemini/google_accounts.json"), "utf8")), { active: "user@example.com", old: [] },
+      "the account the CLI cached after the tokens is installed too");
     await finished(h);
   } finally { await h.restore(); }
+});
+
+test("a CLI that never caches an account is ended after the settle cap, and the credential still counts", { timeout: 40000 }, async () => {
+  const h = await harness();
+  try {
+    process.env.GATEWAY_TEST_GEMINI_LOGIN = "noaccount";
+    const home = await loginHome(h); const started = Date.now();
+    await geminiLogin({ home, settleMs: 1500, openUrl: () => {} });
+    assert.ok(Date.now() - started >= 1500, "the helper waited for the callback to finish");
+    assert.equal(await hasGeminiLogin(home), true);
+    assert.equal(await exists(join(home, ".gemini/google_accounts.json")), false);
+    await finished(h);
+  } finally { delete process.env.GATEWAY_TEST_GEMINI_LOGIN; await h.restore(); }
 });
 
 test("login never runs the CLI in the caller's directory, and keeps it in an empty private folder", { timeout: 40000 }, async () => {

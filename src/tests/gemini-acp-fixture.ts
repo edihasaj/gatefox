@@ -211,6 +211,13 @@ async function login(): Promise<void> {
   if (scenario === "norefresh") writeCredentials({ access_token: "login-access" });
   else writeCredentials({ access_token: "login-access", refresh_token: "login-refresh" });
   if (scenario === "creds-exit1") process.exit(1);
+  // Like the real callback handler: the tokens are saved first, then the account is fetched and cached, and only then is the
+  // browser redirected to the success page. A gateway that ends the CLI on the credential alone cuts the last two off.
+  if (scenario !== "noaccount") {
+    await new Promise(resolve => setTimeout(resolve, 600));
+    writeFileSync(`${process.env.GEMINI_CLI_HOME}/.gemini/google_accounts.json`, JSON.stringify({ active: "user@example.com", old: [] }), { mode: 0o600 });
+    log({ op: "browser-answered" });
+  }
   setInterval(() => {}, 1000); // a CLI that has signed in goes on running; the gateway must end it
 }
 if ((process.env.GATEWAY_TEST_GEMINI_BROWSER || process.env.GATEWAY_TEST_GEMINI_HANG) && args.length) {
