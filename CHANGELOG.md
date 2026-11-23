@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.2.1 — 2026-11-23
+
+- Gemini sign-in no longer ends with "127.0.0.1 refused to connect" in the browser. The
+  login helper stopped the Gemini CLI the moment its credential appeared, before the CLI
+  cached the Google account and redirected the browser to its success page. It now waits
+  for both (at most 15 seconds), so the account is installed with the credential and the
+  browser shows Google's success page.
+
 ## 2.2.0 — 2026-11-22
 
 - A live Claude chat no longer fails with `unavailable_gateway_tool` when Claude

@@ -310,8 +310,14 @@ browser flow, which the managed settings pin (`security.auth.selectedType`/`enfo
 So the helper (a Reconnect click or the `gateway login gemini` command is the consent) writes
 `Y\n` when the question appears, captures the URL through the same stand-in `open` described
 above, and opens it itself, once, only when it is an `https://accounts.google.com/` URL
-(the command also prints it). It stops the CLI as soon as the credential appears, or after six
-minutes, or on cancel. Two rules matter:
+(the command also prints it). It stops the CLI once the sign-in has finished, or after six
+minutes, or on cancel. The CLI's callback handler saves the tokens first, then fetches and caches
+the Google account (`google_accounts.json`), and only then redirects the browser to its success
+page. So after the credential appears the helper waits until the account is cached plus one
+second for the redirect, or the CLI exits, for at most 15 seconds. Stopping on the credential
+alone left the account uncached and showed "127.0.0.1 refused to connect" in the browser although
+the sign-in had worked. The callback is served on `127.0.0.1` of the computer that runs the
+login, so approve the sign-in in a browser on that same computer. Two rules matter:
 
 - **Success is the credential, never the exit code.** The file must exist in the CLI's home:
   `oauth_creds.json`, parsed, carrying both `access_token` and `refresh_token`. A clean exit

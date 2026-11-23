@@ -32,7 +32,16 @@ export interface GeminiLoginOptions {
   /** The CLI waits five minutes for the browser; the default allows a little longer. */
   timeoutMs?: number;
   pollMs?: number;
+  /** After the credential appears, how long the CLI may take to cache the account and answer the browser. */
+  settleMs?: number;
 }
+
+/**
+ * The CLI's callback handler saves the tokens first, then fetches and caches the Google account (`google_accounts.json`), and
+ * only then redirects the browser to its success page. Ending the CLI as soon as the credential exists cut both off: the
+ * account was never cached and the browser's callback failed with "refused to connect" although the sign-in had worked.
+ */
+const settleBeatMs = 1000;
 
 const consentPrompt = /\[Y\/n\]/;
 const signInHost = "accounts.google.com";
@@ -98,6 +107,13 @@ export async function geminiLogin(options: GeminiLoginOptions): Promise<void> {
       if (await hasGeminiLogin(scratch)) break;
       if (gone) throw new Error("Gemini sign-in did not complete");
       if (Date.now() >= deadline) throw new Error("Gemini sign-in timed out");
+      await delay(pollMs);
+    }
+    // Let the CLI finish the callback: cache the account, then answer the browser. A CLI that exits is done; one that never
+    // caches an account is ended after the cap, and the verified credential is installed either way.
+    const settleUntil = Date.now() + (options.settleMs ?? 15000); const accounts = join(scratch, ".gemini", "google_accounts.json");
+    while (!exited && Date.now() < settleUntil && !signal?.aborted) {
+      if (await readFile(accounts, "utf8").then(() => true, () => false)) { await delay(Math.min(settleBeatMs, Math.max(0, settleUntil - Date.now()))); break; }
       await delay(pollMs);
     }
     kill();
