@@ -162,10 +162,17 @@ export class AcpLiveSession {
     const conn = this.conn; this.exitHooks.push(onProcessExit(() => conn.kill()));
     await this.untilFault(this.conn.request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } }, driver.limits.startMs));
     this.checkStopped();
-    const created = await this.untilFault(this.conn.request("session/new", { cwd: work, mcpServers: driver.mcpServers?.(url) ?? [{ type: "http", name: "gateway", url, headers: [] }] }, driver.limits.startMs));
+    const created = await this.untilFault(this.conn.request("session/new", { ...(driver.sessionParams?.(options.system) ?? {}), cwd: work,
+      mcpServers: driver.mcpServers?.(url) ?? [{ type: "http", name: "gateway", url, headers: [] }] }, driver.limits.startMs));
     this.checkStopped();
     if (typeof created.sessionId !== "string" || !created.sessionId) throw new ProviderError("cli_failed", `${label} did not open a session`, 502);
     this.sessionId = created.sessionId;
+    for (const option of driver.sessionConfig?.({ model: options.model, effort: options.effort }) ?? []) {
+      const applied = await this.untilFault(this.conn.request("session/set_config_option", { sessionId: this.sessionId, ...option }, driver.limits.startMs));
+      this.checkStopped();
+      const current = (Array.isArray(applied.configOptions) ? applied.configOptions : []).map(object).find(entry => entry.id === option.configId)?.currentValue;
+      if (current !== option.value) throw new ProviderError("invalid_request", `${label} does not offer this ${option.configId === "model" ? "model" : "setting"} for the signed-in account`, 400);
+    }
   }
 
   /** Waits for a startup request, but ends with the provider's own error as soon as it reports that the CLI cannot start. */

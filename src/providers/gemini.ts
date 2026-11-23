@@ -7,7 +7,9 @@ import { claudeToolName } from "./claude-tool-names.js";
 import { claudeMcpCatalog, gatewaySystemPrompt } from "./claude-control.js";
 import { leadingInstructions, markCustomCalls } from "./claude-render.js";
 import { CliContinuityUnavailable } from "./cli-continuity.js";
-import { geminiLive, geminiOneShotKinds, type GeminiLiveInput } from "./gemini-live.js";
+import { antigravityCommand, ensureAntigravityHome, provisionAntigravityHome } from "./antigravity-home.js";
+import { antigravityEfforts } from "./antigravity-acp.js";
+import { antigravityLive, geminiLive, geminiOneShotKinds, type GeminiLiveInput } from "./gemini-live.js";
 import { ensureGeminiHome, geminiCommand } from "./gemini-home.js";
 import { provisionGeminiHome } from "./gemini-session-home.js";
 import { ProviderError, providerConversationId, type InferenceContext, type Provider } from "./provider.js";
@@ -60,20 +62,22 @@ export class GeminiSubscription implements Provider {
     const alias = Object.entries(this.config.models).find(([, model]) => model === request.model)?.[0];
     const requested = (request.reasoning as { effort?: string } | undefined)?.effort;
     const supported = alias ? this.config.modelMetadata?.[alias]?.reasoningEfforts : undefined;
-    const effort = requested && supported?.includes(requested) ? requested : undefined;
+    const antigravity = this.config.geminiCli === "antigravity";
+    const effort = requested && supported?.includes(requested) && (!antigravity || (antigravityEfforts as readonly string[]).includes(requested)) ? requested : undefined;
     const summaryVisible = (request.reasoning as { summary?: string } | undefined)?.summary !== "none";
     const home = this.config.geminiHome;
     if (!home) throw new ProviderError("invalid_request", "The Gemini provider has no Gemini home", 400);
-    await ensureGeminiHome(home);
+    await (antigravity ? ensureAntigravityHome(home) : ensureGeminiHome(home));
     if (signal.aborted) throw new ProviderError("cancelled", "Request cancelled", 499);
     // A request with no caller conversation identity is a single turn of its own: it gets a fresh session and is never
     // recorded in the ended-store, because nothing is owed to a conversation the caller never named.
-    const input: GeminiLiveInput = { scope: this.config.id, home, conversationId: conversationId ?? "", model: request.model, effort, command: await geminiCommand(), system,
-      ephemeral: conversationId === undefined, provision: directory => provisionGeminiHome(home, directory),
+    const input: GeminiLiveInput = { scope: this.config.id, home, conversationId: conversationId ?? "", model: request.model, effort,
+      command: await (antigravity ? antigravityCommand() : geminiCommand()), system, ephemeral: conversationId === undefined,
+      provision: directory => antigravity ? provisionAntigravityHome(home, directory) : provisionGeminiHome(home, directory),
       // The CLI never runs against the persistent home (it would record every prompt there): `provision` supplies each process's own.
       env: () => { throw new ProviderError("cli_failed", "The Gemini CLI must run in a disposable home", 502); }, tools, allTools: normalized.tools || [], catalog: claudeMcpCatalog(tools, true), choice, forced, request, conversation, images,
       leading, summaryVisible, observe: usage => context.observeCacheUsage?.(usage) };
     // A live session continues the conversation's process; it never replays history and has no fallback transport.
-    yield* await geminiLive(settings).attach(input, signal);
+    yield* await (antigravity ? antigravityLive(settings) : geminiLive(settings)).attach(input, signal);
   }
 }
