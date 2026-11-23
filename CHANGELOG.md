@@ -6,6 +6,13 @@
   on the same session; calls that had finished are still forwarded. An unfinished call without any input yet
   could previously be read as `{}`. If Claude Code cannot resume, the request fails with a retryable error
   that names the lost connection, and the chat is not held.
+- An overloaded Mac no longer breaks gateway chats as easily. Opening an existing chat uses the saved model list
+  when the live one is slow or unreachable, instead of failing with "Gateway model discovery is unavailable";
+  starting a chat or turn still checks the host, with one longer try. A queued message gets 30 seconds instead of
+  5 before its session is closed, and a Claude process that cannot start in time is a retryable error twice before
+  it is final.
+- A final failure from a Claude session kept across an update stays final instead of becoming a retryable
+  `provider_failed`.
 - The Gemini provider can run through Antigravity CLI (`agy`) with `"geminiCli": "antigravity"`, which
   brings Gemini 4 Neon, Carbon, Argon and Hydrogen to a Google AI Pro or Ultra subscription. Google stopped
   serving the Gemini CLI for those plans on 18 June 2026. Each conversation keeps one live `agy acp`

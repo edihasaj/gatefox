@@ -71,6 +71,13 @@ function warnUnscopedAliases(config: GatewayConfig): void {
   process.stderr.write(`gateway: ${count} model alias${count === 1 ? " has" : "es have"} no "/" (such as claude/sonnet); a native model added later with the same name would take its place\n`);
 }
 
+/** How long one read of the host's catalog may take, and the single longer try before a gateway start is refused. */
+export const catalogLimits = { firstMs: 5000, retryMs: 15000 };
+function readFailure(error: unknown): "timeout" | "unreachable" | "refused" {
+  if (error instanceof Error && error.name === "TimeoutError") return "timeout";
+  return error instanceof TypeError && error.message === "fetch failed" ? "unreachable" : "refused";
+}
+
 function sourceIdentity(port: number, token: string): string {
   const credential = createHash("sha256").update(token).digest("hex");
   return createHash("sha256").update(`catalog-v1\0http://127.0.0.1:${port}\0${credential}`).digest("hex");
@@ -173,26 +180,39 @@ export class DesktopCatalog {
     const highest = Math.max(0, ...this.native.map(model => Number(model.priority) || 0));
     return { models: [...this.executorNative(this.reviewers.get(snapshot) ?? noReviewers, this.codeModeBySnapshot.get(snapshot) ?? this.codeMode), ...snapshot.models.map((model, index) => ({ ...model, priority: highest + index + 1 }))] };
   }
-  refresh(strict = false): Promise<DesktopCatalogSnapshot> {
-    return this.initialize().then(() => this.refreshInitialized(strict));
+  /** `saved` lets a strict caller that runs no inference, such as opening a chat, use this host's last validated rows. */
+  refresh(strict = false, saved = false): Promise<DesktopCatalogSnapshot> {
+    return this.initialize().then(() => this.refreshInitialized(strict, saved));
   }
-  private refreshInitialized(strict: boolean): Promise<DesktopCatalogSnapshot> {
+  private async refreshInitialized(strict: boolean, saved: boolean): Promise<DesktopCatalogSnapshot> {
     // Coalesce concurrent UI discovery. Explicit gateway starts always check the host.
-    if (!strict && Date.now() - this.checkedAt < 1000) return Promise.resolve(this.value);
-    const read = this.pending || this.read();
+    if (!strict && Date.now() - this.checkedAt < 1000) return this.value;
+    for (const [attempt, limit] of [catalogLimits.firstMs, catalogLimits.retryMs].entries()) {
+      try { return await this.coalesced(limit); } catch (error) {
+        const reason = readFailure(error);
+        // Saved rows stand in for a host that did not answer, never for one that answered with a refusal or invalid rows.
+        const useSaved = saved && reason !== "refused" && this.sourceIdentity !== undefined && this.value.models.length > 0;
+        const retry = strict && !useSaved && reason === "timeout" && attempt === 0;
+        telemetry("catalog_read_failed", { reason, strict, outcome: retry ? "retrying" : strict && !useSaved ? "unavailable" : "saved" });
+        if (retry) continue;
+        if (!strict || useSaved) return this.value; // Native model discovery remains usable during a gateway outage.
+        break;
+      }
+    }
+    throw Object.assign(new Error("Gateway model discovery is unavailable. Wait for its connection to recover, then retry the selected gateway model."), { code: -32001 });
+  }
+  private coalesced(limit: number): Promise<DesktopCatalogSnapshot> {
+    const read = this.pending || this.read(limit);
     this.pending = read;
     void read.finally(() => { if (this.pending === read) this.pending = undefined; }).catch(() => {});
-    return read.catch(error => {
-      if (strict) throw Object.assign(new Error("Gateway model discovery is unavailable. Wait for its connection to recover, then retry the selected gateway model."), { code: -32001 });
-      return this.value; // Native model discovery remains usable during a gateway outage.
-    });
+    return read;
   }
-  private async read(): Promise<DesktopCatalogSnapshot> {
+  private async read(limit: number): Promise<DesktopCatalogSnapshot> {
     const token = await readClientToken(resolve(this.config.stateDirectory, "client-token"));
     const source = sourceIdentity(this.config.port, token);
     if (this.sourceIdentity && this.sourceIdentity !== source) { this.published = modelCatalog(this.config).models; this.value = this.snapshot(this.published); this.sourceIdentity = undefined; }
     const response = await fetch(`http://127.0.0.1:${this.config.port}/v1/model-catalog`, {
-      headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.timeout(5000),
+      headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.timeout(limit),
     });
     if (!response.ok || !response.body) throw new Error(`Gateway model discovery returned HTTP ${response.status}`);
     const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let bytes = 0;

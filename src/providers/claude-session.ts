@@ -71,7 +71,8 @@ const steeringEnded = () => new ProviderError("invalid_request",
 const maxLine = 8 * 1024 * 1024;
 /** Startup bound (spawn, initialize and the relay hello); tests shorten it. */
 // A loaded Mac can take over 20 s to boot the CLI and its MCP server; 15 s refused live chats there.
-export const sessionLimits = { startMs: 60000 };
+// A control answer only reads stdin, yet on 23 November 2026 an overloaded Mac apparently missed 5 s and lost a healthy session.
+export const sessionLimits = { startMs: 60000, controlMs: 30000 };
 const eventType = (message: Record<string, unknown>) => message.type === "stream_event" ? (message.event as { type?: unknown } | undefined)?.type : undefined;
 const category = (value: unknown, allowed: string[]): string => typeof value === "string" && allowed.includes(value) ? value : "other";
 /** The typed failure for a tool the CLI must never run, classified like the one-shot path. */
@@ -224,7 +225,7 @@ export class ClaudeSession {
   /** Changes effort between turns over the control channel, keeping the cached prefix. */
   async applyEffort(effort: string): Promise<boolean> {
     if (this.state !== "turn_done") return false;
-    const ok = await this.control("apply_flag_settings", { settings: { effortLevel: effort } }, 5000);
+    const ok = await this.control("apply_flag_settings", { settings: { effortLevel: effort } }, sessionLimits.controlMs);
     if (ok) this.effort = effort;
     return ok && this.state === "turn_done";
   }
@@ -249,7 +250,7 @@ export class ClaudeSession {
 
   /** The stdin control response orders queued user input before releasing pending MCP results. */
   private async deliverAfterSteering(attached: Attached, outputs: Map<string, RelayContent[]>): Promise<void> {
-    const accepted = await this.control("apply_flag_settings", { settings: {} }, 5000);
+    const accepted = await this.control("apply_flag_settings", { settings: {} }, sessionLimits.controlMs);
     if (this.attached !== attached) return;
     if (!accepted || attached.turn.signal.aborted) {
       attached.error = attached.turn.signal.aborted ? cancelled() : new ProviderError("invalid_request",

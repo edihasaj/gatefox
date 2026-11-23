@@ -62,6 +62,10 @@ finishes normally, then the session closes instead of remaining parked in replay
   refused as `unexpected_tail` until its session expired an hour later. Missing
   or duplicate tool results, a new call, edited prefixes and appended assistant
   output keep their existing checks.
+  The CLI has 30 seconds to acknowledge (an effort change has the same limit). On 23
+  November 2026 an overloaded Mac apparently missed the earlier 5 seconds and lost a
+  healthy session. A typed failure from a session adopted across an in-place upgrade keeps its
+  meaning, so a final steering failure is not retried.
   Older adopted instances without queued-input support reseed once through
   `messages_after_tools`. A rejected or timed-out acknowledgment, cancellation
   during the handoff, or CLI/relay failure during the steered request closes the
@@ -144,7 +148,9 @@ finishes normally, then the session closes instead of remaining parked in replay
 - **Continuity refusal:** capacity, concurrent requests, failed startup or an
   unavailable live adapter stop before one-shot replay. The CLI and its tool server
   have 60 seconds to start (`initialize_timeout`); a loaded Mac took up to 25 seconds,
-  so the earlier 15-second limit refused live chats. CLI failure remains final
+  so the earlier 15-second limit refused live chats. A start timeout sent nothing to
+  Claude, so the first two in 15 minutes fail with the retryable `upstream_unavailable`
+  (`session_start_timeout`); the next one is final. A successful start clears the count. CLI failure remains final
   after partial output too. A failed forced-tool choice never retries with a
   changed catalog. See [provider reuse](provider-reuse.md).
 

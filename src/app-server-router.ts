@@ -525,7 +525,7 @@ export class AppServerRouter {
     if (this.source && !inherited && ["model/list", "thread/start", "thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method)) {
       const requested = requestedModel(params) ?? (method === "thread/start" ? this.preferences.model : undefined);
       const strict = (typeof requested === "string" && !this.source.isNative(requested)) || isGatewayProvider(params.modelProvider) || (typeof params.threadId === "string" && this.routes.get(params.threadId)?.kind === "gateway");
-      this.extraModels = (await this.source.refresh(strict)).models;
+      this.extraModels = (await this.source.refresh(strict, method === "thread/resume")).models;
       for (const model of this.extraModels) this.aliases.add(String(model.slug));
       if (typeof requested === "string" && !this.source.isNative(requested) && !this.aliases.has(requested)) throw new AppServerRoutingError("This model is absent from both the native and gateway catalogs; select an offered model");
     }

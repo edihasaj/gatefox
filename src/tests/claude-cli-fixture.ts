@@ -41,6 +41,8 @@ export interface FixtureReply {
   exitAfterRefusal?: boolean;
 }
 export interface FixtureScenario { replies: FixtureReply[]; exitAtSpawn?: boolean; /** A live CLI exits when its first user message arrives, before any output. */ exitAtFirstUser?: boolean; perTurnEffort?: boolean; /** Never starts the MCP server, so no relay hello arrives. */ noMcp?: boolean;
+  /** Starts but never answers initialize, as on a Mac too loaded to boot it. */
+  ignoreInitialize?: boolean;
   /** Reject or delay the empty settings acknowledgment used to order queued steering. */
   rejectSteering?: boolean; delaySteeringMs?: number; crashSteering?: boolean;
   /** Acknowledge interruption without finishing the turn, to exercise the cancellation watchdog. */
@@ -269,6 +271,7 @@ async function fixtureMain(): Promise<void> {
     if (message.type === "control_request") {
       const subtype = message.request.subtype as string;
       log({ control: subtype, ...(subtype === "apply_flag_settings" ? { effort: message.request.settings?.effortLevel } : {}) });
+      if (subtype === "initialize" && scenario.ignoreInitialize) return;
       const barrier = subtype === "apply_flag_settings" && Object.keys(message.request.settings || {}).length === 0;
       if (barrier && scenario.crashSteering) { mcp?.kill(); process.exit(9); }
       const respond = () => out({ type: "control_response", response: { subtype: barrier && scenario.rejectSteering ? "error" : "success", request_id: message.request_id, response: {} } });

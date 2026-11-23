@@ -4,7 +4,26 @@ export interface ProviderStreamDiagnostic { events: number; lastEvent?: string; 
 /** A provider's policy decision about one request, as opposed to a broken session or transport. */
 export const providerRefusal = (error: unknown): boolean => error instanceof ProviderError && error.upstream?.reason === "reasoning_extraction";
 export type ProviderUpstreamReason = "login_unavailable" | "keychain_locked" | "session_expired" | "credential_revoked" | "upstream_rejected" | "reasoning_extraction" | "unknown";
+/** Whether a value is a ProviderError of another loaded release: an in-place upgrade keeps live sessions on their own copy of the class. */
+function adoptedProviderError(value: unknown): boolean {
+  try {
+    if (!(value instanceof Error)) return false;
+    const own = (key: string): unknown => Object.getOwnPropertyDescriptor(value, key)?.value;
+    if (typeof own("code") !== "string" || !Number.isInteger(own("status"))) return false;
+    for (let proto: unknown = Object.getPrototypeOf(value); proto && proto !== Error.prototype; proto = Object.getPrototypeOf(proto)) {
+      const made: unknown = Object.getOwnPropertyDescriptor(proto, "constructor")?.value;
+      if (typeof made === "function" && made.name === "ProviderError" && Object.getPrototypeOf(proto) === Error.prototype) return true;
+    }
+  } catch { /* A hostile Proxy is an unknown failure. */ }
+  return false;
+}
+
 export class ProviderError extends Error {
+  /** Subclasses keep the ordinary check, so a plain ProviderError never counts as one of them. */
+  static [Symbol.hasInstance](value: unknown): boolean {
+    if (Function.prototype[Symbol.hasInstance].call(this, value)) return true;
+    return this === ProviderError && adoptedProviderError(value);
+  }
   constructor(readonly code: string, message: string, readonly status = 502,
     readonly upstream?: { code?: string; event?: string; requestId?: string; retryAfterMs?: number; subtype?: string; httpStatus?: number; stream?: ProviderStreamDiagnostic;
       /** Fixed provider-specific classification; never provider diagnostic text. */

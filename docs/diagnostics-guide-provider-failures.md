@@ -49,6 +49,12 @@ exhausted budget still stops the request (`mixed_calls`, `unconfirmed_rejection`
 provider error text or caller content. An observed rejection is not necessarily
 a failed request when native correction succeeds.
 
+`session_start_timeout` (with `upstream_unavailable` and event `gateway.session`) means
+the Claude CLI did not start within its limit, usually on an overloaded Mac.
+`catalog_read_failed` records why the desktop adapter could not read the host's model
+list (`timeout`, `unreachable` or `refused`) and whether it used the saved rows, retried
+or refused the request.
+
 `stream_interrupted` (with `upstream_unavailable` and event `claude.stream`) means the
 connection broke mid-response and Claude Code could not resume it. Before this class a
 cut call was recorded as `malformed_tool_call`. See
