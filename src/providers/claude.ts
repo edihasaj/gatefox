@@ -20,6 +20,7 @@ import { choiceBlock, leadingInstructions, markCustomCalls, renderConversation, 
 import { compactionCheckpoint, retireScope, refusalHoldRelease, prepareClaudeToolNames } from "./claude-session-registry.js";
 import { isReplaySafeAuthentication, markReplaySafeAuthentication, nativeAuthenticationFailure } from "./claude-auth.js";
 import { isNativeOutput } from "./claude-native-output.js";
+import { isCutFailure } from "./claude-cut.js";
 import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveModule, type ClaudeLiveOutcome } from "./claude-live-contract.js";
 import { telemetry } from "../telemetry.js";
 import { claudeReplayBudget, ClaudeReplayBlocked, type ClaudeReplayBudget } from "./claude-replay-budget.js";
@@ -181,7 +182,7 @@ export class ClaudeSubscription implements Provider {
         catch (error) {
           const rejectedTool = rejectedClaudeTool(error);
           if (rejectedTool) { releaseHold(); throw rejectedTool; }
-          if (providerRefusal(error)) releaseHold();
+          if (providerRefusal(error) || isCutFailure(error)) releaseHold();
           if (!authVisible && isReplaySafeAuthentication(error) && await beginRecovery(error)) {
             // A failed live session synchronously removes itself from the registry; the
             // cancellable backoff also gives its killed CLI time to exit before this spawn.

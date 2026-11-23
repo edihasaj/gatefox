@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- A Claude chat no longer stops with `malformed_tool_call` when the computer sleeps or the network drops
+  while Claude writes a tool call. GateFox drops the unfinished call and lets Claude Code resume the reply
+  on the same session; calls that had finished are still forwarded. An unfinished call without any input yet
+  could previously be read as `{}`. If Claude Code cannot resume, the request fails with a retryable error
+  that names the lost connection, and the chat is not held.
 - The Gemini provider can run through Antigravity CLI (`agy`) with `"geminiCli": "antigravity"`, which
   brings Gemini 4 Neon, Carbon, Argon and Hydrogen to a Google AI Pro or Ultra subscription. Google stopped
   serving the Gemini CLI for those plans on 18 June 2026. Each conversation keeps one live `agy acp`

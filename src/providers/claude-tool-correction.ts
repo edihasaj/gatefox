@@ -107,6 +107,12 @@ export class ClaudeToolCorrection {
     return [];
   }
 
+  /** Calls of a cut message never ran, so the CLI will not reject them either. */
+  abandon(ids: string[]): void {
+    for (const id of ids) this.batch.delete(id);
+    if (!this.batch.size) this.deadline = undefined;
+  }
+
   /** All native model calls are billed, including the call that selected the unavailable name. */
   total(current?: Partial<ClaudeTokens>): Partial<ClaudeTokens> | undefined {
     if (!this.costs.length) return current ? { ...current } : undefined;

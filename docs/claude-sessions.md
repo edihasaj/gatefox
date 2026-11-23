@@ -259,6 +259,28 @@ written.
 
 ## Recover after an interrupted connection
 
+When sleep or a network change breaks a reply, Claude Code closes the message itself
+and marks its `message_stop` line with `abandoned_blocks`. A call without its complete
+`assistant` line never finished and is never forwarded, even when its streamed input is
+empty or happens to parse.
+
+- **Only unfinished calls:** the CLI resumes in the same turn, so the request keeps
+  reading on the same session and its warm cache.
+- **A finished call beside an unfinished one:** only the finished call is forwarded; it
+  is the one the CLI runs. The session accepts the CLI's single synthetic connection
+  notice that follows. A session adopted from an older release cannot, so its request
+  fails retryable instead.
+- **The CLI gives up:** the request fails with the retryable `upstream_unavailable`
+  (upstream code `stream_interrupted`), and the session closes without a crash hold.
+  No tool call of that request was forwarded, and the gateway does not replay it; the
+  client may retry, which seeds a new session under the cache guard. Text already
+  shown may be generated again. A request with queued steering stays final.
+
+Login, billing, limit and request errors keep their own meaning. Usage reports the
+final message; tokens of an abandoned message are not added to it. `claude_stream_cut`
+records `cut`, `resumed` or `failed` with call counts only. Frames were captured from
+CLI 2.1.299 and 2.1.326 against a local mock API on 23 November 2026.
+
 A malformed tool call stops the current response before forwarding any call.
 It is a controlled rejection, so it does not place the chat behind a crash hold.
 A separate caller message can try again. This also applies to adopted older CLIs;
