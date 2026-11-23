@@ -6,6 +6,14 @@
   cached the Google account and redirected the browser to its success page. It now waits
   for both (at most 15 seconds), so the account is installed with the credential and the
   browser shows Google's success page.
+- A live Claude Desktop chat no longer fails with "Claude's live session was
+  preserved" after Claude uses the `Edit` tool. Claude Code replays every `Edit`
+  with `"replace_all": false` added, so GateFox now recognizes the CLI's own
+  calls by call ID and tool instead of their exact input.
+- Claude no longer says "that message came through empty" after each tool step.
+  Claude Code sends a system-role token-budget note after every tool result, and
+  GateFox delivered it to the live CLI as a new user turn. A waiting CLI now gets
+  only the tool results; other system messages are still delivered.
 - A live Claude chat no longer fails with `unavailable_gateway_tool` when Claude
   sends a parallel batch that mixes a declared tool with a private gateway name
   it invented. GateFox forwards the declared calls, withholds the invented one,

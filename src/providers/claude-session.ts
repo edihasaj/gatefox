@@ -17,7 +17,7 @@ import { nativeClaudeCalls, rejectedClaudeTool, validateForcedChoice } from "./c
 import { claudeUsageEvent, type ClaudeLimit } from "./claude-usage.js";
 import { claudeWireToolName as claudeToolName } from "./claude-tool-names.js";
 import { ClaudeRelay, type RelayContent } from "./claude-relay.js";
-import { echoDigests, partialDigest, type LedgerState } from "./claude-ledger.js";
+import { echoIdentities, partialDigest, type LedgerState } from "./claude-ledger.js";
 import { providerCommand } from "../provider-tool-runtime.js";
 import { telemetry } from "../telemetry.js";
 
@@ -297,7 +297,7 @@ export class ClaudeSession {
       throw new ProviderError("invalid_tool_call", "Claude called a tool the gateway did not return", 502, { code: "relay_mismatch", event: "claude.tool_use" });
     }
     this.detach(attached);
-    this.ledger = { items: [...turn.prefix, ...echoDigests(attached.text, calls)] };
+    this.ledger = { items: [...turn.prefix, ...echoIdentities(attached.text, calls)] };
     this.pending = calls.map(call => call.id); this.state = calls.length ? "awaiting_outputs" : "turn_done";
     this.endedMessage = this.message; this.messageTool = false;
     this.unconfirmed = new Set(turn.stream.withheldCalls ?? []);

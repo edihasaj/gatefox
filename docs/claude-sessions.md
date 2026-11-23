@@ -85,7 +85,7 @@ finishes normally, then the session closes instead of remaining parked in replay
   that unmarked request. With [hint headers](messages.md#hint-headers) on, the
   summary request is marked as compaction and takes the compaction path instead.
   While the CLI is waiting for tools, replacement requires the original pending
-  calls (including their inputs) and every result exactly once, with no new
+  calls (by call ID and tool) and every result exactly once, with no new
   assistant output or forced tool choice. A new CLI receives the submitted
   history and results as history. The old CLI receives no results from that
   request. Other pending-tool mismatches still preserve and refuse.
@@ -197,6 +197,23 @@ reasoning metadata while counting the messages the renderer emits, so a genuine
 assistant answer cannot disappear from history matching because of its string
 encoding. Other providers retain their previous restoration behavior, including
 account-scoped Codex encrypted-state round trips.
+
+The ledger records each call the CLI itself emitted by its call ID and tool name,
+without its input. Claude Code rewrites tool input before replaying it: every
+`Edit` comes back with `"replace_all": false` added in front of the model's keys.
+Matching the exact input therefore refused the next request after any `Edit` as
+`prefix_diverged`. A different call ID or tool still diverges. The CLI keeps the
+model's original input. Calls that arrive in caller history, and ledgers written
+by earlier releases, still match by their exact input digest. Copilot and ACP
+sessions keep exact matching.
+
+Claude Code 2.1.299 also replays a system-role
+`<total_tokens>N tokens left</total_tokens>` budget note after every tool result.
+When such notes are the only messages beside the pending results, a waiting CLI
+receives just the results. Writing the note as queued input made a new user turn
+with no user words, and Claude reported an empty message after each tool step.
+The note stays in the ledger and in full-history renders. Every other system,
+developer or user message beside tool results is still delivered.
 
 A public summary has no native Claude thinking signature. The gateway never
 fabricates one or reconstructs an unsigned thinking block from the summary.

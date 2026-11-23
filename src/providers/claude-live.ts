@@ -94,6 +94,17 @@ async function attach(registry: SessionRegistry, settings: Settings, input: Clau
   }
 }
 
+/**
+ * Claude Code 2.1.299 replays a system-role `<total_tokens>N tokens left</total_tokens>` budget note after every tool
+ * result. It is not caller input: written to a waiting CLI it became a new user turn with no user words, which Claude
+ * reported as an empty message. The note stays in the ledger and in full-history renders.
+ */
+function budgetNote(item: ClaudeLiveInput["conversation"][number] | undefined): boolean {
+  if (item?.role !== "system") return false;
+  const text = typeof item.content === "string" ? item.content : (item.parts ?? []).map(part => "text" in part && typeof part.text === "string" ? part.text : "").join("");
+  return /^<total_tokens>\d+ tokens left<\/total_tokens>$/.test(text.trim());
+}
+
 async function place(registry: SessionRegistry, settings: Settings, key: string, input: ClaudeLiveInput, signal: AbortSignal, admission: { afterWarmup: boolean }): Promise<ClaudeLiveOutcome> {
   let session = registry.sessions.get(key);
   if (session?.state === "interrupting") await session.waitIdle(1500);
@@ -118,10 +129,14 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
       const interleaved = !queued && decision.reason === "unexpected_tail" && session.state === "awaiting_outputs" && input.renderAt
         ? interleavedToolContinuation(entries, decision.divergedAt, session.pending, messages) : undefined;
       const continuable = session.queuedInputVersion === 1 && messages === input.conversation.length && input.effort === session.effort;
-      if (queued && continuable) {
+      const waiting = queued ? { outputs: queued.outputs, indices: input.conversation.map((_item, index) => index).slice(queued.from) } : interleaved;
+      const callerIndices = waiting?.indices.filter(index => !budgetNote(input.conversation[index]));
+      if (waiting && !callerIndices?.length && messages === input.conversation.length && input.effort === session.effort && !forced(input.choice)) {
+        plan = { kind: "continue_outputs", outputs: waiting.outputs };
+      } else if (queued && continuable && !input.renderAt) {
         plan = { kind: "continue_outputs_with_messages", ...queued };
-      } else if (interleaved && continuable) {
-        plan = { kind: "continue_outputs_with_messages", outputs: interleaved.outputs, from: interleaved.indices[0], indices: interleaved.indices };
+      } else if (waiting && callerIndices?.length && continuable) {
+        plan = { kind: "continue_outputs_with_messages", outputs: waiting.outputs, from: callerIndices[0], indices: callerIndices };
       } else reason = decision.reason === "prefix_diverged" && session.compacted ? "context_compacted"
         : decision.reason === "prefix_diverged" && input.callerHistoryReplacement
           && ((session.state === "turn_done" && !session.pending.length)
