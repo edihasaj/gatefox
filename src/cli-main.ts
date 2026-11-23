@@ -22,6 +22,7 @@ import { macService } from "./mac-service.js";
 import { openCopilot, copilotEnvironment } from "./providers/copilot-client.js";
 import { configPath } from "./paths.js";
 import { ensureGrokHome, grokLoginEnvironment } from "./providers/grok-home.js";
+import { antigravityLogin } from "./providers/antigravity-home.js";
 import { ensureGeminiHome } from "./providers/gemini-home.js";
 import { geminiLogin, openGeminiSignInUrl } from "./providers/gemini-login.js";
 import { setupGateway, setupClient } from "./setup.js";
@@ -352,6 +353,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       });
       // Only a written credential proves the flow finished; the CLI exit code alone is not enough.
       await ensureGrokHome(provider.grokHome);
+    } else if (provider.type === "gemini-subscription" && provider.geminiCli === "antigravity") {
+      // `agy acp --login` prints a Google sign-in link and reads the code the browser shows from this terminal.
+      if (!provider.geminiHome) throw new Error(`${provider.id}: Gemini provider has no private home to sign in`);
+      await antigravityLogin(provider.geminiHome);
     } else if (provider.type === "gemini-subscription") {
       // The CLI has no login command and, without a terminal, asks for consent on stdin; the gateway answers it (this command
       // is the consent), prints and opens the sign-in URL itself, and trusts only the credential that appears afterwards.

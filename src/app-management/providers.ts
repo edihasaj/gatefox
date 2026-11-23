@@ -153,6 +153,8 @@ export async function runSubscriptionLogin(provider: ProviderConfig, deps: Manag
   }
   if (provider.type === "gemini-subscription") {
     if (!provider.geminiHome) throw new ManagementError("authentication_failed");
+    // Antigravity's sign-in reads a pasted code from a terminal: `gateway login gemini` does it, the app cannot.
+    if (provider.geminiCli === "antigravity") throw new ManagementError("authentication_failed");
     if (!await (deps.lookupCli || cliAvailable)("gemini")) throw new ManagementError("missing_cli");
     // The CLI has no login command and asks for consent on stdin, so `childLoginOpeningURL` cannot drive it. A Reconnect click is
     // the consent; the helper answers it, opens the URL the CLI asks its browser to open, and judges success by the credential.

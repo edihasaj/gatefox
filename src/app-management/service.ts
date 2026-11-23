@@ -19,6 +19,7 @@ import { effectivePlacement, setNativePickerPlacement } from "./native-picker.js
 import { cliAvailable, isApiKind, managedModels, managedProvider, providerPrerequisites, runSubscriptionLogin, validModelId } from "./providers.js";
 import { metadataLabel } from "../model-label.js";
 import { hasGrokLogin } from "../providers/grok-home.js";
+import { hasAntigravityLogin } from "../providers/antigravity-home.js";
 import { hasGeminiLogin } from "../providers/gemini-home.js";
 import type { ManagedProvider } from "./types.js";
 import type { CatalogEntry, DraftRecord, ManagementDependencies, ManagementRequest, ManagementResponse, ManagementResult, ProviderInput } from "./types.js";
@@ -257,6 +258,16 @@ function markChecked(provider: { authState: string; authDetail: string }): void 
  * provider view never probes a removed home beyond a file check, and it keeps every other field.
  */
 async function cliHomeStatus(provider: ProviderConfig, view: ManagedProvider, lookup: ManagementDependencies["lookupCli"]): Promise<ManagedProvider> {
+  if (provider.type === "gemini-subscription" && provider.geminiCli === "antigravity") {
+    // `agy acp --login` reads the code the browser shows from a terminal, which the app does not have.
+    const available = await (lookup || cliAvailable)("agy");
+    const signedIn = await hasAntigravityLogin(provider.geminiHome);
+    return { ...view,
+      authState: signedIn ? "ready" : available ? "needs-sign-in" : "missing-cli",
+      authDetail: signedIn ? "Signed in through Antigravity CLI in this gateway's private home."
+        : available ? "Run `gateway login gemini` in Terminal to sign in through Antigravity CLI." : "Antigravity CLI (agy) is not installed.",
+      canDiscover: false, canReconnect: false };
+  }
   const cli = provider.type === "grok-subscription" ? "grok" : provider.type === "gemini-subscription" ? "gemini" : undefined;
   if (!cli) return view;
   const name = cli === "grok" ? "Grok" : "Gemini";

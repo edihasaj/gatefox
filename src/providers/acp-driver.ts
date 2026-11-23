@@ -49,6 +49,13 @@ export interface AcpDriver {
   env?(catalogPath: string, profilePath?: string): Record<string, string>;
   /** The `session/new` MCP server list naming this session's loopback endpoint. */
   mcpServers?(url: string): unknown[];
+  /** Extra `session/new` parameters; Antigravity takes the gateway's instructions there as an appended system prompt. */
+  sessionParams?(system: string): Record<string, unknown>;
+  /**
+   * `session/set_config_option` choices sent once, right after `session/new`, for a CLI that has no model flag. The
+   * session fails to start unless the CLI reports each value as current, so an unavailable model is never swapped silently.
+   */
+  sessionConfig?(options: { model: string; effort?: string }): Array<{ configId: string; value: string }>;
   /** Answers one agent-to-client permission request; `allow_always` is never chosen. */
   permission(params: Record<string, unknown>, catalog: ReadonlySet<string>): AcpPermission;
   /**

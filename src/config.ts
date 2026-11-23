@@ -49,6 +49,12 @@ export interface ProviderConfig {
   /** Gemini subscription only: the private Gemini CLI home the gateway signs in once (default <stateDirectory>/gemini-home). */
   geminiHome?: string;
   /**
+   * Gemini subscription only: which Google CLI serves it. `gemini` (default) is the Gemini CLI. `antigravity` is
+   * Antigravity CLI (`agy`), the only CLI that serves Google AI Pro and Ultra subscriptions and the Gemini 4 models
+   * since 18 June 2026.
+   */
+  geminiCli?: "gemini" | "antigravity";
+  /**
    * Codex or Claude subscription only: the operator designates this account as the one that serves its vendor's bare model
    * names (a sub-agent's `gpt-5.6-terra` or `claude-opus-5-5`, and an unnamed reviewer). At most one provider per type may
    * set it true; `false` designates nothing. A bare name never falls back onto a non-designated account. This is an
@@ -314,6 +320,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
     }
     if (provider.grokHome !== undefined && (provider.type !== "grok-subscription" || typeof provider.grokHome !== "string" || !provider.grokHome)) throw new Error(`${provider.id}: grokHome is only valid for grok-subscription providers`);
     if (provider.geminiHome !== undefined && (provider.type !== "gemini-subscription" || typeof provider.geminiHome !== "string" || !provider.geminiHome)) throw new Error(`${provider.id}: geminiHome is only valid for gemini-subscription providers`);
+    if (provider.geminiCli !== undefined && (provider.type !== "gemini-subscription" || !["gemini", "antigravity"].includes(provider.geminiCli))) throw new Error(`${provider.id}: geminiCli must be gemini or antigravity on a gemini-subscription provider`);
     if (provider.defaultForBareModels !== undefined) {
       if (provider.type !== "codex-subscription" && provider.type !== "claude-subscription") throw new Error(`${provider.id}: defaultForBareModels is only valid for codex-subscription or claude-subscription providers`);
       if (typeof provider.defaultForBareModels !== "boolean") throw new Error(`${provider.id}: defaultForBareModels must be boolean`);

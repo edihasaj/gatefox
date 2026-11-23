@@ -1,12 +1,18 @@
 ---
-summary: 'Google AI Ultra subscription inference through the official Gemini CLI: one live ACP session per conversation, a private Gemini home, managed settings, tool handoff and the fail-closed checks around each.'
+summary: 'Google AI Ultra subscription inference through Antigravity CLI (Gemini 4 Neon, Carbon, Argon, Hydrogen) or the official Gemini CLI: one live ACP session per conversation, a private Gemini home, managed settings, tool handoff and the fail-closed checks around each.'
 read_when:
   - Changing the gemini-subscription provider, its live sessions or its Gemini home
   - Turning geminiSessions on or off, or investigating a refused Gemini conversation
   - Signing the gateway in to Google, or investigating a failed Gemini request
+  - Adding Gemini 4 models (Neon, Carbon, Argon, Hydrogen) or setting geminiCli to antigravity
 ---
 
 # Gemini subscription
+
+> **Use `"geminiCli": "antigravity"` for a Google AI Pro or Ultra subscription.** On 18 June 2026 Google stopped
+> serving the Gemini CLI for Pro and Ultra accounts and moved them to Antigravity CLI (`agy`). The Gemini 4 models
+> reach a subscription only there. See [Antigravity CLI](#antigravity-cli). The rest of this page describes the
+> Gemini CLI backend, which stays the default for existing configurations.
 
 A `gemini-subscription` provider spends a Google AI Ultra subscription through the
 official Gemini CLI (`gemini`). API keys are never used: every `GEMINI_*`, `GOOGLE_*`,
@@ -339,6 +345,62 @@ A home that is not signed in (no credential, or no `refresh_token`) fails the re
 401 `authentication` **before the CLI starts**, and a credential that exists but cannot refresh is
 caught at boot as described above, so inference can never open a browser or block before any
 JSON-RPC.
+
+## Antigravity CLI
+
+With `"geminiCli": "antigravity"` the same provider runs `agy acp` (Antigravity CLI, checked with 1.5.14 on a
+Google AI Ultra account) instead of `gemini --acp`. The live-session mechanics above are unchanged: one process per
+conversation, caller tools as held calls on the loopback MCP endpoint, and refusal rather than replay.
+
+```json
+{ "id": "gemini", "type": "gemini-subscription", "label": "Gemini", "geminiCli": "antigravity",
+  "models": { "gemini/gemini-4-neon": "gemini-4-neon", "gemini/gemini-4-hydrogen": "gemini-4-hydrogen" },
+  "modelMetadata": { "gemini/gemini-4-neon": { "displayName": "Gemini 4 Neon", "contextWindow": 1048576,
+    "inputModalities": ["text"], "reasoningEfforts": ["low", "medium", "high", "xhigh"] } } }
+```
+
+**Install and sign in.** Install with `brew install --cask antigravity-cli` (Homebrew then owns updates), then run
+`gateway login gemini` in a terminal. It runs `agy acp --login` with `HOME` set to the gateway's Gemini home: it
+prints a Google sign-in link, and you paste back the code the browser shows, so it also works over SSH. The sign-in
+is saved as `<home>/.gemini/antigravity-cli/antigravity-oauth-token` (0600). The app cannot run this sign-in because
+it needs a terminal, so its Reconnect button is hidden for this backend.
+
+**Models.** An Ultra account lists `gemini-4-neon`, `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-hydrogen`, the
+orchestrators `gemini-pro-orchestrator`, `gemini-pro-orchestrator-neon` and `gemini-pro-orchestrator-argon`, and
+`gemini-3.8-flash`. `agy acp` has no model flag. After `session/new`, the session sets `model`, `mode` (`default`)
+and, when the caller chose a supported effort, `thought_level` (`low`, `medium`, `high`, `xhigh`) with
+`session/set_config_option`. The session refuses to start when the CLI does not report the requested value as
+current, so an unavailable model is never swapped for another one. The gateway's instructions travel as
+`_meta.antigravity.systemPrompt.append` on `session/new`.
+
+**Private home.** `agy` keeps its sign-in, settings and a record of every conversation under
+`$HOME/.gemini/antigravity-cli/`. Each process runs with `HOME` set to a disposable folder inside its session folder.
+That folder holds the managed `settings.json`, an empty `~/.gemini/config/mcp_config.json`, and 0600 copies of the
+sign-in and `installation_id`. A token the CLI refreshed is carried back when the session ends, unless a newer sign-in
+replaced the copy that was handed out. The CLI's environment is only `HOME`, `PATH`, `TMPDIR`, `USER`, `LOGNAME` and
+the locale, so no API key or Google Cloud credential can switch it off the subscription.
+
+**Native tools.** `agy` has its own shell, file, web and browser-agent tools. The managed settings set
+`toolPermission` to `strict`, so every native action asks the gateway first, including file reads. They also set
+`agentMode` to the standard mode (never `auto`, which approves "safe" commands itself), keep `useG1Credits` off so
+AI credits are never spent after the plan's quota runs out, and deny every command, write and URL action. The deny
+rules are a second layer only: with 1.5.14, `agy` sometimes asked for a denied command instead of refusing it.
+
+The gateway answers every permission request (`antigravity-acp.ts`):
+
+| Request | Answer |
+| --- | --- |
+| `mcp_gateway_<tool>` for a tool in this session's caller catalog | `allow_once` |
+| `read_file` of a schema the CLI cached from the gateway's own MCP server (`<session>/home/.gemini/antigravity-cli/mcp/gateway/<file>`) | `allow_once` |
+| Anything else | `reject_once`, so the model continues without it |
+
+The CLI caches MCP tool schemas on disk and the model sometimes reads one with `read_file` before calling the tool,
+which is why that one native read is allowed. Every call is announced `in_progress` before its permission request, and
+a refused call ends `failed`. A native tool reported `completed` therefore means the CLI ran something of its own, and
+the session ends with `invalid_tool_call`.
+
+**Prompts** are framed like the Gemini CLI's, because `agy` also runs a prompt that starts with `/` as one of its own
+commands (`/schedule`, `/teamwork`, `/browser`).
 
 ## Continuation, usage and failures
 
