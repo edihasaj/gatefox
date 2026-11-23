@@ -42,7 +42,8 @@ test("native Messages rebuilds a changed prefix only after receiving the origina
     const tail = message("user", [results[1], { type: "text", text: "Scout finished" }, results[0]]);
     const live = claudeLive({ max: 6, parkMinutes: 60 });
     const [waiting] = live.sessions();
-    await assert.rejects(turn([changed, message("assistant", [{ ...calls[0], input: { file: "different" } }, calls[1]]), tail]),
+    await assert.rejects(turn([changed, message("assistant", [{ ...calls[0], id: "toolu_not_the_pending_call" }, calls[1]]),
+      message("user", [results[1], { type: "text", text: "Scout finished" }, { ...results[0], tool_use_id: "toolu_not_the_pending_call" }])]),
       { missReason: "prefix_diverged" });
     const continuation = [changed, message("assistant", calls), tail];
     await assert.rejects(turn(continuation, { type: "any" }), { missReason: "prefix_diverged" });
@@ -247,4 +248,40 @@ test("compaction completion cannot authorize resetting a session that progressed
     registry.sessions.set(key, { ...session } as never);
     replaced(); assert.equal(session.compacted, false);
   } finally { registry.sessions.delete(key); }
+});
+
+test("Claude Code's rewritten Edit input continues the same live CLI", { timeout: 30000 }, async () => {
+  const fixture = await installClaudeFixture({ replies: [
+    { calls: [{ tool: "Edit", input: { file_path: "a.ts", old_string: "x", new_string: "y" } }, { tool: "read", input: { file: "a.ts" } }] },
+    { text: "Edited" },
+  ] });
+  const provider = new ClaudeSubscription({ id: `messages-edit-${process.pid}`, type: "claude-subscription",
+    models: { fixture: "fixture" }, claudeSessions: { mode: "live", warmup: 0 } });
+  const sessionId = "019a1234-5678-7890-abcd-0123456789ac";
+  const schema = { type: "object", properties: {} };
+  const turn = async (messages: unknown[]) => {
+    const request = messagesToResponses({ model: "fixture", max_tokens: 100, messages,
+      metadata: { user_id: JSON.stringify({ device_id: "d", account_uuid: "a", session_id: sessionId }) },
+      tools: [{ name: "Edit", input_schema: schema }, { name: "read", input_schema: schema }] });
+    const writer = new ResponsesWriter("fixture", () => {});
+    for await (const event of provider.infer(request, new AbortController().signal, { clientProtocol: "messages", sessionId })) writer.accept(event);
+    return writer.result().output as ResponsesInputItem[];
+  };
+  try {
+    const first = [{ role: "user", content: "Edit the file" }];
+    const reply = await turn(first);
+    const calls = reply.flatMap(item => item.type === "function_call"
+      ? [{ type: "tool_use", id: String(item.call_id), name: item.name, input: JSON.parse(String(item.arguments)) }] : []);
+    assert.deepEqual(calls.map(call => call.name), ["Edit", "read"]);
+    const pid = claudeLive({ max: 6, parkMinutes: 60 }).sessions()[0]?.pid;
+    // Claude Code replays the Edit with "replace_all": false first and puts a hook notice between the results.
+    const replayed = calls.map(call => call.name === "Edit" ? { ...call, input: { replace_all: false, ...call.input } } : call);
+    const results = { role: "user", content: [{ type: "tool_result", tool_use_id: calls[0].id, content: "edited" },
+      { type: "text", text: "<system-reminder>PostToolUse:Edit hook failed</system-reminder>" },
+      { type: "tool_result", tool_use_id: calls[1].id, content: "read" }] };
+    const output = await turn([...first, { role: "assistant", content: replayed }, results]);
+    assert.ok(JSON.stringify(output).includes("Edited"));
+    assert.equal(claudeLive({ max: 6, parkMinutes: 60 }).sessions()[0]?.pid, pid, "the same CLI continued");
+    assert.equal((await fixture.capture()).filter(row => row.start).length, 1, "no reseed or replay");
+  } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await fixture.restore(); }
 });

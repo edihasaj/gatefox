@@ -16,6 +16,8 @@ export interface LedgerEntry {
   /** A merged assistant run; it enters native history only as the CLI's own output. */
   assistant?: true;
   callId?: string;
+  /** A call's ID and tool name without its input. Claude live ledgers record the CLI's own calls this way. */
+  identity?: string;
   /** Conversation messages this entry renders as: `count` messages from index `first`. */
   first: number;
   count: number;
@@ -64,6 +66,13 @@ export function callInput(call: OpenAIToolCall): string {
   return call.function.arguments;
 }
 const callDigest = (id: string, name: string, input: unknown) => digest(["c", id, name, input]);
+/**
+ * Claude Code rewrites a tool call's input before replaying it (it adds `"replace_all": false` to every Edit),
+ * so the CLI's own call is recognized by its unique call ID and tool name. The CLI keeps its original input.
+ */
+const callIdentity = (id: string, name: string) => digest(["c", id, name]);
+/** A ledger item matches an entry's exact digest, or a call's identity when the ledger recorded the CLI's own call. */
+const matches = (entry: LedgerEntry | undefined, item: string) => entry !== undefined && (entry.digest === item || entry.identity === item);
 const runDigest = (value: string) => digest(["m", "assistant", [["t", value]]]);
 
 /**
@@ -90,7 +99,8 @@ export function ledgerEntries(request: ResponsesRequest, tools: OpenAITool[], le
     if (type === "function_call" || type === "custom_tool_call") {
       const named = typeof item.namespace === "string" ? `${item.namespace}.${item.name}` : String(item.name);
       const name = bindings.get(named)?.function.name ?? named;
-      entries.push({ digest: callDigest(String(item.call_id), name, type === "custom_tool_call" ? item.input : item.arguments), kind: "c", callId: String(item.call_id), first, count });
+      entries.push({ digest: callDigest(String(item.call_id), name, type === "custom_tool_call" ? item.input : item.arguments),
+        identity: callIdentity(String(item.call_id), name), kind: "c", callId: String(item.call_id), first, count });
     } else if (type === "function_call_output" || type === "custom_tool_call_output") {
       entries.push({ digest: digest(["o", String(item.call_id), parts(item.output)]), kind: "o", callId: String(item.call_id), first, count, item });
     } else if (type === "agent_message") {
@@ -106,6 +116,10 @@ export function ledgerEntries(request: ResponsesRequest, tools: OpenAITool[], le
 export function echoDigests(streamed: string, calls: OpenAIToolCall[]): string[] {
   return [...(streamed ? [runDigest(streamed)] : []), ...calls.map(call => callDigest(call.id, call.function.name, callInput(call)))];
 }
+/** What a Claude live session records for one request's output: the streamed text, then each call's identity. */
+export function echoIdentities(streamed: string, calls: OpenAIToolCall[]): string[] {
+  return [...(streamed ? [runDigest(streamed)] : []), ...calls.map(call => callIdentity(call.id, call.function.name))];
+}
 /** The ledger item for an interrupted turn's partial text, if any. */
 export function partialDigest(streamed: string): string | undefined { return streamed ? runDigest(streamed) : undefined; }
 
@@ -116,7 +130,7 @@ export function partialDigest(streamed: string): string | undefined { return str
  * conversation messages are exactly the rest of the conversation, with no assistant text.
  */
 export function decide(ledger: LedgerState, entries: LedgerEntry[], messages: number, phase: LedgerPhase, pending: readonly string[]): LedgerDecision {
-  const diverged = ledger.items.findIndex((item, index) => entries[index]?.digest !== item);
+  const diverged = ledger.items.findIndex((item, index) => !matches(entries[index], item));
   if (diverged >= 0) return { kind: "reseed", reason: "prefix_diverged", divergedAt: diverged };
   let length = ledger.items.length;
   if (ledger.partial !== undefined && entries[length]?.digest === ledger.partial) length++;
@@ -141,7 +155,7 @@ export function replacedHistoryWithToolResults(ledger: LedgerState, entries: Led
   const firstCall = entries.findIndex(entry => entry.kind === "c" && entry.callId === pending[0]);
   if (firstCall < 0 || !pending.every((id, index) => {
     const entry = entries[firstCall + index];
-    return entry?.kind === "c" && entry.callId === id && entry.digest === ledger.items[ledger.items.length - pending.length + index];
+    return entry?.kind === "c" && entry.callId === id && matches(entry, ledger.items[ledger.items.length - pending.length + index]);
   })) return false;
   const from = firstCall + pending.length;
   const tail = entries.slice(from);

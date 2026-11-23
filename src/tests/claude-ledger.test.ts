@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decide, echoDigests, interleavedToolContinuation, ledgerEntries, messagesAfterTools, partialDigest } from "../providers/claude-ledger.js";
+import { decide, echoDigests, echoIdentities, interleavedToolContinuation, ledgerEntries, messagesAfterTools, partialDigest } from "../providers/claude-ledger.js";
 import { normalizeResponsesTools, responsesToChatRequest } from "../protocol/request.js";
 import { restoreReasoning } from "../protocol/reasoning-state.js";
 import type { OpenAIToolCall, ResponsesInputItem, ResponsesRequest } from "../protocol/types.js";
@@ -135,4 +135,21 @@ test("search items and hosted web search count as no conversation message, exact
   const { entries: list, messages } = ledgerEntries(request(input), tools);
   assert.equal(messages, responsesToChatRequest(request(input)).messages.length);
   assert.deepEqual(list.map(entry => [entry.kind, entry.first]), [["m", 0], ["m", 1]]);
+});
+
+test("a live ledger recognizes the CLI's own call by ID and tool even when the client rewrites its input", () => {
+  const output: ResponsesInputItem = { type: "function_call_output", call_id: "c1", output: "done" };
+  const ledger = { items: echoIdentities("Editing.", [call("c1", "read", JSON.stringify({ file: "a" }))]) };
+  const replayed = (id: string, name: string, args: unknown): ResponsesInputItem[] =>
+    [assistant("Editing."), { type: "function_call", call_id: id, name, arguments: JSON.stringify(args) }, output];
+  // Claude Code replays every Edit with "replace_all": false added in front of the model's own keys.
+  const rewritten = entries(replayed("c1", "read", { replace_all: false, file: "a" }));
+  assert.equal(decide(ledger, rewritten.entries, rewritten.messages, "awaiting_outputs", ["c1"]).kind, "continue_outputs");
+  for (const [id, name] of [["c2", "read"], ["c1", "patch"]]) {
+    const other = entries(replayed(id, name, { file: "a" }));
+    assert.deepEqual(decide(ledger, other.entries, other.messages, "awaiting_outputs", ["c1"]), { kind: "reseed", reason: "prefix_diverged", divergedAt: 1 });
+  }
+  // Ledgers written by an earlier release keep exact input digests and still match unchanged input.
+  const exact = entries(replayed("c1", "read", { file: "a" }));
+  assert.equal(decide({ items: echoDigests("Editing.", [call("c1", "read", JSON.stringify({ file: "a" }))]) }, exact.entries, exact.messages, "awaiting_outputs", ["c1"]).kind, "continue_outputs");
 });

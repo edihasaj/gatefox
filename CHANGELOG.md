@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.2.2 — 2026-11-23
+
+- A live Claude Desktop chat no longer fails with "Claude's live session was
+  preserved" after Claude uses the `Edit` tool. Claude Code replays every `Edit`
+  with `"replace_all": false` added, so GateFox now recognizes the CLI's own
+  calls by call ID and tool instead of their exact input.
+- Claude no longer says "that message came through empty" after each tool step.
+  Claude Code sends a system-role token-budget note after every tool result, and
+  GateFox delivered it to the live CLI as a new user turn. A waiting CLI now gets
+  only the tool results; other system messages are still delivered.
+
 ## 2.2.1 — 2026-11-23
 
 - Gemini sign-in no longer ends with "127.0.0.1 refused to connect" in the browser. The
