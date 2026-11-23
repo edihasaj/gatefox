@@ -62,6 +62,10 @@ finishes normally, then the session closes instead of remaining parked in replay
   refused as `unexpected_tail` until its session expired an hour later. Missing
   or duplicate tool results, a new call, edited prefixes and appended assistant
   output keep their existing checks.
+  The CLI has 30 seconds to acknowledge (an effort change has the same limit). On 23
+  November 2026 an overloaded Mac apparently missed the earlier 5 seconds and lost a
+  healthy session. A typed failure from a session adopted across an in-place upgrade keeps its
+  meaning, so a final steering failure is not retried.
   Older adopted instances without queued-input support reseed once through
   `messages_after_tools`. A rejected or timed-out acknowledgment, cancellation
   during the handoff, or CLI/relay failure during the steered request closes the
@@ -144,7 +148,9 @@ finishes normally, then the session closes instead of remaining parked in replay
 - **Continuity refusal:** capacity, concurrent requests, failed startup or an
   unavailable live adapter stop before one-shot replay. The CLI and its tool server
   have 60 seconds to start (`initialize_timeout`); a loaded Mac took up to 25 seconds,
-  so the earlier 15-second limit refused live chats. CLI failure remains final
+  so the earlier 15-second limit refused live chats. A start timeout sent nothing to
+  Claude, so the first two in 15 minutes fail with the retryable `upstream_unavailable`
+  (`session_start_timeout`); the next one is final. A successful start clears the count. CLI failure remains final
   after partial output too. A failed forced-tool choice never retries with a
   changed catalog. See [provider reuse](provider-reuse.md).
 
@@ -258,6 +264,28 @@ keep or drop the partial text. The session closes instead if a tool call was bei
 written.
 
 ## Recover after an interrupted connection
+
+When sleep or a network change breaks a reply, Claude Code closes the message itself
+and marks its `message_stop` line with `abandoned_blocks`. A call without its complete
+`assistant` line never finished and is never forwarded, even when its streamed input is
+empty or happens to parse.
+
+- **Only unfinished calls:** the CLI resumes in the same turn, so the request keeps
+  reading on the same session and its warm cache.
+- **A finished call beside an unfinished one:** only the finished call is forwarded; it
+  is the one the CLI runs. The session accepts the CLI's single synthetic connection
+  notice that follows. A session adopted from an older release cannot, so its request
+  fails retryable instead.
+- **The CLI gives up:** the request fails with the retryable `upstream_unavailable`
+  (upstream code `stream_interrupted`), and the session closes without a crash hold.
+  No tool call of that request was forwarded, and the gateway does not replay it; the
+  client may retry, which seeds a new session under the cache guard. Text already
+  shown may be generated again. A request with queued steering stays final.
+
+Login, billing, limit and request errors keep their own meaning. Usage reports the
+final message; tokens of an abandoned message are not added to it. `claude_stream_cut`
+records `cut`, `resumed` or `failed` with call counts only. Frames were captured from
+CLI 2.1.299 and 2.1.326 against a local mock API on 23 November 2026.
 
 A malformed tool call stops the current response before forwarding any call.
 It is a controlled rejection, so it does not place the chat behind a crash hold.

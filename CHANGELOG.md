@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.2.5 — 2026-11-23
+
+- A Claude chat no longer stops with `malformed_tool_call` when the computer sleeps or the network drops
+  while Claude writes a tool call. GateFox drops the unfinished call and lets Claude Code resume the reply
+  on the same session; calls that had finished are still forwarded. An unfinished call without any input yet
+  could previously be read as `{}`. If Claude Code cannot resume, the request fails with a retryable error
+  that names the lost connection, and the chat is not held.
+- An overloaded Mac no longer breaks gateway chats as easily. Opening an existing chat uses the saved model list
+  when the live one is slow or unreachable, instead of failing with "Gateway model discovery is unavailable";
+  starting a chat or turn still checks the host, with one longer try. A queued message gets 30 seconds instead of
+  5 before its session is closed, and a Claude process that cannot start in time is a retryable error twice before
+  it is final.
+- A final failure from a Claude session kept across an update stays final instead of becoming a retryable
+  `provider_failed`.
+
 ## 2.2.4 — 2026-11-23
 
 - Gemini 4 through Antigravity CLI can no longer run a tool of its own. In 2.2.3 `agy` ran web search and

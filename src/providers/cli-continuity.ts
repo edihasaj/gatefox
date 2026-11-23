@@ -17,6 +17,21 @@ export class CliContinuityUnavailable extends ProviderError {
   }
 }
 
+const startTimeouts = new Map<string, { count: number; at: number }>();
+/** How often one chat may retry a Claude start timeout before it is final, and how long an old timeout counts. */
+export const startTimeoutLimits = { retries: 2, windowMs: 15 * 60 * 1000 };
+/** Nothing reached Claude when its CLI never finished starting, so the client may retry; repeated timeouts stay final. */
+export function claudeStartTimeout(key: string, now = Date.now()): ProviderError {
+  const last = startTimeouts.get(key);
+  const count = last && now - last.at < startTimeoutLimits.windowMs ? last.count + 1 : 1;
+  startTimeouts.delete(key); startTimeouts.set(key, { count, at: now });
+  if (startTimeouts.size > 256) startTimeouts.delete(startTimeouts.keys().next().value!);
+  if (count > startTimeoutLimits.retries) return new CliContinuityUnavailable("Claude", "initialize_timeout");
+  return new ProviderError("upstream_unavailable", "Claude Code did not start in time; this computer may be overloaded. Nothing was sent to Claude; retry.",
+    503, { code: "session_start_timeout", event: "gateway.session" });
+}
+export function claudeStarted(key: string): void { startTimeouts.delete(key); }
+
 /** Request kinds deliberately served outside the ordinary live conversation. */
 export const standaloneCliReasons = new Set(["warmup", "no_thread", "request_kind"]);
 

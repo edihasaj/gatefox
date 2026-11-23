@@ -7,6 +7,7 @@ import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.
 import { installClaudeFixture } from "./claude-cli-fixture.js";
 import type { ResponsesInputItem } from "../protocol/types.js";
 import { ProviderError } from "../providers/provider.js";
+import { sessionLimits } from "../providers/claude-session.js";
 
 const user = (text: string): ResponsesInputItem => ({ type: "message", role: "user", content: text });
 const tools = [{ type: "function" as const, name: "read", parameters: { type: "object", properties: {} } }];
@@ -88,9 +89,11 @@ test("a steer recorded before the tool output and a subagent report after it con
 });
 
 for (const mode of ["rejected", "cancelled", "crashed", "timed-out"] as const) test(`${mode} steering handoff never delivers tool results or replays`, { timeout: 30000 }, async () => {
-  const cancel = mode === "cancelled";
+  const cancel = mode === "cancelled", controlMs = sessionLimits.controlMs;
+  assert.equal(controlMs, 30000, "a loaded Mac gets time to acknowledge a queued update");
+  if (mode === "timed-out") sessionLimits.controlMs = 300;
   const fixture = await installClaudeFixture({ replies: [{ calls: [{ tool: "read", input: {} }] }, { text: "Must not run" }],
-    ...(cancel ? { delaySteeringMs: 500 } : mode === "timed-out" ? { delaySteeringMs: 6000 } : mode === "crashed" ? { crashSteering: true } : { rejectSteering: true }) });
+    ...(cancel ? { delaySteeringMs: 500 } : mode === "timed-out" ? { delaySteeringMs: 3000 } : mode === "crashed" ? { crashSteering: true } : { rejectSteering: true }) });
   configureTelemetry(fixture.directory, "test");
   const provider = new ClaudeSubscription({ id: `handoff-${mode}-${process.pid}`, type: "claude-subscription", models: { fixture: "fixture" }, claudeSessions: { mode: "live", warmup: 0 } });
   const run = async (input: ResponsesInputItem[], controller = new AbortController()) => {
@@ -112,7 +115,7 @@ for (const mode of ["rejected", "cancelled", "crashed", "timed-out"] as const) t
     assert.deepEqual(capture.filter(row => row.start).map(row => row.start), ["live"]);
     assert.equal(capture.some(row => row.toolResult !== undefined), false);
     assert.equal(claudeLive({ max: 6, parkMinutes: 60 }).sessions().length, 0, "an interrupted queued input is not reused with unconfirmed history");
-  } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await flushTelemetry(); await fixture.restore(); }
+  } finally { sessionLimits.controlMs = controlMs; await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await flushTelemetry(); await fixture.restore(); }
 });
 
 test("CLI death after acknowledging steering and receiving tool results is final without replay", { timeout: 30000 }, async () => {

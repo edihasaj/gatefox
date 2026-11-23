@@ -15,6 +15,7 @@ import type { ClaudeMessageStream, ClaudeStreamEnd, ClaudeTokens } from "./claud
 import type { ContentBlock } from "./claude-render.js";
 import { nativeClaudeCalls, rejectedClaudeTool, validateForcedChoice } from "./claude-calls.js";
 import { claudeUsageEvent, type ClaudeLimit } from "./claude-usage.js";
+import { isCutFailure, isCutNotice } from "./claude-cut.js";
 import { claudeWireToolName as claudeToolName } from "./claude-tool-names.js";
 import { ClaudeRelay, type RelayContent } from "./claude-relay.js";
 import { echoIdentities, partialDigest, type LedgerState } from "./claude-ledger.js";
@@ -70,7 +71,8 @@ const steeringEnded = () => new ProviderError("invalid_request",
 const maxLine = 8 * 1024 * 1024;
 /** Startup bound (spawn, initialize and the relay hello); tests shorten it. */
 // A loaded Mac can take over 20 s to boot the CLI and its MCP server; 15 s refused live chats there.
-export const sessionLimits = { startMs: 60000 };
+// A control answer only reads stdin, yet on 23 November 2026 an overloaded Mac apparently missed 5 s and lost a healthy session.
+export const sessionLimits = { startMs: 60000, controlMs: 30000 };
 const eventType = (message: Record<string, unknown>) => message.type === "stream_event" ? (message.event as { type?: unknown } | undefined)?.type : undefined;
 const category = (value: unknown, allowed: string[]): string => typeof value === "string" && allowed.includes(value) ? value : "other";
 /** The typed failure for a tool the CLI must never run, classified like the one-shot path. */
@@ -135,6 +137,8 @@ export class ClaudeSession {
   private settled = new Set<() => void>(); private retiring?: string; private parkMs?: number;
   /** Unavailable calls withheld from the caller whose native CLI rejection has not been seen yet. */
   private unconfirmed = new Set<string>();
+  /** The last request ended on a cut message, so the CLI prints one synthetic connection notice. */
+  private cutNotice = false;
   private onUsage?: (limit: ClaudeLimit) => Promise<void>;
   private constructor(private readonly options: SessionOptions) { this.key = options.key; this.fingerprint = options.fingerprint; this.window = options.window; this.effort = options.effort; }
 
@@ -221,7 +225,7 @@ export class ClaudeSession {
   /** Changes effort between turns over the control channel, keeping the cached prefix. */
   async applyEffort(effort: string): Promise<boolean> {
     if (this.state !== "turn_done") return false;
-    const ok = await this.control("apply_flag_settings", { settings: { effortLevel: effort } }, 5000);
+    const ok = await this.control("apply_flag_settings", { settings: { effortLevel: effort } }, sessionLimits.controlMs);
     if (ok) this.effort = effort;
     return ok && this.state === "turn_done";
   }
@@ -232,6 +236,7 @@ export class ClaudeSession {
     const attached: Attached = { turn, queue: [], text: "", onAbort: () => this.abort(attached) };
     this.attached = attached; this.state = "generating"; this.messageTool = false; this.onUsage = turn.onUsage;
     turn.stream.expectRejections?.(this.unconfirmed); this.unconfirmed = new Set();
+    turn.stream.forwardFinishedCalls?.();
     turn.signal.addEventListener("abort", attached.onAbort, { once: true });
     if ("outputs" in turn.begin) {
       if (turn.begin.user?.length) {
@@ -245,7 +250,7 @@ export class ClaudeSession {
 
   /** The stdin control response orders queued user input before releasing pending MCP results. */
   private async deliverAfterSteering(attached: Attached, outputs: Map<string, RelayContent[]>): Promise<void> {
-    const accepted = await this.control("apply_flag_settings", { settings: {} }, 5000);
+    const accepted = await this.control("apply_flag_settings", { settings: {} }, sessionLimits.controlMs);
     if (this.attached !== attached) return;
     if (!accepted || attached.turn.signal.aborted) {
       attached.error = attached.turn.signal.aborted ? cancelled() : new ProviderError("invalid_request",
@@ -300,7 +305,7 @@ export class ClaudeSession {
     this.ledger = { items: [...turn.prefix, ...echoIdentities(attached.text, calls)] };
     this.pending = calls.map(call => call.id); this.state = calls.length ? "awaiting_outputs" : "turn_done";
     this.endedMessage = this.message; this.messageTool = false;
-    this.unconfirmed = new Set(turn.stream.withheldCalls ?? []);
+    this.unconfirmed = new Set(turn.stream.withheldCalls ?? []); this.cutNotice = end.kind === "tool_use" && end.cut === true;
     turn.onEnd("ended", end.tokens);
     // Lines read past the end are between-request lines: checked, and their rate limits kept.
     for (const message of attached.queue.splice(0)) this.detached(message, eventType(message));
@@ -344,7 +349,7 @@ export class ClaudeSession {
 
   /** A stream failure closes the session at once: the CLI must not act on a foreign or failed turn. */
   private failed(attached: Attached, error: unknown): unknown {
-    if (attached.steered && error instanceof ProviderError && error.code === "cli_failed") error = steeringEnded();
+    if (attached.steered && error instanceof ProviderError && (error.code === "cli_failed" || isCutFailure(error))) error = steeringEnded();
     if (this.attached === attached) {
       // A refusal judges one request and says nothing about the CLI, so it must not hold the thread as a crash does.
       const refused = providerRefusal(error);
@@ -357,6 +362,7 @@ export class ClaudeSession {
       this.detach(attached); attached.turn.onEnd(refused ? "refused" : "failed", attached.turn.stream.observedTokens);
       if (refused) void this.close("closed", "refused", true);
       else if (rejectedTool) void this.close("closed", rejectedTool.upstream?.code, true);
+      else if (isCutFailure(error)) void this.close("closed", "stream_interrupted", true);
       else if (authentication) { markReplaySafeAuthentication(error as ProviderError); void this.close("closed", "authentication_failed", true); }
       else if (limited) void this.close("closed", (error as ProviderError).upstream?.code ?? (error as ProviderError).code, true);
       else void this.close("crashed", error instanceof ProviderError ? error.upstream?.code ?? error.code : "failed", true);
@@ -379,6 +385,7 @@ export class ClaudeSession {
     if (message.type === "control_response") { for (const [id, done] of [...this.controls]) { const result = controlResult(message, id); if (result) done(result === "success"); } return; }
     // The gateway grants nothing: no permission prompt, hook or SDK request is ever approved.
     if (message.type === "control_request") { this.write(JSON.stringify({ type: "control_response", response: { subtype: "error", request_id: message.request_id, error: "Not supported by the gateway" } }) + "\n"); return; }
+    if (this.tookCutNotice(message)) return;
     this.attached?.turn.stream.observeUsage(message);
     if (typeof message.fast_mode_state === "string") this.fastState = message.fast_mode_state;
     if (message.type === "system" && message.subtype === "init" && typeof message.per_turn_effort_active === "boolean") this.perTurnEffort = message.per_turn_effort_active;
@@ -408,6 +415,7 @@ export class ClaudeSession {
    * interrupting, the rest of the interrupted turn is expected and its result ends it.
    */
   private detached(message: Record<string, unknown>, event: unknown): void {
+    if (this.tookCutNotice(message)) return;
     const limit = claudeUsageEvent(message); if (limit) void this.onUsage?.(limit).catch(() => {});
     if (message.type === "user" && this.unconfirmed.size) {
       const content = (message.message as { content?: unknown } | undefined)?.content;
@@ -435,6 +443,11 @@ export class ClaudeSession {
       });
       void this.close("crashed", "unexpected_output", true);
     }
+  }
+
+  private tookCutNotice(message: Record<string, unknown>): boolean {
+    if (!this.cutNotice || !isCutNotice(message)) return false;
+    this.cutNotice = false; return true;
   }
 
   private control(subtype: string, fields: Record<string, unknown>, timeoutMs: number): Promise<boolean> {

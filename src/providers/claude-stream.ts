@@ -10,11 +10,12 @@ import { claudeToolNameCategory } from "./claude-tool-rejection.js";
 import { claudeNativeToolName } from "./claude-tool-names.js";
 import { telemetry } from "../telemetry.js";
 import { ClaudeToolCorrection } from "./claude-tool-correction.js";
+import { abandonedFrom, cutFailure, failedToResume } from "./claude-cut.js";
 
 /** Native token counts of one API message. */
 export interface ClaudeTokens { input?: number; cacheRead?: number; cacheWrite?: number; output: number }
 export type ClaudeStreamEnd =
-  | { kind: "tool_use"; calls: OpenAIToolCall[]; usage: Usage; tokens: ClaudeTokens }
+  | { kind: "tool_use"; calls: OpenAIToolCall[]; usage: Usage; tokens: ClaudeTokens; /** The message was cut; these calls had finished. */ cut?: boolean }
   /** A text turn complete at its message_delta (endTurn streams only). */
   | { kind: "end_turn"; usage: Usage; tokens: ClaudeTokens }
   | { kind: "result"; result: Record<string, unknown>; usage: Usage; tokens: ClaudeTokens };
@@ -100,6 +101,11 @@ export class ClaudeMessageStream {
   private readonly correction: ClaudeToolCorrection;
   /** A non-text block started after text was streamed, so the next text begins a new paragraph. */
   private split = false;
+  /** The last message was cut and the CLI has not started another one yet. */
+  private cutPending = false;
+  /** Some message of this request was cut, so the result names only the resumed text. */
+  private resumed = false;
+  private forwardCut: boolean;
   /** Historical aliases are for replay; live calls must address this CLI's actual registered catalog. */
   private validateName(name: unknown, id?: unknown): void {
     if (this.correction.admit(name, id)) return;
@@ -114,7 +120,7 @@ export class ClaudeMessageStream {
     tools: OpenAITool[]; summaryVisible: boolean; endTurn?: boolean; nativeMcpOnly?: boolean; threadKey?: string; allowToolCorrection?: boolean;
   }) {
     this.tools = tools; this.summaryVisible = summaryVisible; this.endTurn = endTurn; this.bindings = claudeToolBindings(tools, true);
-    this.nativeMcpOnly = nativeMcpOnly; this.nativeNames = new Set(tools.map(claudeNativeToolName)); this.threadKey = threadKey;
+    this.nativeMcpOnly = nativeMcpOnly; this.forwardCut = !nativeMcpOnly; this.nativeNames = new Set(tools.map(claudeNativeToolName)); this.threadKey = threadKey;
     this.correction = new ClaudeToolCorrection(allowToolCorrection, this.nativeNames, threadKey);
   }
   /** Text streamed so far, for the final result's consistency check. */
@@ -125,6 +131,8 @@ export class ClaudeMessageStream {
   waitForNativeFrame<T>(next: Promise<T>): Promise<T> { return this.correction.wait(next); }
   /** A live session passes the calls an earlier request withheld; the CLI must reject each before its next model message. */
   expectRejections(ids: Iterable<string>): void { this.correction.expectRejections(ids); }
+  /** Called by a live session that tolerates the CLI's notice after a cut message; an older adopted one would crash on it. */
+  forwardFinishedCalls(): void { this.forwardCut = true; }
   /** Unavailable calls this request withheld from the caller while forwarding their declared siblings. */
   get withheldCalls(): string[] { return this.correction.withheld; }
 
@@ -165,21 +173,28 @@ export class ClaudeMessageStream {
     const limit = claudeUsageEvent(message); if (limit) { this.limit = limit; step.limit = limit; }
     const context = claudeContextFailure(message); if (context) throw context;
     // Preserve native failures; a refusal, cancellation or auth error never becomes a correction retry.
-    if (message.type === "assistant") { const failure = claudeFailure(message, this.limit); if (failure) throw failure; }
-    if (message.type === "result" && (message.is_error || message.subtype !== "success")) throw claudeResultFailure(message, this.limit);
+    if (message.type === "assistant") { const failure = claudeFailure(message, this.limit); if (failure) throw this.unresumed(failure); }
+    if (message.type === "result" && (message.is_error || message.subtype !== "success")) throw this.unresumed(claudeResultFailure(message, this.limit));
     this.correction.observe(message);
     if (message.type === "assistant") {
       this.assistant(message.message, step);
-    } else if (message.type === "stream_event" && message.event && typeof message.event === "object") this.event(message.event as Record<string, unknown>, step);
+    } else if (message.type === "stream_event" && message.event && typeof message.event === "object") this.event(message.event as Record<string, unknown>, step, abandonedFrom(message));
     else if (message.type === "result") this.result(message, step);
     return step;
   }
 
-  private event(event: Record<string, unknown>, step: ClaudeStreamStep): void {
+  private unresumed(failure: ProviderError): ProviderError {
+    if (!this.cutPending || !failedToResume(failure)) return failure;
+    this.recordCut("failed");
+    return cutFailure();
+  }
+
+  private event(event: Record<string, unknown>, step: ClaudeStreamStep, abandoned?: number): void {
     const message = this.message;
     if (event.type === "message_start") {
       const native = (event.message || {}) as { id?: unknown; usage?: unknown };
       this.resultTextStart = this.raw.length;
+      if (this.cutPending) { this.cutPending = false; this.recordCut("resumed"); }
       // The start snapshot's output count is provisional; the final count arrives in message_delta.
       this.message = { id: typeof native.id === "string" ? native.id : undefined, base: { ...tokensOf(native.usage), output: 0 }, blocks: new Map() };
     } else if (event.type === "content_block_start") {
@@ -211,6 +226,8 @@ export class ClaudeMessageStream {
       // Another stop (max_tokens) still makes the CLI run the complete calls on the gateway MCP server and wait forever.
       if (message.stop !== undefined && message.blocks.size) { message.ending = message.stop === "tool_use" ? "all" : "complete"; this.finish(message, step, message.ending); }
       else if (this.endTurn && message.stop === "end_turn" && !message.ended) { message.ended = true; const tokens = this.correction.finish(message.tokens); step.end = { kind: "end_turn", usage: claudeUsage(tokens), tokens }; }
+    } else if (event.type === "message_stop" && message && abandoned !== undefined) {
+      if (!message.ended) this.cutShort(message, abandoned, step);
     } else if (event.type === "message_stop" && message && message.blocks.size) {
       this.finish(message, step, message.stop === undefined || message.stop === "tool_use" ? "final" : "complete");
     }
@@ -259,17 +276,36 @@ export class ClaudeMessageStream {
     step.end = { kind: "tool_use", calls, usage: claudeUsage(tokens), tokens };
   }
 
+  /**
+   * The connection broke mid-message. A call without its `assistant` line never finished, whatever its streamed input
+   * looks like (no input yet would parse as `{}`), so it is dropped. Finished calls are the ones the CLI runs, and end
+   * the request. Without one the CLI resumes by itself, so the request keeps reading.
+   */
+  private cutShort(message: Message, from: number, step: ClaudeStreamStep): void {
+    const dropped = [...message.blocks].filter(([index, block]) => index >= from || block.input === undefined);
+    for (const [index] of dropped) message.blocks.delete(index);
+    this.correction.abandon(dropped.map(([, block]) => block.id));
+    this.cutPending = this.resumed = true; if (this.raw) this.split = true;
+    const kept = message.blocks.size;
+    this.recordCut("cut", { droppedCalls: dropped.length, finishedCalls: kept });
+    if (!kept) { message.ended = true; return; }
+    if (!this.forwardCut) throw cutFailure();
+    this.finish(message, step, "complete");
+    if (step.end?.kind === "tool_use") step.end.cut = true;
+  }
+  private recordCut(outcome: string, counts: Record<string, number> = {}): void { telemetry("claude_stream_cut", { outcome, ...counts, threadKey: this.threadKey }); }
+
   private result(result: Record<string, unknown>, step: ClaudeStreamStep): void {
     const windows = resultWindows(result); if (windows.length) step.contextWindows = windows;
     if (result.is_error || result.subtype !== "success") throw claudeResultFailure(result, this.limit);
     const text = typeof result.result === "string" ? result.result : this.raw;
-    // After native tool rejection the CLI reports the final API message's text,
+    // After native tool rejection or a cut message the CLI reports the final API message's text,
     // while the caller has already seen any text preceding the rejected call.
-    const prefix = text.startsWith(this.raw) || !this.correction.hasCorrections ? this.raw : this.raw.slice(this.resultTextStart);
+    const prefix = text.startsWith(this.raw) || !(this.correction.hasCorrections || this.resumed) ? this.raw : this.raw.slice(this.resultTextStart);
     if (!text.startsWith(prefix)) throw new ProviderError("inconsistent_stream", "Claude final text differs from streamed text");
     const suffix = text.slice(prefix.length);
     if (suffix) {
-      step.events.push({ type: "text", text: this.correction.hasCorrections && this.split ? `\n\n${suffix}` : suffix });
+      step.events.push({ type: "text", text: (this.correction.hasCorrections || this.resumed) && this.split ? `\n\n${suffix}` : suffix });
       this.raw += suffix; this.split = false;
     }
     // The last API message is this request's cost; result.usage sums every message of the turn.

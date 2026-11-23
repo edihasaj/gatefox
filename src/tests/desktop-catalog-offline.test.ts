@@ -66,6 +66,22 @@ test("client-only cached names survive a new adapter and an overwritten combined
   } finally { await live?.stop(); await restarted?.stop(); f.close(); }
 });
 
+test("an existing gateway chat opens on its saved model during an outage, while a removed model and a new turn do not", { timeout: 30000 }, async () => {
+  const f = await fixture(); let live; let restarted;
+  try {
+    live = await adapter(f);
+    const thread = (await live.rpc("thread/start", { model: "claude/model", cwd: f.directory })).thread;
+    await live.stop(); live = undefined; f.close();
+    restarted = await adapter(f);
+    // Naming the chat's gateway model or provider, as the desktop does, makes the model check strict.
+    const opened = await restarted.rpc("thread/resume", { threadId: thread.id, model: "claude/model" });
+    await restarted.rpc("thread/resume", { threadId: thread.id, modelProvider: "subscription_gateway" });
+    assert.equal(opened.thread.id, thread.id); assert.equal(opened.model, "claude/model");
+    await assert.rejects(restarted.rpc("thread/resume", { threadId: thread.id, model: "claude/removed" }));
+    await assert.rejects(restarted.rpc("turn/start", { threadId: thread.id, input: [] }), (error: unknown) => (error as { code: number }).code === -32001);
+  } finally { await live?.stop(); await restarted?.stop(); f.close(); }
+});
+
 test("offline cache contains only extra public rows and an opaque source identity", async () => {
   const f = await fixture();
   try {

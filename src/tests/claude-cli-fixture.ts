@@ -22,6 +22,10 @@ export interface FixtureReply {
   fail?: boolean;
   /** After the reply's text, starts a tool_use block for this non-gateway tool, then waits. */
   foreign?: string;
+  /** The connection breaks while this call is being written, after the reply's text and finished calls. `json` is its partial input. */
+  cut?: { tool: string; json: string };
+  /** With `cut` and no finished call, the CLI gives up instead of resuming with the next reply. */
+  cutGivesUp?: boolean;
   /** Emits one native authentication failure before any stream event. Test diagnostics only. */
   authenticationFailed?: string;
   /** Emits native reasoning or text, then an authentication failure. Test diagnostics only. */
@@ -37,6 +41,8 @@ export interface FixtureReply {
   exitAfterRefusal?: boolean;
 }
 export interface FixtureScenario { replies: FixtureReply[]; exitAtSpawn?: boolean; /** A live CLI exits when its first user message arrives, before any output. */ exitAtFirstUser?: boolean; perTurnEffort?: boolean; /** Never starts the MCP server, so no relay hello arrives. */ noMcp?: boolean;
+  /** Starts but never answers initialize, as on a Mac too loaded to boot it. */
+  ignoreInitialize?: boolean;
   /** Reject or delay the empty settings acknowledgment used to order queued steering. */
   rejectSteering?: boolean; delaySteeringMs?: number; crashSteering?: boolean;
   /** Acknowledge interruption without finishing the turn, to exercise the cancellation watchdog. */
@@ -215,10 +221,20 @@ async function fixtureMain(): Promise<void> {
       event({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(entry.input) } });
       out({ type: "assistant", message: { id, content: [{ type: "tool_use", id: entry.id, name: entry.name, input: entry.input }] } }); event({ type: "content_block_stop", index: index++ });
     }
+    if (reply.cut) {
+      event({ type: "content_block_start", index, content_block: { type: "tool_use", id: `toolu_cut_${counter}`, name: `mcp__gateway__${names.get(reply.cut.tool) ?? reply.cut.tool}`, input: {} } });
+      if (reply.cut.json) event({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: reply.cut.json } });
+      out({ type: "stream_event", event: { type: "message_stop" }, abandoned_blocks: { api_message_id: id, from_block_index: index } });
+      if (calls.length || reply.cutGivesUp) out({ type: "assistant", error: "server_error", is_api_error_message: true, api_error: "connection_failed",
+        message: { id: `synthetic_${counter}`, model: "<synthetic>", content: [{ type: "text", text: "API Error: Connection lost mid-response. The response above may be incomplete." }] } });
+      if (reply.cutGivesUp && !calls.length) { out({ type: "result", subtype: "success", is_error: true, result: "API Error: Connection lost mid-response.", usage: usage(1) }); if (!live) process.exit(0); return; }
+      if (!calls.length) { out({ type: "user", isSynthetic: true, message: { role: "user", content: [{ type: "text", text: "Your response above was cut off mid-stream." }] } }); await play(nextReply()); return; }
+    } else
     event({ type: "message_delta", delta: { stop_reason: calls.length ? "tool_use" : "end_turn" }, usage: usage(7) });
     // The real CLI keeps printing housekeeping lines after a tool turn's request has ended.
     await new Promise(resolve => setTimeout(resolve, 20));
-    event({ type: "message_stop" }); out({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "five_hour", resetsAt: 4000000000 } });
+    if (!reply.cut) event({ type: "message_stop" });
+    out({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "five_hour", resetsAt: 4000000000 } });
     if (!calls.length) {
       out({ type: "result", subtype: "success", is_error: false, result: reply.text ?? "", usage: usage(7), modelUsage: {} });
       if (!live) process.exit(0);
@@ -255,6 +271,7 @@ async function fixtureMain(): Promise<void> {
     if (message.type === "control_request") {
       const subtype = message.request.subtype as string;
       log({ control: subtype, ...(subtype === "apply_flag_settings" ? { effort: message.request.settings?.effortLevel } : {}) });
+      if (subtype === "initialize" && scenario.ignoreInitialize) return;
       const barrier = subtype === "apply_flag_settings" && Object.keys(message.request.settings || {}).length === 0;
       if (barrier && scenario.crashSteering) { mcp?.kill(); process.exit(9); }
       const respond = () => out({ type: "control_response", response: { subtype: barrier && scenario.rejectSteering ? "error" : "success", request_id: message.request_id, response: {} } });

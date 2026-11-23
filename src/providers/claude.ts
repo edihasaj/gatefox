@@ -20,12 +20,13 @@ import { choiceBlock, leadingInstructions, markCustomCalls, renderConversation, 
 import { compactionCheckpoint, retireScope, refusalHoldRelease, prepareClaudeToolNames } from "./claude-session-registry.js";
 import { isReplaySafeAuthentication, markReplaySafeAuthentication, nativeAuthenticationFailure } from "./claude-auth.js";
 import { isNativeOutput } from "./claude-native-output.js";
+import { isCutFailure } from "./claude-cut.js";
 import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveModule, type ClaudeLiveOutcome } from "./claude-live-contract.js";
 import { telemetry } from "../telemetry.js";
 import { claudeReplayBudget, ClaudeReplayBlocked, type ClaudeReplayBudget } from "./claude-replay-budget.js";
 import { providerCommand } from "../provider-tool-runtime.js";
 import { claudeLiveWarmup } from "./claude-cache-warmup.js";
-import { CliContinuityUnavailable, standaloneCliReasons, unidentifiedCliHistory } from "./cli-continuity.js";
+import { claudeStarted, claudeStartTimeout, CliContinuityUnavailable, standaloneCliReasons, unidentifiedCliHistory } from "./cli-continuity.js";
 import { explainClaudeKeychainFailure } from "../mac-login-keychain.js";
 
 export function claudeEffort(config: ProviderConfig | undefined, request: ResponsesRequest): string | undefined {
@@ -170,9 +171,10 @@ export class ClaudeSubscription implements Provider {
       if (!live || live.outcome.kind === "fallback" && !standaloneCliReasons.has(live.outcome.reason)) {
         const reason = live?.outcome.kind === "fallback" ? live.outcome.reason : "unavailable";
         telemetry("claude_session", { outcome: "blocked", missReason: reason, threadKey: run.threadKey });
-        throw new CliContinuityUnavailable("Claude", reason);
+        throw reason === "initialize_timeout" ? claudeStartTimeout(sessionKey(this.scope(), conversationId)) : new CliContinuityUnavailable("Claude", reason);
       }
       if (live?.outcome.kind === "stream") {
+        claudeStarted(sessionKey(this.scope(), conversationId));
         const releaseHold = refusalHoldRelease(this.scope(), conversationId);
         try { for await (const event of live.outcome.events) {
           authVisible = true;
@@ -181,7 +183,7 @@ export class ClaudeSubscription implements Provider {
         catch (error) {
           const rejectedTool = rejectedClaudeTool(error);
           if (rejectedTool) { releaseHold(); throw rejectedTool; }
-          if (providerRefusal(error)) releaseHold();
+          if (providerRefusal(error) || isCutFailure(error)) releaseHold();
           if (!authVisible && isReplaySafeAuthentication(error) && await beginRecovery(error)) {
             // A failed live session synchronously removes itself from the registry; the
             // cancellable backoff also gives its killed CLI time to exit before this spawn.
