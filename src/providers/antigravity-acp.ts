@@ -16,9 +16,10 @@ import { geminiAcpFailure } from "./gemini-live-session.js";
  *   It caches their schemas under `$HOME/.gemini/antigravity-cli/mcp/gateway/` and the model sometimes reads one with
  *   its native `read_file` before calling the tool; that read of the gateway's own catalog is the one native action the
  *   gateway allows.
- * - Every native action asks first (`toolPermission: "strict"`, antigravity-home.ts) and announces itself `in_progress`
- *   before it asks, so an announcement alone proves nothing ran. A refused call ends `failed`; only `completed` proves
- *   the CLI ran a tool of its own.
+ * - A hook decides before every tool call (antigravity-hook.ts), because `toolPermission: "strict"` does not make web
+ *   search and subagents ask. A call announces itself `in_progress` before the hook or the permission request, so an
+ *   announcement alone proves nothing ran. A refused call ends `failed`; only `completed` proves the CLI ran a tool of
+ *   its own.
  */
 export const antigravityLimits: AcpSessionLimits = { startMs: 60000, callQuietMs: 400, maxDenied: 25 };
 export const antigravityTestHooks: AcpTestHooks = {};
@@ -56,7 +57,7 @@ export function antigravityPermission(params: Record<string, unknown>, catalog: 
   return callerTool(name, catalog) || antigravitySchemaRead(name, input) ? choose(params, "allow_once") : choose(params, "reject_once");
 }
 
-/** Ends the session when the CLI reports that it ran a tool of its own, which only a failed permission layer allows. */
+/** Ends the session when the CLI reports that it ran a tool of its own, which only a failed hook and permission layer allow. */
 export function antigravityToolGuard(update: Record<string, unknown>, catalog: ReadonlySet<string>): string | undefined {
   const { name, input, status } = identify(update);
   if (status !== "completed" || name === undefined || callerTool(name, catalog) || antigravitySchemaRead(name, input)) return undefined;

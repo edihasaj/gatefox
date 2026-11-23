@@ -4,9 +4,10 @@
 - The Gemini provider can run through Antigravity CLI (`agy`) with `"geminiCli": "antigravity"`, which
   brings Gemini 4 Neon, Carbon, Argon and Hydrogen to a Google AI Pro or Ultra subscription. Google stopped
   serving the Gemini CLI for those plans on 18 June 2026. Each conversation keeps one live `agy acp`
-  process with a private, disposable home. The caller runs every tool, and GateFox refuses every native
-  `agy` action except reading the tool schemas the CLI cached from GateFox. Sign in with
-  `gateway login gemini` in a terminal.
+  process with a private, disposable home. The caller runs every tool: a hook in that home denies every
+  native `agy` tool before it starts, except reading the tool schemas the CLI cached from GateFox. Without
+  the hook, `agy` ran web search and subagents without asking. Sign in with `gateway login gemini` in a
+  terminal.
 - Gemini sign-in no longer ends with "127.0.0.1 refused to connect" in the browser. The
   login helper stopped the Gemini CLI the moment its credential appeared, before the CLI
   cached the Google account and redirected the browser to its success page. It now waits

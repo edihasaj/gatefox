@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateConfig } from "../config.js";
@@ -106,6 +107,39 @@ test("a session gets a private copy of the sign-in, and only a refreshed usable 
     await writeFile(antigravityTokenFile(scratch), token("refreshed"));
     await provisioned.release();
     assert.equal(await readFile(antigravityTokenFile(home), "utf8"), token("refreshed"));
+  } finally { await rm(home, { recursive: true, force: true }); await rm(root, { recursive: true, force: true }); }
+});
+
+test("the session hook denies every native tool before it runs and passes on only caller tools and schema reads", async () => {
+  const home = await mkdtemp(join(tmpdir(), "agy home's-"));
+  const root = await sessionRoot();
+  try {
+    await ensureAntigravityHome(home, { requireLogin: false });
+    await writeFile(antigravityTokenFile(home), token(), { mode: 0o600 });
+    await provisionAntigravityHome(home, root);
+    const config = JSON.parse(await readFile(join(root, "home/.gemini/config/hooks.json"), "utf8"));
+    const [{ matcher, hooks: [hook] }] = config.gateway.PreToolUse;
+    assert.equal(matcher, "*");
+    const run = (input: string): string => JSON.parse(spawnSync("/bin/sh", ["-c", hook.command], { input, encoding: "utf8" }).stdout).decision;
+    const decide = (name: string, args: Record<string, unknown> = {}): string => run(JSON.stringify({ toolCall: { name, args } }));
+
+    // Antigravity CLI 1.5.14 runs the first two without a permission request.
+    for (const name of ["search_web", "invoke_subagent", "define_subagent", "generate_image", "schedule", "run_command", "list_dir", "mcp_other_exec_command", "a_future_tool"]) {
+      assert.equal(decide(name), "deny", name);
+    }
+    assert.equal(decide("mcp_gateway_exec_command"), "allow");
+    for (const input of ["", "not json", "{}", JSON.stringify({ toolCall: null })]) assert.equal(run(input), "deny");
+
+    const cli = join(root, "home/.gemini/antigravity-cli"); const schemas = join(cli, "mcp/gateway");
+    await mkdir(schemas, { recursive: true });
+    await writeFile(join(schemas, "exec_command.json"), "{}");
+    await symlink(antigravityTokenFile(join(root, "home")), join(schemas, "link.json"));
+    assert.equal(decide("read_file", { Path: join(schemas, "exec_command.json") }), "allow");
+    assert.equal(decide("view_file", { AbsolutePath: join(schemas, "exec_command.json") }), "allow");
+    for (const path of [join(cli, "antigravity-oauth-token"), `${schemas}/../../antigravity-oauth-token`, join(schemas, "link.json"), schemas, join(schemas, "missing.json"), "/etc/passwd"]) {
+      assert.equal(decide("read_file", { Path: path }), "deny", path);
+    }
+    assert.equal(decide("read_file"), "deny");
   } finally { await rm(home, { recursive: true, force: true }); await rm(root, { recursive: true, force: true }); }
 });
 
