@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { withPrivateFileLock } from "../private-file-lock.js";
 import type { AcpProvisioned } from "./acp-driver.js";
+import { writeAntigravityHook } from "./antigravity-hook.js";
 import { writeGeminiPrivateFile } from "./gemini-home.js";
 import { markGeminiScratchOwner, sweepGeminiScratchOnce } from "./gemini-scratch-sweep.js";
 import { ProviderError } from "./provider.js";
@@ -43,11 +44,12 @@ export function antigravityEnv(home: string): NodeJS.ProcessEnv {
 }
 
 /**
- * The managed `settings.json` of every session home. `strict` makes every native action, file reads included, ask the
+ * The managed `settings.json` of every session home. `strict` makes file and shell actions, reads included, ask the
  * gateway first, and the gateway refuses all of them except reading the tool schemas the CLI cached from the gateway's
- * own MCP server (antigravity-acp.ts). The deny rules repeat that refusal for every native action kind. `agentMode` is
- * the standard mode, never `auto`, which approves "safe" commands without asking, and AI credits are never spent after
- * the plan's quota runs out.
+ * own MCP server (antigravity-acp.ts). Some native tools run without asking even in `strict`, so the hook in
+ * antigravity-hook.ts decides before every call. The deny rules repeat the refusal for every native action kind.
+ * `agentMode` is the standard mode, never `auto`, which approves "safe" commands without asking, and AI credits are
+ * never spent after the plan's quota runs out.
  */
 export function antigravityManagedSettings(): string {
   return `${JSON.stringify({
@@ -99,8 +101,8 @@ const readText = (path: string): Promise<string | undefined> => readFile(path, "
 });
 
 /**
- * One process's disposable home inside its session folder: the managed settings, an empty MCP configuration (only the
- * gateway's server, passed in `session/new`, reaches the session), and a 0600 copy of the sign-in. A token the CLI
+ * One process's disposable home inside its session folder: the managed settings, the tool hook, an empty MCP configuration
+ * (only the gateway's server, passed in `session/new`, reaches the session), and a 0600 copy of the sign-in. A token the CLI
  * refreshed is carried back when the session ends, unless a newer sign-in replaced the one handed out meanwhile.
  */
 export async function provisionAntigravityHome(home: string, directory: string): Promise<AcpProvisioned> {
@@ -111,6 +113,7 @@ export async function provisionAntigravityHome(home: string, directory: string):
   await chmod(scratch, 0o700);
   await writeFile(join(antigravityCliDir(scratch), "settings.json"), antigravityManagedSettings(), { mode: 0o600, flag: "wx" });
   await writeFile(join(antigravityConfigDir(scratch), "mcp_config.json"), `${JSON.stringify({ mcpServers: {} })}\n`, { mode: 0o600, flag: "wx" });
+  await writeAntigravityHook(antigravityConfigDir(scratch), join(antigravityCliDir(scratch), "mcp", "gateway"));
   const before: Partial<Record<typeof carried[number], string>> = {};
   for (const name of carried) {
     const text = await readText(join(antigravityCliDir(home), name));

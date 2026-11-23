@@ -375,16 +375,29 @@ current, so an unavailable model is never swapped for another one. The gateway's
 
 **Private home.** `agy` keeps its sign-in, settings and a record of every conversation under
 `$HOME/.gemini/antigravity-cli/`. Each process runs with `HOME` set to a disposable folder inside its session folder.
-That folder holds the managed `settings.json`, an empty `~/.gemini/config/mcp_config.json`, and 0600 copies of the
-sign-in and `installation_id`. A token the CLI refreshed is carried back when the session ends, unless a newer sign-in
+That folder holds the managed `settings.json`, the tool hook, an empty `~/.gemini/config/mcp_config.json`, and 0600
+copies of the sign-in and `installation_id`. A token the CLI refreshed is carried back when the session ends, unless a newer sign-in
 replaced the copy that was handed out. The CLI's environment is only `HOME`, `PATH`, `TMPDIR`, `USER`, `LOGNAME` and
 the locale, so no API key or Google Cloud credential can switch it off the subscription.
 
-**Native tools.** `agy` has its own shell, file, web and browser-agent tools. The managed settings set
-`toolPermission` to `strict`, so every native action asks the gateway first, including file reads. They also set
-`agentMode` to the standard mode (never `auto`, which approves "safe" commands itself), keep `useG1Credits` off so
-AI credits are never spent after the plan's quota runs out, and deny every command, write and URL action. The deny
-rules are a second layer only: with 1.5.14, `agy` sometimes asked for a denied command instead of refusing it.
+**Native tools.** `agy` has its own shell, file, web, image, scheduling and subagent tools, and `agy acp` has no flag
+that removes them. Three layers keep them off:
+
+| Layer | What it does |
+| --- | --- |
+| `PreToolUse` hook (`antigravity-hook.ts`) | Runs before every tool call. It denies every tool except `mcp_gateway_*` and reads of the cached gateway schemas, and a denied call never starts. `allow` only passes the call on to the permission request below. |
+| Permission requests (`antigravity-acp.ts`) | `toolPermission: "strict"` makes file and shell actions ask the gateway, which answers as in the next table. |
+| Completed-call guard | A native tool reported `completed` ends the session. |
+
+The hook exists because permissions are not enough. With 1.5.14 in `strict`, `search_web` and `invoke_subagent` ran
+without any permission request, and 2.2.3, which had no hook, could only end the session afterwards. The hook fails
+closed: when its command crashed or did not exist, the CLI refused the call. A broken hook therefore also stops the
+caller's tools. The hook script and `hooks.json` are written into each session's own `~/.gemini/config/`.
+
+The managed settings also set `agentMode` to the standard mode (never `auto`, which approves "safe" commands itself),
+keep `useG1Credits` off so AI credits are never spent after the plan's quota runs out, and deny every command, write
+and URL action. The deny rules are an extra layer only: with 1.5.14, `agy` sometimes asked for a denied command
+instead of refusing it.
 
 The gateway answers every permission request (`antigravity-acp.ts`):
 
@@ -395,8 +408,8 @@ The gateway answers every permission request (`antigravity-acp.ts`):
 | Anything else | `reject_once`, so the model continues without it |
 
 The CLI caches MCP tool schemas on disk and the model sometimes reads one with `read_file` before calling the tool,
-which is why that one native read is allowed. Every call is announced `in_progress` before its permission request, and
-a refused call ends `failed`. A native tool reported `completed` therefore means the CLI ran something of its own, and
+which is why that one native read is allowed. Every call is announced `in_progress` before the hook runs, and a
+refused call ends `failed`. A native tool reported `completed` therefore means the CLI ran something of its own, and
 the session ends with `invalid_tool_call`.
 
 **Prompts** are framed like the Gemini CLI's, because `agy` also runs a prompt that starts with `/` as one of its own

@@ -1,13 +1,20 @@
 # Changelog
 
+## 2.2.4 — 2026-11-23
+
+- Gemini 4 through Antigravity CLI can no longer run a tool of its own. In 2.2.3 `agy` ran web search and
+  subagents without asking GateFox, which could only end the chat afterwards. Each session's private home
+  now has a hook that denies every native `agy` tool before it starts, except reading the tool schemas the
+  CLI cached from GateFox. If the hook itself fails, `agy` refuses the call.
+
 ## 2.2.3 — 2026-11-23
 
 - The Gemini provider can run through Antigravity CLI (`agy`) with `"geminiCli": "antigravity"`, which
   brings Gemini 4 Neon, Carbon, Argon and Hydrogen to a Google AI Pro or Ultra subscription. Google stopped
   serving the Gemini CLI for those plans on 18 June 2026. Each conversation keeps one live `agy acp`
-  process with a private, disposable home. The caller runs every tool, and GateFox refuses every native
-  `agy` action except reading the tool schemas the CLI cached from GateFox. Sign in with
-  `gateway login gemini` in a terminal.
+  process with a private, disposable home. The caller runs tools, and GateFox refuses the file and shell
+  actions `agy` asks for. Correction: web search and subagents ran without asking; 2.2.4 blocks them.
+  Sign in with `gateway login gemini` in a terminal.
 
 ## 2.2.2 — 2026-11-23
 
