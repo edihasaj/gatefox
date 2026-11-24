@@ -43,11 +43,11 @@ test("candidate-specific reasoning is explicit and must match a supported candid
 });
 
 test("managed aliases are bounded, well formed and cannot collide with provider aliases", () => {
-  refuses({ routes: {} }, /1 to 8/);
-  const nine = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`managed/r${i}`, route()]));
-  refuses({ routes: nine }, /1 to 8/);
-  const eight = Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`managed/r${i}`, route()]));
-  assert.equal(Object.keys(validateManagedRouting({ routes: eight }, providers()).routes).length, 8);
+  refuses({ routes: {} }, /1 to 16/);
+  const seventeen = Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`managed/r${i}`, route()]));
+  refuses({ routes: seventeen }, /1 to 16/);
+  const sixteen = Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`managed/r${i}`, route()]));
+  assert.equal(Object.keys(validateManagedRouting({ routes: sixteen }, providers()).routes).length, 16);
   for (const alias of ["routine", "managed/", "managed/Routine", "managed/1a", "managed/a_b", `managed/a${"b".repeat(32)}`, "other/routine", "managed/a/b"]) {
     refuses({ routes: { [alias]: route() } }, /Managed aliases/, providers());
   }
@@ -70,7 +70,7 @@ test("candidates are unique, bounded, existing aliases", () => {
 });
 
 test("numeric bounds are enforced", () => {
-  for (const [key, bad, good] of [["maxContextBytes", [4095, 4194305], [4096, 4194304]], ["contextWindow", [4095, 262145], [4096, 32768]], ["minRemainingPercent", [0, 51], [1, 50]]] as const) {
+  for (const [key, bad, good] of [["maxContextBytes", [4095, 16777217], [4096, 16777216]], ["contextWindow", [4095, 1048577], [4096, 32768]], ["minRemainingPercent", [0, 51], [1, 50]]] as const) {
     for (const value of bad) assert.throws(() => valid({ [key]: value }), new RegExp(key), `${key}=${value}`);
     for (const value of good) assert.equal(valid({ [key]: value }).routes["managed/routine"]![key], value);
   }
@@ -167,4 +167,21 @@ test("validation does not mutate its input", () => {
   validateManagedRouting(input, list);
   assert.deepEqual(input, before);
   assert.deepEqual(list, copy);
+});
+
+test("a route can advertise a candidate's full window, but never more than its smallest candidate", () => {
+  const list = providers();
+  for (const [alias, window] of [["local/qwen", 1048576], ["sub/sol", 872000], ["sub2/sonnet", 575000], ["paid/flash", 1048576]] as const) list.find(p => Object.hasOwn(p.models, alias))!.modelMetadata![alias]!.contextWindow = window;
+  const strong = { purpose: "strong", candidates: ["sub/sol"], allowPaid: false };
+  assert.equal(valid({ ...strong, contextWindow: 872000, maxContextBytes: 16777216, autoCompactTokenLimit: 784800 }, list).routes["managed/routine"]!.contextWindow, 872000);
+  assert.throws(() => valid({ ...strong, contextWindow: 872001 }, list), /below the route's 872001/);
+  assert.throws(() => valid({ ...strong, candidates: ["sub/sol", "sub2/sonnet"], contextWindow: 872000 }, list), /sub2\/sonnet context window/);
+  assert.throws(() => valid({ ...strong, contextWindow: 872000, autoCompactTokenLimit: 784801 }, list), /autoCompactTokenLimit/);
+});
+
+test("selectBy accepts order or headroom and is absent from policies that do not set it", () => {
+  assert.equal(valid({ selectBy: "headroom" }).routes["managed/routine"]!.selectBy, "headroom");
+  assert.equal(valid({ selectBy: "order" }).routes["managed/routine"]!.selectBy, "order");
+  assert.ok(!("selectBy" in valid().routes["managed/routine"]!), "old policy fingerprints retain their exact shape");
+  for (const bad of ["most", true, 1, null]) assert.throws(() => valid({ selectBy: bad }), /selectBy/);
 });

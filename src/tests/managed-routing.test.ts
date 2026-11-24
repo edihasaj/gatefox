@@ -135,12 +135,14 @@ test("compaction has bounded recovery room on the persisted worker binding only"
   factsRows(facts)[0].status = "unavailable";
   await assert.rejects(reopened.resolve(config, large, recovery, facts), { code: "managed_route_unavailable" });
 }));
-test("compaction recovery cannot exceed the global four MiB ceiling", () => fixture(async (root, router) => {
+test("compaction recovery cannot exceed the global 16 MiB ceiling", () => fixture(async (root, router) => {
   const config = managedFixture(root), facts = managedFacts();
-  config.managedRouting!.routes["managed/routine"]!.maxContextBytes = 4194304;
+  config.managedRouting!.routes["managed/routine"]!.maxContextBytes = 8 * 1024 * 1024;
   const context = { threadId: "compact-ceiling" };
   await router.resolve(config, managedRequest(), context, facts);
-  await assert.rejects(router.resolve(config, managedRequest({ input: "x".repeat(4194304) }), { ...context, requestKind: "compaction" }, facts), { code: "context_length_exceeded" });
+  // Four times 8 MiB would be 32 MiB; the ceiling holds recovery at 16 MiB.
+  assert.equal((await router.resolve(config, managedRequest({ input: "x".repeat(12 * 1024 * 1024) }), { ...context, requestKind: "compaction" }, facts))?.reused, true);
+  await assert.rejects(router.resolve(config, managedRequest({ input: "x".repeat(16 * 1024 * 1024) }), { ...context, requestKind: "compaction" }, facts), { code: "context_length_exceeded" });
 }));
 test("configuration and configured provider binding changes cannot silently move a saved worker", () => fixture(async (root, router) => {
   const config = managedFixture(root), facts = managedFacts(), context = { threadId: "bound" };
@@ -169,4 +171,29 @@ test("native tool requirements cannot be silently discarded by selecting a diffe
   assert.equal((await router.resolve(config, managedRequest({ tools: [{ type: "tool_search" }] }), { threadId: "search-worker" }, facts))?.alias, "sub/sol");
   delete config.providers[1].toolSearch;
   await assert.rejects(router.resolve(config, managedRequest({ tools: [{ type: "tool_search" }] }), { threadId: "unsupported-search" }, facts), { code: "managed_route_unavailable" });
+}));
+
+test("a headroom route picks the subscription with the most quota left and keeps that account for the worker", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts(), rows = factsRows(facts), at = new Date(managedNow).toISOString();
+  config.managedRouting!.routes["managed/review"] = { purpose: "strong", candidates: ["sub/sol", "sub2/sonnet"], maxContextBytes: 262144, contextWindow: 32768, minRemainingPercent: 2, allowPaid: false, selectBy: "headroom" };
+  const review = (threadId: string) => router.resolve(config, managedRequest({ model: "managed/review" }), { threadId }, facts);
+  rows[1].quota = { fresh: true, observedAt: at, remainingPercent: 20 }; rows[2].quota = { fresh: true, observedAt: at, remainingPercent: 80 };
+  assert.equal((await review("first"))?.alias, "sub2/sonnet", "the later candidate with more quota wins");
+  rows[1].quota = { fresh: true, observedAt: at, remainingPercent: 90 };
+  assert.equal((await review("first"))?.alias, "sub2/sonnet", "an existing worker keeps its account");
+  assert.equal((await review("second"))?.alias, "sub/sol", "a new worker follows the new headroom");
+  rows[2].quota = { fresh: true, observedAt: at, remainingPercent: 90 };
+  assert.equal((await review("tie"))?.alias, "sub/sol", "a tie keeps the configured order");
+  rows[1].status = "limited"; rows[1].reasons = ["quota_exhausted"];
+  assert.equal((await review("limited"))?.alias, "sub2/sonnet", "a limited account is not eligible however much quota it reports");
+  rows[2].quota = { fresh: false, observedAt: at, remainingPercent: 99 };
+  await assert.rejects(review("stale"), { code: "managed_route_unavailable" });
+}));
+test("headroom never moves a local or preferred Flash candidate behind the subscriptions", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts(), at = new Date(managedNow).toISOString();
+  config.managedRouting!.routes["managed/routine"]!.selectBy = "headroom";
+  factsRows(facts)[2].quota = { fresh: true, observedAt: at, remainingPercent: 99 };
+  assert.equal((await router.resolve(config, managedRequest(), { threadId: "local" }, facts))?.alias, "local/qwen");
+  factsRows(facts)[0].status = "unavailable";
+  assert.equal((await router.resolve(config, managedRequest(), { threadId: "sub" }, facts))?.alias, "sub2/sonnet");
 }));

@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.2.6 — 2026-11-24
+
+- Managed worker routes can offer a model's full window. A route may advertise up to 1,048,576 tokens (never
+  more than its smallest candidate allows) and accept requests up to 16 MiB, and a configuration may hold 16
+  routes. Until now routes stopped at 262,144 tokens, 4 MiB and 8 routes, so a Sonnet, Opus, Sol or Terra
+  worker behind a route got less than half of its window. Existing routes and worker pins are unchanged.
+- A managed route can set `selectBy: "headroom"` to start each new worker on the eligible subscription account
+  with the most quota left, instead of the first one in its list. The choice is pinned for that worker.
+
 ## 2.2.5 — 2026-11-23
 
 - A Claude chat no longer stops with `malformed_tool_call` when the computer sleeps or the network drops

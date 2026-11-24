@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { GatewayConfig, ProviderConfig } from "./config.js";
 import type { ResponsesRequest } from "./protocol/types.js";
 import { ProviderError, type InferenceContext } from "./providers/provider.js";
-import { managedCandidateKind, type ManagedRoutePolicy } from "./managed-routing-config.js";
+import { managedCandidateKind, managedContextBytesLimit, type ManagedRoutePolicy } from "./managed-routing-config.js";
 import { ManagedRoutePins, managedWorkerKey, type ManagedRoutePin } from "./managed-route-pins.js";
 import { freshFor } from "./availability/report.js";
 
@@ -57,6 +57,22 @@ function confirmedBlocked(row: Row, policy: ManagedRoutePolicy, now: number): bo
   return fresh(quota, freshFor.quota, now) && typeof quota.remainingPercent === "number" && Number.isFinite(quota.remainingPercent)
     && quota.remainingPercent >= 0 && quota.remainingPercent <= policy.minRemainingPercent;
 }
+const remaining = (row: Row | undefined): number => { const value = object(row?.quota).remainingPercent; return typeof value === "number" && Number.isFinite(value) ? value : -1; };
+type Candidate = { alias: string; provider?: ProviderConfig };
+/**
+ * The first eligible candidate's tier still decides (a local or preferred Flash candidate keeps its place); within the
+ * subscription tier, the account with the most fresh quota left wins, and a tie keeps the configured order.
+ */
+function mostHeadroom(open: Candidate[], rows: Map<unknown, Row>): Candidate | undefined {
+  const first = open[0];
+  if (!first?.provider || managedCandidateKind(first.provider, first.provider.models[first.alias]!) !== "subscription") return first;
+  let best = first;
+  for (const c of open) {
+    if (managedCandidateKind(c.provider!, c.provider!.models[c.alias]!) !== "subscription") continue;
+    if (remaining(rows.get(c.provider!.id)) > remaining(rows.get(best.provider!.id))) best = c;
+  }
+  return best;
+}
 export interface ManagedRouteDecision { alias: string; providerId: string; reused: boolean; contextBytes: number; reasoningEffort?: string }
 
 export function managedReasoningRequest(request: ResponsesRequest, effort: string | undefined): ResponsesRequest {
@@ -77,7 +93,7 @@ export class ManagedRouter {
     // Summarizing accumulated history needs more room than an ordinary turn. This
     // allowance never creates a binding or moves an existing worker to another provider.
     const compacting = context.requestKind === "compaction";
-    const byteLimit = compacting ? Math.min(4 * policy.maxContextBytes, 4194304) : policy.maxContextBytes;
+    const byteLimit = compacting ? Math.min(4 * policy.maxContextBytes, managedContextBytesLimit) : policy.maxContextBytes;
     if (contextBytes > byteLimit) failure("context_length_exceeded", compacting
       ? "Managed compaction exceeds its recovery byte budget; start a fresh bounded worker with an explicit handoff"
       : "Managed worker context exceeds its byte budget; compact it in the client or start a fresh bounded worker", 400);
@@ -107,7 +123,8 @@ export class ManagedRouter {
         // Opaque provider state cannot be assigned a new account without an existing pin.
         if (request.previous_response_id || /"encrypted_content"|"encryptedFunctionArgs"/.test(JSON.stringify(request.input)))
           return failure("managed_route_state_unbound", "Provider-specific continuation needs its original managed pin; start a fresh worker with a plaintext handoff", 400);
-        const selected = candidates.find(c => allowed(c.alias, c.provider!, false));
+        const open = candidates.filter(c => allowed(c.alias, c.provider!, false));
+        const selected = policy.selectBy === "headroom" ? mostHeadroom(open, rows) : open[0];
         if (!selected?.provider) return failure("managed_route_unavailable", "No eligible managed provider has confirmed capacity; unknown quota and busy queues do not authorize paid escalation");
         const value: ManagedRoutePin = { schema: "managed-route-pin.v1", alias: selected.alias, providerId: selected.provider.id,
           upstreamModel: selected.provider.models[selected.alias]!, bindingFingerprint: binding(selected.provider, selected.provider.models[selected.alias]!), policyFingerprint: fingerprint };
