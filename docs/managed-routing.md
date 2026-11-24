@@ -69,6 +69,24 @@ and context, and the existing Flash-only model restriction. Strong/review polici
 cannot select this preference. Omitted settings retain the previous admission
 rule and policy fingerprints. Use a fresh alias to preserve existing worker pins.
 
+A policy can set `selectBy: "headroom"` (the default is `"order"`). The first
+eligible candidate's tier still decides, so a local or preferred Flash candidate
+keeps its place. Within the subscription tier, the account with the most fresh
+quota left wins, from the same quota facts (`remainingPercent`, normally from
+spendwatch) that admission checks; a tie keeps the configured order. An account
+marked `limited`, or with stale or unknown quota, is not eligible however much
+quota it last reported. The choice is made once and pinned like any other, so an
+existing worker never moves when another account later has more room. Omitting
+the field keeps a policy's fingerprint unchanged.
+
+A configuration holds 1 to 16 managed routes. `contextWindow` accepts 4,096 to
+1,048,576 tokens and must not exceed any candidate's own window (after its
+`contextWindowCap`), so a route can give its workers the smallest candidate's
+full window: 872,000 for Sol and Terra, 575,000 for Claude through the Gateway,
+1,048,576 for DeepSeek Flash. `maxContextBytes` accepts 4,096 bytes to 16 MiB.
+`autoCompactTokenLimit` must fit inside 90% of the window. Until 2.2.6 the
+limits were 8 routes, 262,144 tokens and 4 MiB.
+
 The HTTP request uses the managed alias as its `model` and supplies a stable
 `thread-id` or `session-id`. Managed aliases are internal worker policies, omitted
 from `/v1/models` and the normal desktop model picker. `/v1/model-catalog` retains
@@ -132,7 +150,7 @@ summarizes or changes caller messages, tool results, instructions or permissions
 The client must compact its own context or start a fresh bounded worker.
 
 A request marked `compaction` has a separate recovery allowance of four times
-`maxContextBytes`, capped at 4 MiB. It requires an existing durable worker pin
+`maxContextBytes`, capped at 16 MiB. It requires an existing durable worker pin
 and uses that same provider with the same capacity checks. It cannot establish a
 new binding or bypass an unavailable provider. Requests beyond the recovery
 allowance still fail before inference; subsequent ordinary turns retain the

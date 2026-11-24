@@ -12,6 +12,8 @@ export interface ManagedRoutePolicy {
   candidateReasoningEfforts?: Record<string, string>;
   autoCompactTokenLimit?: number;
   preferPaidFlash?: boolean;
+  /** `headroom`: among eligible subscriptions, the account with the most fresh quota left wins; `order` (the default) keeps list order. */
+  selectBy?: "order" | "headroom";
 }
 export interface ManagedRoutingSettings { routes: Record<string, ManagedRoutePolicy> }
 
@@ -21,7 +23,11 @@ const flashPattern = /^deepseek\/deepseek-v4(?:\.\d+)?-flash((?:[:.-][a-z0-9-]+)
 const forbiddenSuffix = /(?:^|[:.-])(?:pro|glm)(?=$|[:.-])/i;
 const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const rank: Record<ManagedCandidateKind, number> = { local: 0, subscription: 1, "paid-flash": 2 };
-const routeKeys = ["purpose", "candidates", "maxContextBytes", "contextWindow", "minRemainingPercent", "allowPaid", "candidateReasoningEfforts", "autoCompactTokenLimit", "preferPaidFlash"];
+const routeKeys = ["purpose", "candidates", "maxContextBytes", "contextWindow", "minRemainingPercent", "allowPaid", "candidateReasoningEfforts", "autoCompactTokenLimit", "preferPaidFlash", "selectBy"];
+/** Up to 16 routes; a window up to DeepSeek Flash's 1,048,576 tokens; a request up to 16 MiB, which holds about a million tokens of text. */
+export const managedRouteLimit = 16;
+export const managedContextWindowLimit = 1048576;
+export const managedContextBytesLimit = 16 * 1024 * 1024;
 
 function url(value: string | undefined): URL | undefined {
   try { return value ? new URL(value) : undefined; } catch { return undefined; }
@@ -67,7 +73,7 @@ export function validateManagedRouting(value: unknown, providers: ProviderConfig
   strict(settings, ["routes"], "managedRouting");
   const routes = plain(settings.routes, "managedRouting.routes");
   const names = Object.keys(routes);
-  if (names.length < 1 || names.length > 8) throw new Error("managedRouting.routes needs 1 to 8 managed aliases");
+  if (names.length < 1 || names.length > managedRouteLimit) throw new Error(`managedRouting.routes needs 1 to ${managedRouteLimit} managed aliases`);
   const result: Record<string, ManagedRoutePolicy> = {};
   for (const name of names) {
     const label = `managed route ${name}`;
@@ -83,8 +89,8 @@ export function validateManagedRouting(value: unknown, providers: ProviderConfig
       return alias;
     });
     if (new Set(candidates).size !== candidates.length) throw new Error(`${label}: candidates must be unique`);
-    const maxContextBytes = integerField(row, "maxContextBytes", 262144, 4096, 4194304, label);
-    const contextWindow = integerField(row, "contextWindow", 32768, 4096, 262144, label);
+    const maxContextBytes = integerField(row, "maxContextBytes", 262144, 4096, managedContextBytesLimit, label);
+    const contextWindow = integerField(row, "contextWindow", 32768, 4096, managedContextWindowLimit, label);
     const autoCompactTokenLimit = row.autoCompactTokenLimit === undefined ? undefined
       : integerField(row, "autoCompactTokenLimit", 0, 1024, Math.floor(contextWindow * 0.9), label);
     const minRemainingPercent = integerField(row, "minRemainingPercent", 2, 1, 50, label);
@@ -93,6 +99,7 @@ export function validateManagedRouting(value: unknown, providers: ProviderConfig
     if (row.preferPaidFlash !== undefined && typeof row.preferPaidFlash !== "boolean") throw new Error(`${label}: preferPaidFlash must be boolean`);
     const preferPaidFlash = row.preferPaidFlash === true;
     if (preferPaidFlash && (row.purpose !== "routine" || !allowPaid)) throw new Error(`${label}: preferPaidFlash requires a routine route with allowPaid`);
+    if (row.selectBy !== undefined && row.selectBy !== "order" && row.selectBy !== "headroom") throw new Error(`${label}: selectBy must be order or headroom`);
     const candidateRank = preferPaidFlash ? { local: 0, "paid-flash": 1, subscription: 2 } : rank;
     const candidateReasoningEfforts: Record<string, string> = Object.create(null);
     if (row.candidateReasoningEfforts !== undefined) {
@@ -130,6 +137,8 @@ export function validateManagedRouting(value: unknown, providers: ProviderConfig
       ...(row.candidateReasoningEfforts === undefined ? {} : { candidateReasoningEfforts }),
       ...(autoCompactTokenLimit === undefined ? {} : { autoCompactTokenLimit }) };
     if (row.preferPaidFlash !== undefined) result[name]!.preferPaidFlash = preferPaidFlash;
+    // Set only when configured, so existing policy fingerprints and their worker pins are unchanged.
+    if (row.selectBy !== undefined) result[name]!.selectBy = row.selectBy;
   }
   return { routes: result };
 }
