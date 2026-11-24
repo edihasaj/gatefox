@@ -166,6 +166,13 @@ A failure names the step it stopped in (`serve`, `catalog`, `stdio-host`,
 service aborts a check that is still running through the same sequence, which is
 why a shutdown does not wait for a ten-minute run.
 
+The fixture's upstream serves only Responses `POST` requests. Any other request
+gets a 404 without its body being read as JSON. Engines from 0.171 send `GET
+/models` (no body) when a host starts. Before this rule, parsing that body threw
+inside the request handler, the unhandled rejection ended the check, and a
+healthy pair (ChatGPT 26.1120.41243, engine 0.171.0-alpha.13) failed the smoke
+with `unknown` as its phase.
+
 The run folder lives under `<state>/health/smoke-<timestamp>` (0700) and is
 removed afterwards. The answer is stored against the app pair, so a quiet tick
 repeats the recorded answer instead of paying ten minutes again — including a

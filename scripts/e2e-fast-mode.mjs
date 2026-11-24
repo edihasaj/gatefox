@@ -121,6 +121,9 @@ async function until(check, label, timeout = 15000) {
   throw Error(label + ' timed out');
 }
 const upstream = createServer(async (req, res) => {
+  // Engines from 0.171 also list the provider's models (GET /models, no body) when a host starts. The fixture serves only
+  // Responses requests; parsing that empty body threw inside the handler and the unhandled rejection ended the whole check.
+  if (req.method !== 'POST') { req.resume(); res.writeHead(404, { 'content-type': 'application/json' }); res.end('{"error":{"message":"not served by the fixture"}}'); return; }
   const chunks = []; for await (const chunk of req) chunks.push(chunk);
   const body = JSON.parse(Buffer.concat(chunks).toString()); chunks.length = 0;
   wire.push({ phase, serviceTier: body.service_tier ?? null });
