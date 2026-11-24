@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- `gateway health --smoke` no longer fails with phase `unknown` against ChatGPT engines from 0.171. They also
+  send `GET /models` with no body, and the check's fixture provider parsed every body as JSON, so the check
+  crashed even though every phase it had reached passed. The fixture now answers anything other than a
+  Responses `POST` with 404.
 - A Claude chat no longer stops with `malformed_tool_call` when the computer sleeps or the network drops
   while Claude writes a tool call. GateFox drops the unfinished call and lets Claude Code resume the reply
   on the same session; calls that had finished are still forwarded. An unfinished call without any input yet
