@@ -31,6 +31,25 @@ test("Claude catalog resolves aliases, removes duplicate defaults, and retains n
   assert.throws(() => nativeClaudeModels([{ value: "opus", displayName: "Opus", supportedEffortLevels: ["unsupported"] }]), /reasoning/);
 });
 
+test("each row carries the provider's own model description, and a route without one keeps the route text", () => {
+  const [opus, haiku] = nativeClaudeModels([
+    { value: "opus", resolvedModel: "claude-opus-5-5", displayName: "Opus 5.5", description: "  For complex work and everyday tasks " },
+    { value: "claude-haiku-4-5-20251001", displayName: "Haiku 4.5", description: "" },
+  ]);
+  assert.equal(opus.metadata.description, "For complex work and everyday tasks");
+  assert.equal(Object.hasOwn(haiku.metadata, "description"), false, "an empty description is left out");
+  assert.equal(nativeClaudeModels([{ value: "x", displayName: "X", description: "a".repeat(201) }])[0].metadata.description, undefined, "an overlong description is dropped");
+  const rows = modelCatalog({ version: 1, port: 0, stateDirectory: ".", providers: [{ id: "claude", type: "claude-subscription", models: { "claude/opus": "claude-opus-5-5", "claude/haiku": "claude-haiku-4-5-20251001" },
+    modelMetadata: { "claude/opus": opus.metadata, "claude/haiku": haiku.metadata } }] } as GatewayConfig).models;
+  assert.equal(rows.find(row => row.slug === "claude/opus")?.description, "For complex work and everyday tasks");
+  assert.equal(rows.find(row => row.slug === "claude/haiku")?.description, "claude-subscription; account route claude");
+  const base = { version: 1, port: 3457, stateDirectory: "/s", providers: [{ id: "claude", type: "claude-subscription", models: { "claude/opus": "claude-opus-5-5" }, modelMetadata: { "claude/opus": { description: "" } } }] };
+  for (const description of ["", " padded", "a".repeat(201), "two\nlines", 7]) {
+    assert.throws(() => validateConfig({ ...base, providers: [{ ...base.providers[0], modelMetadata: { "claude/opus": { description } } }] } as never, "/e"), /Model description/, JSON.stringify(description));
+  }
+  validateConfig({ ...base, providers: [{ ...base.providers[0], modelMetadata: { "claude/opus": { description: "Fastest for quick answers" } } }] } as never, "/e");
+});
+
 test("Claude models that reach 1M on the subscription advertise 1M, including Fable 5.2 through the CLI's [1m] variant", () => {
   const models = nativeClaudeModels([
     { value: "claude-fable-5-2", displayName: "Fable 5.2" }, { value: "claude-mythos-5-1", displayName: "Mythos 5.1" },
@@ -200,6 +219,11 @@ test("Responses discovery carries only validated public tier metadata", async ()
     assert.deepEqual(models[0].metadata, { serviceTiers: [priority], additionalSpeedTiers: ["fast"], defaultServiceTier: "priority" });
     globalThis.fetch = async () => Response.json({ data: [{ id: "sol", service_tiers: [priority], default_service_tier: "unadvertised" }] });
     await assert.rejects(discoverModels(provider), /Default service tier/);
+    // A short vendor description is kept; a long one (OpenRouter writes paragraphs) is left out rather than cut.
+    globalThis.fetch = async () => Response.json({ data: [{ id: "sol", description: "Fast, go-to model for coding and everyday work." }, { id: "long", description: "word ".repeat(60) }] });
+    const described = await discoverModels(provider);
+    assert.equal(described[0].metadata.description, "Fast, go-to model for coding and everyday work.");
+    assert.equal(Object.hasOwn(described[1].metadata, "description"), false);
   } finally { globalThis.fetch = original; delete process.env.GATEWAY_CATALOG_TEST_KEY; }
 });
 

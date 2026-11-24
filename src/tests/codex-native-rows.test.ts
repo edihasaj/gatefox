@@ -39,7 +39,9 @@ test("a Codex 2 row copies the native harness fields and keeps the upstream acco
   assert.deepEqual(row.model_messages, messages); assert.notEqual(row.model_messages, messages);
   for (const key of ["tool_mode", "shell_type", "apply_patch_tool_type", "default_reasoning_level", "default_verbosity", "default_reasoning_summary", "support_verbosity", "effective_context_window_percent", "truncation_policy", ...usageFlags] as const) assert.deepEqual(row[key], nativeSol[key], key);
   assert.equal(row.context_window, 800000, "the native window is within the upstream's 872K maximum");
-  for (const key of ["slug", "display_name", "description", "priority", "supported_reasoning_levels", "service_tiers", "additional_speed_tiers", "default_service_tier", "multi_agent_version", "multi_agent_reasoning_effort", "max_context_window", "auto_compact_token_limit", "experimental_supported_tools", "input_modalities"]) assert.deepEqual(row[key], published[key], key);
+  assert.equal(row.description, "Native description", "the native model's own description replaces the route text");
+  assert.equal(withNativeRow(published, [{ ...nativeSol, description: "" }]).description, published.description, "an empty native description keeps the published one");
+  for (const key of ["slug", "display_name", "priority", "supported_reasoning_levels", "service_tiers", "additional_speed_tiers", "default_service_tier", "multi_agent_version", "multi_agent_reasoning_effort", "max_context_window", "auto_compact_token_limit", "experimental_supported_tools", "input_modalities"]) assert.deepEqual(row[key], published[key], key);
   assert.equal(published.supports_search_tool, false, "the gateway publishes search off");
   assert.equal(row.supports_search_tool, false, "a Codex 2 row keeps search off even though the native row has it on: the ChatGPT backend refuses a forwarded tool_search");
   for (const value of [false, undefined, "true", null]) assert.equal(withNativeRow(published, [{ ...nativeSol, supports_search_tool: value }]).supports_search_tool, false, `a native value of ${JSON.stringify(value)} is not copied`);

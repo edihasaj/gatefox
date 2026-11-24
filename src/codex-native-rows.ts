@@ -3,6 +3,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { autoReviewModels } from "./auto-review.js";
+import { modelDescription } from "./model-label.js";
 
 type Row = Record<string, unknown>;
 
@@ -107,6 +108,9 @@ export function withNativeRow(model: Row, native: readonly Row[], codeMode = tru
   if (typeof source.tool_mode === "string" && (codeMode || source.tool_mode === "direct")) copy.tool_mode = source.tool_mode;
   for (const key of ["apply_patch_tool_type", "default_verbosity"]) if (typeof source[key] === "string" || source[key] === null) copy[key] = source[key];
   if (typeof source.support_verbosity === "boolean") copy.support_verbosity = source.support_verbosity;
+  // The same model's own description ("Fast, go-to model for coding and everyday work"), also for an alias saved before
+  // the gateway kept descriptions.
+  if (modelDescription(source.description)) copy.description = source.description;
   // Tool search needs both: the gateway row publishes it only for a route that bridges `tool_search` (the ChatGPT backend
   // refuses the tool itself, HTTP 400 seen in production on 0.4.4), and the native row says Codex can run the search here.
   // Any other pair keeps it off, so Codex adds no tool this route cannot forward. Hosted web search is allowed either way,

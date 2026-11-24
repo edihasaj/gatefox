@@ -90,6 +90,23 @@ node scripts/e2e-native-picker.mjs --code /absolute/package \
 The fixture uses an isolated home, verifies the four selected rows plus a gateway
 row and hidden discovery, and checks that the public catalog remains unchanged.
 
+## Model descriptions on hover
+
+Each picker row's `description` is the text the provider gives for that model,
+such as "Fast, go-to model for coding and everyday work." Native Codex rows copy
+the description from `~/.codex/models_cache.json`. Claude rows use the
+description from Claude Code's model list. Saved aliases store it as
+`metadata.description`, which must be trimmed text without control characters
+and at most 200 characters. Longer text, such as OpenRouter's paragraphs, is
+dropped. A row without a provider description keeps the route text
+(`<type>; account route <id>`). Gemini through Antigravity reports model names
+only, so its rows keep the route text.
+
+Aliases saved before this change get their description from the automatic
+latest-model check, which runs every five minutes for providers that have it
+enabled. Claude Desktop model entries accept only a name and a label, so the
+hover text appears in the ChatGPT and Codex app picker.
+
 ## Codex subscription counters
 
 The gateway records Codex counters only when the Codex subscription backend itself sends

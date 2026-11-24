@@ -7,6 +7,7 @@ import { readServiceTierMetadata, type ModelServiceTierMetadata } from "./model-
 import { validateAutoLatestSettings } from "./model-auto-latest/settings.js";
 import type { AutoLatestSettings } from "./model-auto-latest/types.js";
 import { maximumReleasedAt, minimumReleasedAt } from "./model-auto-latest/metadata.js";
+import { maxModelDescription, modelDescription } from "./model-label.js";
 import { validateManagedRouting, type ManagedRoutingSettings } from "./managed-routing-config.js";
 
 export type ProviderKind = "claude-subscription" | "codex-subscription" | "copilot-subscription" | "responses-api" | "anthropic-api" | "chat-completions-api" | "grok-subscription" | "gemini-subscription";
@@ -129,6 +130,8 @@ export const bridgesToolSearch = (provider: Pick<ProviderConfig, "type" | "toolS
 export interface ModelMetadata extends ModelServiceTierMetadata {
   inputModalities?: Array<"text" | "image">;
   displayName?: string;
+  /** The provider's own one-line description of the model, shown in the picker. See modelDescription in model-label.ts. */
+  description?: string;
   contextWindow?: number;
   reasoningEfforts?: string[];
   /** The provider's own default effort; the catalog row uses it when the model supports it. */
@@ -271,6 +274,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (metadata.reasoningEfforts?.some(effort => !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort))) throw new Error("Unsupported reasoning effort in model metadata");
       if (metadata.defaultReasoningEffort !== undefined && !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(metadata.defaultReasoningEffort)) throw new Error("Unsupported default reasoning effort in model metadata");
       if (metadata.priority !== undefined && !Number.isInteger(metadata.priority)) throw new Error("Model priority must be an integer");
+      if (metadata.description !== undefined && modelDescription(metadata.description) !== metadata.description) throw new Error(`Model description must be trimmed text of 1 to ${maxModelDescription} characters without control characters`);
       if (metadata.multiAgentVersion !== undefined && (typeof metadata.multiAgentVersion !== "string" || !/^v[0-9]{1,3}$/.test(metadata.multiAgentVersion))) throw new Error("multiAgentVersion must look like v2");
       if ((metadata.useResponsesLite !== undefined && typeof metadata.useResponsesLite !== "boolean") || (metadata.supportsReasoningEffortUpdates !== undefined && typeof metadata.supportsReasoningEffortUpdates !== "boolean")) throw new Error("Responses lite metadata must be boolean");
       if (metadata.multiAgentReasoningEffort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(metadata.multiAgentReasoningEffort)) throw new Error("Unsupported multi-agent reasoning effort in model metadata");

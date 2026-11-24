@@ -8,7 +8,7 @@ import { isManagementUnavailable } from "../app-management/runtime.js";
 import { foldBaseline, pickLatest, pickerEntries, visibleModels, withReleaseDates } from "./planner.js";
 import { strictUnion, validateAutoLatestSettings } from "./settings.js";
 import type { AutoLatestScope, AutoLatestSettings, CatalogRow } from "./types.js";
-import { modelLabel } from "../model-label.js";
+import { modelDescription, modelLabel } from "../model-label.js";
 
 export interface ApplyOutput { raw: Record<string, unknown>; activated: number; nativeUpdated: boolean; folded: boolean; blocked: boolean; dirty: boolean; touched: Set<string> }
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -22,6 +22,21 @@ function freshMetadata(row: CatalogRow, minimal: boolean): Record<string, unknow
 }
 
 type Ledger = Awaited<ReturnType<typeof loadAliases>>;
+
+/**
+ * Keeps each saved alias's description equal to its model's current one in the provider's catalog, so models chosen
+ * before the gateway kept descriptions get them too. Nothing else in the alias's metadata changes, and a model the
+ * catalog gives no description keeps whatever it had.
+ */
+function refreshDescriptions(target: Record<string, unknown>, models: Record<string, string>, rows: CatalogRow[], out: ApplyOutput): void {
+  for (const [alias, model] of Object.entries(models)) {
+    const description = modelDescription(rows.find(row => row.id === model)?.metadata?.description);
+    if (!description) continue;
+    const table = (isRecord(target.modelMetadata) ? target.modelMetadata : (target.modelMetadata = {})) as Record<string, Record<string, unknown>>;
+    if (table[alias]?.description === description) continue;
+    table[alias] = { ...(table[alias] ?? {}), description }; out.dirty = true;
+  }
+}
 
 /**
  * Computes the next raw configuration. Retirement only sets `pickerHidden` on the old alias; its route, alias and
@@ -40,6 +55,7 @@ function plan(snapshot: ConfigSnapshot, ledger: Ledger, catalogs: ReadonlyMap<st
     const scope = settings.providers[provider.id]; const rows = catalogs.get(provider.id); const target = rawProviders.find(item => item.id === provider.id);
     if (!scope || !rows?.length || !target || !isRecord(target.models)) continue;
     const models = target.models as Record<string, string>;
+    refreshDescriptions(target, models, rows, out);
     if (scope.baselineBlocked) continue;
     if (scope.baselinePending) {
       // A fold that cannot hold every known ID blocks the scope for good: dropping any would let it reappear as "new".

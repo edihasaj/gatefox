@@ -11,7 +11,7 @@ import type { DiscoveredModel } from "../catalog.js";
 import type { ProviderConfig } from "../config.js";
 
 const NOW = Date.UTC(2026, 9, 24) / 1000;
-type Row = { id: string; releasedAt?: number };
+type Row = { id: string; releasedAt?: number; description?: string };
 
 async function fixture(extra: Record<string, unknown> = {}) {
   const root = await mkdtemp(join(tmpdir(), "gateway-auto-latest-")); const path = join(root, "gateway.json"); const state = join(root, "state"); const home = join(root, "native"); await mkdir(state, { recursive: true }); await mkdir(home, { recursive: true });
@@ -27,7 +27,7 @@ async function fixture(extra: Record<string, unknown> = {}) {
     if (catalog.gate) await catalog.gate;
     if (catalog.fail) throw new Error("secret-token-xyz");
     if (provider.id !== "claude") return [];
-    return catalog.rows.map(row => ({ model: row.id, metadata: { displayName: row.id, ...(row.releasedAt !== undefined ? { releasedAt: row.releasedAt } : {}) } }));
+    return catalog.rows.map(row => ({ model: row.id, metadata: { displayName: row.id, ...(row.releasedAt !== undefined ? { releasedAt: row.releasedAt } : {}), ...(row.description ? { description: row.description } : {}) } }));
   };
   const raw = async () => JSON.parse(await readFile(path, "utf8"));
   const revision = async () => createHash("sha256").update(await readFile(path)).digest("hex");
@@ -63,6 +63,18 @@ test("an unchanged catalog is a no-op and leaves the configuration bytes alone",
   const f = await fixture(); await f.enable(); const bytes = await readFile(f.path);
   const result = await f.check(); assert.equal(result.outcome, "unchanged"); assert.equal(result.changed, false); assert.equal(result.providersChecked, 2);
   assert.deepEqual(await readFile(f.path), bytes);
+});
+
+test("saved aliases take their model's current description, without other metadata changes, and only once", async () => {
+  const f = await fixture(); await f.enable();
+  f.catalog.rows = [{ id: "claude-opus-5-4", description: "For complex work and everyday tasks" }];
+  const result = await f.check(); assert.equal(result.changed, true); assert.equal(result.activated, 0);
+  const provider = await f.claude();
+  assert.deepEqual(provider.modelMetadata["claude/claude-opus-5-4"], { displayName: "Opus 5.4", releasedAt: 1_780_000_000, description: "For complex work and everyday tasks" });
+  assert.deepEqual(provider.modelMetadata["claude/old-alias"], { description: "For complex work and everyday tasks" });
+  const bytes = await readFile(f.path); assert.equal((await f.check()).changed, false); assert.deepEqual(await readFile(f.path), bytes);
+  // A catalog that stops describing the model keeps the saved description.
+  f.catalog.rows = [{ id: "claude-opus-5-4" }]; assert.equal((await f.check()).changed, false);
 });
 
 test("a newer version in a watched family becomes routable and hides only the old picker rows", async () => {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.2.7 — 2026-11-24
+
+- Hovering a model in the ChatGPT or Codex app picker shows the provider's own description, such as
+  "Fast, go-to model for coding and everyday work." for Codex models or "Fastest for quick answers" for
+  Claude models. Gemini through Antigravity reports no descriptions, so its rows keep the route text.
+  Existing aliases pick up descriptions at the next automatic latest-model check.
+
 ## 2.2.6 — 2026-11-24
 
 - Managed worker routes can offer a model's full window. A route may advertise up to 1,048,576 tokens (never
