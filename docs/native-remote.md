@@ -40,6 +40,7 @@ separate lists in `src/native-engine-versions.ts`:
 
 | App engine | Relay (`relayAcceptedAppEngines`) | Shared native host (`hostVerifiedAppEngines`) |
 | --- | --- | --- |
+| `codex-cli 0.171.0-alpha.13.2` | Requires the rebuilt relay (2.2.6); `app-server-transport`, the remote-control processor, the v2 `remoteControl/*` protocol, `login` and `state/migrations` are byte-identical to 0.171.0-alpha.13 | Verified with the signed engine through the stdio and Unix shared-native fixtures, with and without `--host-codex` (24 Nov 2026, 2.2.6) |
 | `codex-cli 0.171.0-alpha.13` | Requires the rebuilt relay (2.1.5); the remote-control wire messages, the processor, `auth.json` and the account header are unchanged from 0.167.0-alpha.4.1. The transport's new runtime agent assertion is off unless `runtime_agent_instances` is enabled | Verified with the signed engine through the stdio and Unix shared-native fixtures, with and without `--host-codex` (20 Nov 2026, 2.1.5) |
 | `codex-cli 0.169.0-alpha.11.1` | Requires the rebuilt relay (2.1.5); same review as 0.171.0-alpha.13 | Verified with the signed engine through the stdio and Unix shared-native fixtures, with and without `--host-codex` (20 Nov 2026, 2.1.5) |
 | `codex-cli 0.167.0-alpha.4.1` | Requires the rebuilt relay (1.9.4); `app-server-transport`, the remote-control processor, state migrations and the `auth.json` format byte-identical to 0.167.0-alpha.3.2 | Verified with the signed engine through the stdio and Unix shared-native fixtures, with and without `--host-codex` (11 Nov 2026, 1.9.4) |
