@@ -6,6 +6,14 @@
   "Fast, go-to model for coding and everyday work." for Codex models or "Fastest for quick answers" for
   Claude models. Gemini through Antigravity reports no descriptions, so its rows keep the route text.
   Existing aliases pick up descriptions at the next automatic latest-model check.
+- Phone control of a Mac works again after ChatGPT 26.1120. Its engine (0.171.0-alpha.13.2) was not on the
+  verified list, so the native relay refused to start, paused as `failing`, and the phone could not reach
+  the Mac. Its remote-control transport, processor, sign-in storage and database migrations are unchanged
+  from 0.171.0-alpha.13, so the relay accepts it and the native host shares it after the shared-native checks.
+- `gateway health --smoke` no longer fails with phase `unknown` against ChatGPT engines from 0.171. They also
+  send `GET /models` with no body, and the check's fixture provider parsed every body as JSON, so the check
+  crashed even though every phase it had reached passed. The fixture now answers anything other than a
+  Responses `POST` with 404.
 
 ## 2.2.6 — 2026-11-24
 
