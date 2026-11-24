@@ -8,7 +8,7 @@ import { upstreamSlugField } from "./codex-native-rows.js";
 import { tokenFamily, tokenizerFamilyField } from "./compaction-switch-guard.js";
 import { pickerHidden, releasedAtMetadata } from "./model-auto-latest/metadata.js";
 import { managedCatalog } from "./managed-routing-catalog.js";
-import { modelLabel } from "./model-label.js";
+import { modelDescription, modelLabel } from "./model-label.js";
 
 export { modelLabel };
 
@@ -33,7 +33,8 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
     const codex = provider.type === "codex-subscription"; const truncation = metadata?.truncationPolicy;
     return {
       slug: alias, display_name: `${provider.label || provider.id} · ${metadata?.displayName ? modelLabel(metadata.displayName) : provider.models[alias]}`,
-      description: `${provider.type}; account route ${provider.id}`, priority: metadata?.priority ?? modelIndex,
+      // The provider's own description when its catalog gave one; otherwise the route it runs on.
+      description: metadata?.description ?? `${provider.type}; account route ${provider.id}`, priority: metadata?.priority ?? modelIndex,
       // The desktop adapter copies the native row for this slug; Codex ignores the extra key.
       ...(codex ? { [upstreamSlugField]: provider.models[alias] } : {}),
       // The tokenizer family of the upstream model, which the alias text may not show; the desktop adapter's switch guard
@@ -97,6 +98,7 @@ export async function discoverModels(provider: ProviderConfig, options: AccessTo
       ...readPublicServiceTierMetadata(model),
       ...(typeof model.display_name === "string" ? { displayName: modelLabel(model.display_name) }
         : typeof model.name === "string" ? { displayName: modelLabel(model.name) } : {}),
+      ...(modelDescription(model.description) ? { description: modelDescription(model.description) } : {}),
       ...releasedAtMetadata(model),
       ...(typeof (model.context_window ?? model.max_model_len) === "number" ? { contextWindow: (model.context_window ?? model.max_model_len) as number } : {}),
       ...(typeof model.priority === "number" ? { priority: model.priority } : {}),

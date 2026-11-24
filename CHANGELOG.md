@@ -7,6 +7,10 @@
   worker behind a route got less than half of its window. Existing routes and worker pins are unchanged.
 - A managed route can set `selectBy: "headroom"` to start each new worker on the eligible subscription account
   with the most quota left, instead of the first one in its list. The choice is pinned for that worker.
+- Hovering a model in the ChatGPT or Codex app picker shows the provider's own description, such as
+  "Fast, go-to model for coding and everyday work." for Codex models or "Fastest for quick answers" for
+  Claude models. Gemini through Antigravity reports no descriptions, so its rows keep the route text.
+  Existing aliases pick up descriptions at the next automatic latest-model check.
 - Phone control of a Mac works again after ChatGPT 26.1120. Its engine (0.171.0-alpha.13.2) was not on the
   verified list, so the native relay refused to start, paused as `failing`, and the phone could not reach
   the Mac. Its remote-control transport, processor, sign-in storage and database migrations are unchanged
