@@ -112,6 +112,23 @@ binary identical to Studio's). `scripts/e2e-shared-native.mjs` passed all 24 std
 Unix phases against each engine, with and without `--host-codex`. 0.171.0-alpha.13.1
 is tagged upstream but not shipped in an app build yet, so it stays refused.
 
+Engine 0.171.0-alpha.13.2 (ChatGPT 26.1120.41243, OpenAI commit
+`ad9d659a8491fc5169a00dcf7b7e6ca8a87adf69`) reached Studio, macbook-server and the
+MacBook Pro by 24 Nov 2026. It was not on either list, so the 2.2.5 service logged
+`native_sharing_unavailable` (`sdk_version`) and the relay exited three times and paused
+as `failing`, and the phone could not control Studio. The tag is 0.171.0-alpha.13's base
+plus four cherry-picks: a custom status line in `/experimental`, paused runtime sandbox
+integrity checks, an opt-out from Daybreak propagation for new threads, and batched
+filesystem metadata checks for instruction and skill discovery. Only `Cargo.toml`'s
+version differs in the other direction. `app-server-transport` (including
+`remote_control`), the app-server remote-control processor, `login` and
+`state/migrations` are untouched. The only protocol change is an optional experimental
+`thread/start` field (`daybreakProgramPropagationEnrolled`), which the relay does not
+send or read. The signed engine (TeamIdentifier `2DC432GLL2`, Notarized Developer ID) is
+byte-identical on all three Macs. 2.2.6 admits it for the relay and the shared host
+after the rebuilt relay's tests, `scripts/e2e-native-relay.mjs` and every stdio and Unix
+phase of `scripts/e2e-shared-native.mjs`, with and without `--host-codex`.
+
 ## Verify an app update
 
 1. Verify the installed app engine's exact version, OpenAI signature and binary
