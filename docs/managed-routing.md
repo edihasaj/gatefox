@@ -80,9 +80,10 @@ existing worker never moves when another account later has more room. Omitting
 the field keeps a policy's fingerprint unchanged.
 
 A configuration holds 1 to 16 managed routes. `contextWindow` accepts 4,096 to
-1,048,576 tokens and must not exceed any candidate's own window (after its
-`contextWindowCap`), so a route can give its workers the smallest candidate's
-full window: 872,000 for Sol and Terra, 575,000 for Claude through the Gateway,
+1,048,576 tokens and must not exceed any candidate's own window: its
+`maxContextWindow` when it has one, otherwise its `contextWindow`, limited by its
+`contextWindowCap`. A route can therefore give its workers the smallest
+candidate's full window: 872,000 for Sol and Terra, 575,000 for Claude through the Gateway,
 1,048,576 for DeepSeek Flash. `maxContextBytes` accepts 4,096 bytes to 16 MiB.
 `autoCompactTokenLimit` must fit inside 90% of the window. Until 2.2.6 the
 limits were 8 routes, 262,144 tokens and 4 MiB.

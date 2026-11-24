@@ -127,6 +127,9 @@ export function validateManagedRouting(value: unknown, providers: ProviderConfig
       const metadata = Object.hasOwn(provider.modelMetadata ?? {}, alias) ? provider.modelMetadata![alias] : undefined;
       let window = metadata?.contextWindow;
       if (typeof window !== "number" || !Number.isFinite(window)) throw new Error(`${label}: candidate ${alias} has no known context window`);
+      // A model that can be asked for a larger window (Codex Sol and Terra: 500,000 by default, 872,000 at most) offers that maximum to a route.
+      const maximum = metadata?.maxContextWindow;
+      if (typeof maximum === "number" && Number.isFinite(maximum) && maximum > window) window = maximum;
       const cap = metadata?.contextWindowCap;
       if (typeof cap === "number" && window > cap) window = cap;
       if (window < contextWindow) throw new Error(`${label}: candidate ${alias} context window is below the route's ${contextWindow}`);
