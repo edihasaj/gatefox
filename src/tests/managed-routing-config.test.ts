@@ -179,6 +179,17 @@ test("a route can advertise a candidate's full window, but never more than its s
   assert.throws(() => valid({ ...strong, contextWindow: 872000, autoCompactTokenLimit: 784801 }, list), /autoCompactTokenLimit/);
 });
 
+test("a candidate's maximum window counts, still limited by its cap", () => {
+  const list = providers(), sol = list.find(p => Object.hasOwn(p.models, "sub/sol"))!.modelMetadata!["sub/sol"]!;
+  sol.contextWindow = 500000; sol.maxContextWindow = 872000;
+  const strong = { purpose: "strong", candidates: ["sub/sol"], allowPaid: false };
+  assert.equal(valid({ ...strong, contextWindow: 872000 }, list).routes["managed/routine"]!.contextWindow, 872000);
+  assert.throws(() => valid({ ...strong, contextWindow: 872001 }, list), /below the route's 872001/);
+  sol.contextWindowCap = 600000;
+  assert.throws(() => valid({ ...strong, contextWindow: 600001 }, list), /below the route's 600001/);
+  assert.equal(valid({ ...strong, contextWindow: 600000 }, list).routes["managed/routine"]!.contextWindow, 600000);
+});
+
 test("selectBy accepts order or headroom and is absent from policies that do not set it", () => {
   assert.equal(valid({ selectBy: "headroom" }).routes["managed/routine"]!.selectBy, "headroom");
   assert.equal(valid({ selectBy: "order" }).routes["managed/routine"]!.selectBy, "order");
