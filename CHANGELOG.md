@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.8 — 2026-11-25
+
+- Gemini turns now carry the usage-ledger marker (`resp_gl_`/`msg_gl_`), like Claude and Copilot turns. Spend
+  tools bill a gateway row only when it is marked, so Spendwatch skipped every Gemini turn and showed no Gemini
+  spend. Turns recorded before this release stay unmarked and are not billed.
+
 ## 2.2.7 — 2026-11-24
 
 - Hovering a model in the ChatGPT or Codex app picker shows the provider's own description, such as
