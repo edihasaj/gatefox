@@ -284,6 +284,7 @@ history have passed through the real Codex engine on the test Mac.
 See [architecture](architecture.md), [Responses support](responses.md), [Messages support](messages.md),
 [verification](verification.md), [desktop adapter](app-server.md), [remote clients](remote.md).
 
+One local model on several machines can be one [provider pool](provider-pool.md).
 Local inference farms can opt into [automatic capacity discovery](upstream-capacity.md)
 so worker concurrency changes update admission without editing every Gateway.
 

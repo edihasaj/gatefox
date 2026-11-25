@@ -5,7 +5,7 @@ import { networkRetryExpired, networkRetryNow, networkRetrySleep, networkRetryWa
 import { ProviderError } from "./provider.js";
 
 /** Retry connection establishment only. A returned HTTP response and its body never enter this loop. */
-export async function connectChatProvider(provider: string, signal: AbortSignal, send: () => Promise<Response>): Promise<Response> {
+export async function connectChatProvider(provider: string, signal: AbortSignal, send: () => Promise<Response>, once = false): Promise<Response> {
   let startedAt: number | undefined; let retries = 0;
   for (;;) {
     signal.throwIfAborted();
@@ -18,7 +18,7 @@ export async function connectChatProvider(provider: string, signal: AbortSignal,
       if (signal.aborted) throw error;
       let failure: ProviderError | undefined;
       try { failure = error instanceof ProviderError ? error : networkProviderError(error, "connect"); } catch { throw error; }
-      if (!failure || failure.upstream?.event !== "network" || failure.upstream.retryableNetwork !== true) throw failure ?? error;
+      if (!failure || failure.upstream?.event !== "network" || failure.upstream.retryableNetwork !== true || once) throw failure ?? error;
       startedAt ??= networkRetryNow();
       const elapsedMs = networkRetryNow() - startedAt;
       const backoffMs = networkRetryWaitMs(retries, elapsedMs);

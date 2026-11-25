@@ -1,6 +1,13 @@
 # Changelog
 
 ## Unreleased
+- One local model can be served by several self-hosted machines without a separate router: a provider's `pool`
+  names the machines, each of which is also its own picker row. GateFox keeps every conversation on the machine
+  that holds its prompt cache, starts new ones where there is room, moves them away from a drained, unreachable
+  or frozen machine, and never replays a request after output began. See `docs/provider-pool.md`.
+- A provider on this Mac that resets a connection at the wrong moment can no longer end the whole gateway. Node
+  24's `fetch` throws `setTypeOfService EINVAL` outside the request on macOS in that case; GateFox now ignores it
+  as undici's own fix does, and the request fails with the real network error.
 - An account refused for ChatGPT subscription sharing no longer reports `available` as soon as Spendwatch reads
   its native quota. The sharing limit is separate, so managed routes kept starting workers on a refused account
   that showed quota left. Only a window that began after the refusal, a success or six hours clears it.

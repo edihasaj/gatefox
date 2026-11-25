@@ -31,7 +31,12 @@ import { classifyProviderFailure, providerFailureDiagnostic, providerFailureStat
 import { AdmissionRegistry } from "./admission-registry.js";
 import { UpstreamCapacityWatcher, type UpstreamCapacityDeps } from "./upstream-capacity.js";
 import { bindServerAdmission, type HandlerAdmissionState } from "./server-admission.js";
-import type { Admission } from "./admission.js";
+import type { AdmissionGate } from "./admission.js";
+import { ProviderPool, pooledLoad, poolMembers } from "./provider-pool.js";
+import { PoolReach } from "./provider-pool-reach.js";
+import { isLocalProvider, probeLocalProvider } from "./availability/probe.js";
+import { ProviderPoolPins } from "./provider-pool-pins.js";
+import { tolerateResetSockets } from "./reset-sockets.js";
 import { ProviderUsageStore } from "./provider-usage.js";
 import { ObservedContextWindows } from "./model-refresh.js";
 import { telemetry } from "./telemetry.js";
@@ -57,7 +62,7 @@ import { serveClaudeRecovery } from "./claude-session-recovery-http.js";
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
 /** What this release guarantees on the wire; `/health` advertises it so operators can tell an old daemon from a new one. */
-export const gatewayFeatures = ["responses-ws-426", "openai-internal-strip", "native-identity-v1", "managed-worker-routing-v1"];
+export const gatewayFeatures = ["responses-ws-426", "openai-internal-strip", "native-identity-v1", "managed-worker-routing-v1", "provider-pool-v1"];
 const waitForDrain = (res: ServerResponse, signal: AbortSignal) => new Promise<void>(resolve => {
   const finished = () => { res.off("drain", finished); res.off("close", finished); signal.removeEventListener("abort", finished); resolve(); };
   res.once("drain", finished); res.once("close", finished); signal.addEventListener("abort", finished, { once: true });
@@ -235,6 +240,7 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
 }
 
 export async function createGatewayHandler(config: GatewayConfig, factory = createProvider, reload?: () => Promise<GatewayConfig>, options: GatewayStartOptions = {}): Promise<GatewayHandler> {
+  tolerateResetSockets();
   const heartbeatMs = options.heartbeatMs ?? 15000;
   if (!Number.isFinite(heartbeatMs) || heartbeatMs < 1) throw new Error("Heartbeat interval must be positive");
   if (config.clientOnly) throw new Error("This is a remote client configuration; start its SSH tunnel instead of a local inference daemon");
@@ -252,15 +258,36 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     const busy = legacyBusy(); admissions.holdUntilLegacyDrains(busy);
     if (!busy && legacyTimer) { clearInterval(legacyTimer); legacyTimer = undefined; }
   };
-  const capacity = new UpstreamCapacityWatcher((id, fact) => admissions.setDiscoveredLimit(id, fact?.limit, fact?.observedAt), options.upstreamCapacity);
+  let current = config;
+  const reach = new PoolReach();
+  const capacity = new UpstreamCapacityWatcher((id, fact) => {
+    admissions.setDiscoveredLimit(id, fact?.limit, fact?.observedAt);
+    if (fact) { reach.hit(id); return; }
+    // A missing snapshot alone says nothing (its publisher may have stopped); a pool member that also ignores a plain request is gone.
+    const member = retired ? undefined : current.providers.find(provider => provider.id === id);
+    if (!member || !isLocalProvider(member) || !current.providers.some(provider => provider.pool?.includes(id))) return;
+    void probeLocalProvider(member).then(health => { if (health.status === "unhealthy" && health.reason === "unreachable") reach.miss(id); else reach.hit(id); }, () => {});
+  }, options.upstreamCapacity);
   const availability = options.availability ?? new AvailabilityService();
   const managedRouter = new ManagedRouter(config.stateDirectory);
   availability.configure(config);
+  const providerLoad = (loaded: GatewayConfig) => (id: string) => pooledLoad(loaded, id, one => ({ ...admissions.load(one), limit: admissions.limit(one) }));
   const buildRoutes = (current: GatewayConfig) => {
-    admissions.configure(current);
+    admissions.configure(current); reach.forget(new Set(current.providers.map(provider => provider.id)));
     capacity.configure(current.providers);
     const adapters = new Map(current.providers.map(provider => [provider.id, factory(provider, limit => providerUsage.record(provider, limit), (model, window) => contextWindows.record(provider.id, model, window), (usage, revision) => providerUsage.recordCodex(provider, usage, revision))] as const));
     const routes = new Map(current.providers.flatMap(provider => Object.entries(provider.models).map(([alias, model]) => [alias, { adapter: adapters.get(provider.id)!, admission: admissions.admission(provider.id), get limit() { return admissions.limit(provider.id); }, model, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider), selfHosted: provider.selfHosted === true, cacheMissLimit: provider.cacheMissLimit }] as const)));
+    const pools = new Map(current.providers.flatMap(provider => {
+      const members = poolMembers(current, provider.id);
+      if (!members.length) return [];
+      // The outcome belongs to the endpoint this route was built for, whatever the configuration says by the time it ends.
+      const routed = new Map(members.map(id => [id, availability.identityOf(id)] as const));
+      return [[provider.id, new ProviderPool(provider.id, members.map(id => ({ id, adapter: adapters.get(id)!, admission: admissions.admission(id), limit: () => admissions.limit(id), lost: () => reach.lost(id, members) })),
+        new ProviderPoolPins(config.stateDirectory, provider.id), {
+          onSuccess: id => availability.recordSuccess(id, routed.get(id)),
+          onFailure: (id, error) => { const known = classifyProviderFailure(error, undefined); availability.recordFailure(id, routed.get(id), known.code, known.upstream?.code, known.upstream?.retryAfterMs); },
+        })] as const];
+    }));
     // A reviewer slug is served by the same adapter instance as that provider's own rows, so its credential, turn-state and
     // reasoning scope match. Resolution follows autoReviewTarget, the same account rule /v1/model-catalog advertises under,
     // so the gateway never advertises a reviewer a request would resolve differently.
@@ -268,19 +295,20 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       const provider = autoReviewTarget(current, slug);
       return provider ? [[slug as string, { adapter: adapters.get(provider.id)!, admission: admissions.admission(provider.id), get limit() { return admissions.limit(provider.id); }, model: slug as string, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider), selfHosted: provider.selfHosted === true, cacheMissLimit: provider.cacheMissLimit }] as const] : [];
     }));
-    return { routes, reviewers, retain: () => admissions.retain(current.providers), release: admissions.retain(current.providers) };
+    return { routes, reviewers, pools, retain: () => admissions.retain(current.providers), release: admissions.retain(current.providers) };
   };
-  let current = config; let currentRoutes = buildRoutes(config); let { routes, reviewers } = currentRoutes;
+  let currentRoutes = buildRoutes(config); let { routes, reviewers, pools } = currentRoutes;
   const snapshot = async () => {
     const next = !retired && reload ? await reload() : current;
     if (!retired && next !== current) {
-      const previous = currentRoutes; const updated = buildRoutes(next); currentRoutes = updated; routes = updated.routes; reviewers = updated.reviewers; current = next; previous.release();
+      // First, so a pool built for this configuration records outcomes under its members' current identities.
       availability.configure(next);
+      const previous = currentRoutes; const updated = buildRoutes(next); currentRoutes = updated; routes = updated.routes; reviewers = updated.reviewers; pools = updated.pools; current = next; previous.release();
       // Live Copilot sessions of a provider the new configuration removed or changed would otherwise live out their timers.
       retireUnconfiguredCopilotScopes(next.providers);
     }
     refreshLegacyHold();
-    return { config: current, routes, reviewers, release: currentRoutes.retain() };
+    return { config: current, routes, reviewers, pools, release: currentRoutes.retain() };
   };
   const active = new Map<AbortController, (cause: "shutdown") => void>();
   const admitted = new Set<AbortController>(); let draining = false;
@@ -345,7 +373,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     if (req.method === "GET" && path === "/v1/model-catalog") { try { const reviewing = await advertisedReviewers(state.config); send(res, 200, { ...modelCatalog(state.config), ...(reviewing.length ? { auto_review: { models: reviewing } } : {}) }); } finally { state.release(); } return; }
     if (req.method === "GET" && path === "/v1/provider-usage") { try { res.setHeader("Cache-Control", "no-store"); send(res, 200, { data: providerUsage.snapshot(state.config.providers) }); } finally { state.release(); } return; }
     if (req.method === "GET" && path === availabilityPath) {
-      try { const config = state.config; await serveAvailability(req, res, availability, config, id => ({ ...admissions.load(id), limit: admissions.limit(id) }), providerUsage.snapshot(config.providers), pickerHiddenAliases(config)); }
+      try { const config = state.config; await serveAvailability(req, res, availability, config, providerLoad(config), providerUsage.snapshot(config.providers), pickerHiddenAliases(config)); }
       finally { state.release(); } return;
     }
     if (req.method !== "POST" || (path !== "/v1/responses" && !messagesProtocol)) { try { fail(404, "not_found", "Unknown endpoint"); } finally { state.release(); } return; }
@@ -355,7 +383,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     if (active.size >= maximumActive) { try { res.setHeader("Retry-After", "1"); fail(429, "busy", "Gateway waiting queue is full; retry shortly"); } finally { state.release(); } return; }
     const releaseSnapshot = state.release;
     const controller = new AbortController();
-    let releaseAdmission: (() => void) | undefined; let admission: Admission | undefined;
+    let releaseAdmission: (() => void) | undefined; let admission: AdmissionGate | undefined;
     let writer: ResponsesWriter | MessagesWriter | undefined; let open: ((turnState?: string) => void) | undefined;
     let heartbeat: NodeJS.Timeout | undefined; let headWait: NodeJS.Timeout | undefined; let abortCause: AbortCause | undefined;
     active.set(controller, cause => { abortCause ||= cause; clearInterval(heartbeat); controller.abort(); });
@@ -462,7 +490,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       // but take a bare model name from the user's agent roles. Serve that same model
       // through its vendor's subscription route when exactly one alias matches.
       const managed = await resolveManagedRequest({ config: state.config, request, context, router: managedRouter, availability, signal: controller.signal,
-        report: () => availability.report(state.config, id => ({ ...admissions.load(id), limit: admissions.limit(id) }), providerUsage.snapshot(state.config.providers), pickerHiddenAliases(state.config)) });
+        report: () => availability.report(state.config, providerLoad(state.config), providerUsage.snapshot(state.config.providers), pickerHiddenAliases(state.config)) });
       if (managed) {
         res.setHeader("X-Gateway-Managed-Route", managed.alias);
         res.setHeader("X-Gateway-Managed-Reused", String(managed.reused));
@@ -470,7 +498,9 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
         telemetry("managed_route_selected", { logicalAlias: request.model, alias: managed.alias, providerId: managed.providerId, reused: managed.reused, contextBytes: managed.contextBytes });
       }
       const alias = managed?.alias ?? (state.routes.has(request.model) ? request.model : nativeModelAlias(state.config, request.model));
-      const route = (alias ? state.routes.get(alias) : undefined) ?? state.reviewers.get(request.model);
+      const configured = (alias ? state.routes.get(alias) : undefined) ?? state.reviewers.get(request.model);
+      const lease = configured ? state.pools.get(configured.id)?.lease(context, request.prompt_cache_key) : undefined;
+      const route = configured && lease ? { ...configured, adapter: lease as Provider, admission: lease as AdmissionGate } : configured;
       // Only an allowlisted reviewer slug is recorded for a request that has no route; any other name stays out of telemetry.
       if (!route && isAutoReviewModel(request.model)) model = request.model;
       if (!route) throw new ProviderError("model_not_found", unknownModelMessage(request.model), 404);
@@ -602,7 +632,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
   return { get admissionState() { return { version: 1 as const, registry: admissions }; },
     adoptAdmissions: (state, busy) => {
       legacyBusy = busy;
-      if (admissions !== state.registry) { currentRoutes.release(); admissions = state.registry; currentRoutes = buildRoutes(current); ({ routes, reviewers } = currentRoutes); }
+      if (admissions !== state.registry) { currentRoutes.release(); admissions = state.registry; currentRoutes = buildRoutes(current); ({ routes, reviewers, pools } = currentRoutes); }
       refreshLegacyHold();
       if (legacyBusy() && !legacyTimer) { legacyTimer = setInterval(refreshLegacyHold, 100); legacyTimer.unref(); }
     },
