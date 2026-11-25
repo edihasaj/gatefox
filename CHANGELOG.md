@@ -8,6 +8,9 @@
 - A provider on this Mac that resets a connection at the wrong moment can no longer end the whole gateway. Node
   24's `fetch` throws `setTypeOfService EINVAL` outside the request on macOS in that case; GateFox now ignores it
   as undici's own fix does, and the request fails with the real network error.
+- An account refused for ChatGPT subscription sharing no longer reports `available` as soon as Spendwatch reads
+  its native quota. The sharing limit is separate, so managed routes kept starting workers on a refused account
+  that showed quota left. Only a window that began after the refusal, a success or six hours clears it.
 - Gemini turns now carry the usage-ledger marker (`resp_gl_`/`msg_gl_`), like Claude and Copilot turns. Spend
   tools bill a gateway row only when it is marked, so Spendwatch skipped every Gemini turn and showed no Gemini
   spend. Turns recorded before this release stay unmarked and are not billed.

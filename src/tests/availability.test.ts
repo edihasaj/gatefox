@@ -81,6 +81,20 @@ test("status follows fresh facts only and orders unavailable, limited, unknown, 
   assert.equal(providerRow(facts({ local: false, outcome: { lastFailure: { class: "authentication", code: "authentication", at: now - hour } } }), now).status, "unavailable");
 });
 
+test("a native reading never clears a subscription sharing refusal from the same window", () => {
+  const now = 200 * hour; const at = now - 5 * 60_000;
+  const quota = (startedAt: number) => ({ source: "spendwatch" as const, observedAt: now - 60_000, windows: [{ minutes: 10080, usedPercent: 22, resetsAt: startedAt + 168 * hour }] });
+  const row = (code: string, startedAt: number, lastSuccessAt?: number, when = now) => providerRow(facts({ local: false, quota: quota(startedAt),
+    outcome: { lastFailure: { class: "quota", code, at }, ...(lastSuccessAt === undefined ? {} : { lastSuccessAt }) } }), when);
+  const sharing = "subscription_sharing_usage_limit_exceeded"; const before = now - 51 * hour;
+  assert.deepEqual(row(sharing, before).reasons, ["quota_exhausted"]);
+  assert.equal(row(sharing, before).status, "limited");
+  assert.equal(row(sharing, at + 60_000).status, "available", "a window that began after the refusal clears it");
+  assert.equal(row(sharing, before, now - 1000).status, "available", "a later success clears it");
+  assert.equal(row(sharing, before, undefined, at + 6 * hour).status, "available", "the refusal ages out");
+  assert.equal(row("usage_limit_reached", before).status, "available", "a native limit is cleared by a newer native reading");
+});
+
 test("an allowed Claude row never makes an older refused window look newer than Spendwatch", () => {
   const now = 10 * hour; const seconds = (ms: number) => Math.floor(ms / 1000);
   const provider: ProviderConfig = { id: "claude", type: "claude-subscription", models: { "claude/opus": "opus" } };
