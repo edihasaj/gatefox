@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +14,7 @@ export type Mode = "ok" | "frozen" | "502" | "503" | "500" | "400" | "401" | "42
 export interface Seen { session?: string; body: Record<string, unknown>; path: string }
 /** A worker's front door: chat completions, the model list and its capacity, each of which can be made to fail. */
 export class FakeSpark {
-  mode: Mode = "ok"; slots: number | undefined = 10; seen: Seen[] = []; running = 0; peak = 0; frozen = 0; dialed = 0; hold?: Promise<void>; port = 0;
+  mode: Mode = "ok"; slots: number | undefined = 10; seen: Seen[] = []; running = 0; peak = 0; frozen = 0; dialed = 0; latency: () => number = () => 0; hold?: Promise<void>; port = 0;
   private server?: Server;
   constructor(readonly name: string) {}
   async start(): Promise<void> {
@@ -38,18 +39,20 @@ export class FakeSpark {
     this.seen.push({ path: req.url!, session: req.headers["session-id"] as string | undefined, body: JSON.parse(text) as Record<string, unknown> });
     if (/^\d+$/.test(this.mode)) { json(Number(this.mode), { error: { message: "fixture", type: "fixture" } }); return; }
     if (this.mode === "reset") { res.destroy(); return; }
-    this.running++; this.peak = Math.max(this.peak, this.running);
+    // A request its client cancels gives its slot back before this server can notice, so it says nothing about the limit.
+    const counted = text.includes("cancel-me") ? 0 : 1; this.running += counted; this.peak = Math.max(this.peak, this.running);
     try {
       res.writeHead(200, { "Content-Type": "text/event-stream" }); res.flushHeaders();
       if (this.mode === "head-reset") { await delay(20); res.destroy(); return; }
       if (this.hold) await this.hold;
+      const wait = this.latency(); if (wait) await Promise.race([delay(wait), once(res, "close")]);
       const chunk = (delta: object, finish: string | null = null) => res.write(`data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", model: "qwen3.8-flash-next", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
       if (this.mode !== "empty") chunk({ role: "assistant", content: `from ${this.name}` });
       if (this.mode === "mid-reset") { await delay(20); res.destroy(); return; }
       chunk({}, "stop");
       res.write(`data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", model: "qwen3.8-flash-next", choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } })}\n\n`);
       res.end("data: [DONE]\n\n");
-    } finally { this.running--; }
+    } finally { this.running -= counted; }
   }
 }
 
