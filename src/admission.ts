@@ -1,6 +1,8 @@
 import { ProviderError } from "./providers/provider.js";
 
 interface Waiter { signal: AbortSignal; abort: () => void; resolve: (release: () => void) => void; reject: (error: unknown) => void }
+/** What a request needs of a queue; a pool request presents the queue of whichever member it was given. */
+export type AdmissionGate = Pick<Admission, "running" | "queued" | "check" | "acquire">;
 /** One bounded FIFO; cancellation removes a waiter without starting its provider. */
 export class Admission {
   running = 0;

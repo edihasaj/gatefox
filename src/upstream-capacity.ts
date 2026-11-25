@@ -190,7 +190,8 @@ export class UpstreamCapacityWatcher {
     const now = this.now();
     const next = new Map<string, Watched>();
     for (const provider of providers) {
-      if (provider.capacityDiscovery !== true) continue;
+      // A pool has no slots of its own; its members are collected as the providers they are.
+      if (provider.capacityDiscovery !== true || provider.pool) continue;
       const identity = capacityIdentity(provider);
       const previous = this.watched.get(provider.id);
       next.set(provider.id, previous && previous.identity === identity ? previous : { provider, identity, nextDueAt: now, running: false });

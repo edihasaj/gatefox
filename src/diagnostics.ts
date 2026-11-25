@@ -18,6 +18,7 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
   const requests: Record<string, Counts & { input?: number; cached?: number; nano?: number }> = {}; const firstEvent: Record<string, number[]> = {};
   const retries: Counts = {}; const rpcErrors: Counts = {}; const components: Counts = {}; const host: Counts = {}; const claude: Counts = {};
   const sessions: Record<string, { count: number; rewrites: number; cacheReadTokens: number; cacheWriteTokens: number }> = {}; const accounts: Counts = {};
+  const pools: Counts = {};
   const recent: Array<Record<string, unknown>> = [];
   // Every Auto-review request from a gateway executor (node_repl, shell, apply_patch, network, MCP, permissions).
   const autoReview: Counts = {};
@@ -55,6 +56,8 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
     // A retry that named more than one socket code is counted under those codes, so a mixed outage is
     // separable from a reset on a single family.
     if (event.event === "provider_retry") bump(retries, typeof event.networkCodes === "string" ? event.networkCodes : event.upstreamCode ?? event.code);
+    if (event.event === "pool_member_selected") bump(pools, `${event.pool} ${event.member}:${event.reason}`);
+    if (event.event === "pool_failover") bump(pools, `${event.pool} failover ${event.from}->${event.to}:${event.reason}`);
     if (event.event === "rpc_error") bump(rpcErrors, `${event.method} ${event.code} ${event.reason ?? (event.rejection && event.rejection !== "other" ? event.rejection : event.errorClass) ?? ""}`.trim());
     if (event.event === "component_exit") bump(components, `${event.component} exit ${event.code}`);
     if (event.event.startsWith("execution_host_") || event.event === "native_acquire") bump(host, `${event.event}${event.outcome ? ":" + event.outcome : ""}`);
@@ -79,7 +82,7 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
       firstEventMsP50: percentile(firstEvent[model] || [], 0.5), firstEventMsP95: percentile(firstEvent[model] || [], 0.95) }];
   }));
   return { since: since.toISOString(), events: events.length, machines: [...new Set(events.map(event => event.host))],
-    turns, turnFailures, executorTurns, requests: requestSummary, autoReview, providerRetries: retries, rpcErrors, componentExits: components, executionHost: host, claudeCli: claude,
+    turns, turnFailures, executorTurns, requests: requestSummary, autoReview, providerRetries: retries, ...(Object.keys(pools).length ? { providerPools: pools } : {}), rpcErrors, componentExits: components, executionHost: host, claudeCli: claude,
     claudeSessions: sessions, copilotSessions: details.copilotSessions, cacheUsage: details.cacheUsage, issues: details.issues,
     accountEngines: accounts, connectionEnds, recentProblems: recent };
 }

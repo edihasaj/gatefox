@@ -8,6 +8,7 @@ import { validateAutoLatestSettings } from "./model-auto-latest/settings.js";
 import type { AutoLatestSettings } from "./model-auto-latest/types.js";
 import { maximumReleasedAt, minimumReleasedAt } from "./model-auto-latest/metadata.js";
 import { maxModelDescription, modelDescription } from "./model-label.js";
+import { validateProviderPools } from "./provider-pool-config.js";
 import { validateManagedRouting, type ManagedRoutingSettings } from "./managed-routing-config.js";
 
 export type ProviderKind = "claude-subscription" | "codex-subscription" | "copilot-subscription" | "responses-api" | "anthropic-api" | "chat-completions-api" | "grok-subscription" | "gemini-subscription";
@@ -39,6 +40,11 @@ export interface ProviderConfig {
    * OpenRouter, so a fresh worker can warm up. Unknown usage and refusals keep their two-miss limit.
    */
   cacheMissLimit?: number;
+  /**
+   * Serve this provider's models from other self-hosted providers instead of its own base URL: one model, several machines.
+   * A conversation stays on one member; see docs/provider-pool.md. The base URL is kept for releases that ignore this field.
+   */
+  pool?: string[];
   /** Send the caller's reasoning effort through vLLM chat template kwargs, for routers with narrower effort enums. */
   chatTemplateReasoningEffort?: boolean;
   apiKeyEnv?: string;
@@ -383,6 +389,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   for (const type of ["codex-subscription", "claude-subscription"] as const) {
     if (providers.filter(provider => provider.type === type && provider.defaultForBareModels === true).length > 1) throw new Error(`Only one ${type} provider may set defaultForBareModels`);
   }
+  validateProviderPools(providers);
   const managedRouting = config.managedRouting === undefined ? undefined : validateManagedRouting(config.managedRouting, providers);
   return { version: 1, port: config.port, stateDirectory, providers,
     maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}), ...(accountEngines ? { accountEngines } : {}),

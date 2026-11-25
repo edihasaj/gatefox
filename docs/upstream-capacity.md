@@ -89,6 +89,9 @@ worker share its scheduler. Opaque worker identities prevent counting one
 worker reached through several URLs. An answering worker whose capacity cannot
 be read makes the snapshot incomplete; incomplete snapshots cannot raise limits.
 
+The members of a [provider pool](provider-pool.md) are different machines, so
+each is read on its own and the pool reports their sum.
+
 Router addresses are replicas of the same farm. Gateway takes the minimum from
 successful complete replicas, never their sum. A provider with several upstream
 models uses the minimum capacity available to any of them; missing models count
