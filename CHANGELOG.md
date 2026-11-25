@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.3.0 — 2026-11-25
 
 - One local model can be served by several self-hosted machines without a separate router: a provider's `pool`
   names the machines, each of which is also its own picker row. GateFox keeps every conversation on the machine
