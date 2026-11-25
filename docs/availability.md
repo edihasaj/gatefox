@@ -43,7 +43,10 @@ removes the others.
 - `limited`: a live quota window is at 100% (until its reset, however old the
   reading), a quota failure within six hours with no later success or newer quota
   reading, a throttle until its `Retry-After` (two minutes without one), or a fresh
-  zero balance.
+  zero balance. A `subscription_sharing_usage_limit_exceeded` failure is not cleared
+  by a newer reading of the same native window: the sharing limit is separate, so an
+  account can be refused while its native windows report quota left. Only a window
+  that began after the refusal, a success or the six hours clears it.
 - `unknown`: a local server without a probe in the last 90 seconds.
 - `busy`: running requests reached the provider's limit, or requests are queued.
 - `available`: none of the above.
