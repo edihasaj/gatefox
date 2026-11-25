@@ -176,6 +176,20 @@ run("a frozen Spark that accepts connections and never answers loses its convers
   assert.deepEqual(["qwen-1", "qwen-2"].map(id => pool.admissions.load(id).running), [0, 0]);
 });
 
+test("a lost Spark is not tried again: its waiting request and its other conversations go straight to the other one", { timeout: 60000 }, async () => {
+  const sparks = [new FakeSpark("one"), new FakeSpark("two")]; for (const spark of sparks) { spark.slots = 1; await spark.start(); }
+  const pool = await openPool({ sparks, patch: providers => { for (const member of providers.slice(1)) member.maxConcurrent = 1; } });
+  try {
+    const home = await served(pool, "a"); const spare = other(pool, home); const pinned: string[] = ["a"]; const id = home === sparks[0] ? "qwen-1" : "qwen-2";
+    for (let n = 0; pinned.length < 3; n++) { assert.ok(n < 60); if (await served(pool, `more-${n}`) === home) pinned.push(`more-${n}`); }
+    home.mode = "frozen"; const stuck = pool.ask(pinned[0]); await eventually(() => home.frozen === 1, "one request is inside the frozen Spark");
+    const waiting = pool.ask(pinned[1]); await eventually(() => pool.admissions.load(id).queued === 1, "one waits for it");
+    assert.equal((await stuck).text, `from ${spare.name}`); assert.equal((await waiting).text, `from ${spare.name}`);
+    assert.equal(await served(pool, pinned[2]), spare); assert.equal(home.frozen, 1, "nothing else was sent into the frozen Spark");
+    assert.deepEqual(["qwen-1", "qwen-2"].map(member => pool.admissions.load(member)), [{ running: 0, queued: 0 }, { running: 0, queued: 0 }]);
+  } finally { resetNetworkRetryTiming(); await pool.close(); }
+});
+
 run("a Spark that only stops publishing capacity keeps its conversations", async pool => {
   const home = await served(pool, "chat"); home.slots = undefined; await delay(1500);
   for (let n = 0; n < 5; n++) assert.equal(await served(pool, "chat"), home);

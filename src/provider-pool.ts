@@ -75,9 +75,13 @@ export class ProviderPool {
   }
   /** A waiting request leaves its queue when its member drained, or, for a conversation with no cache to lose, when another has room. */
   shouldMove(choice: Choice, excluded: ReadonlySet<string>): boolean {
+    if (!usable(choice.member)) return this.stranded(choice, excluded);
     const others = this.members.filter(member => member !== choice.member && !excluded.has(member.id) && usable(member));
-    if (!usable(choice.member)) return others.length > 0;
     return choice.reason !== "pinned" && !free(choice.member) && others.some(member => free(member) && !this.pins.cooling(member.id));
+  }
+  /** The chosen member drained or was lost while another one can serve. */
+  stranded(choice: Choice, excluded: ReadonlySet<string>): boolean {
+    return !usable(choice.member) && this.members.some(member => member !== choice.member && !excluded.has(member.id) && usable(member));
   }
   /** Whether a request can fail over to a member that currently has capacity. */
   another(excluded: ReadonlySet<string>): boolean { return this.members.some(member => !excluded.has(member.id) && usable(member)); }
@@ -162,6 +166,8 @@ export class PoolLease implements AdmissionGate, Provider {
       try {
         const release = await choice.member.admission.acquire(AbortSignal.any([signal, moved.signal]));
         if (this.closed) { release(); throw signal.reason ?? new DOMException("The operation was aborted", "AbortError"); }
+        // The place came free because the request ahead gave this member up; entering it now would only repeat that wait.
+        if (this.pool.stranded(choice, excluded)) { release(); continue; }
         this.choice = choice; this.release = release;
         return choice;
       } catch (error) {

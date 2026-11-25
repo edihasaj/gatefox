@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { AdmissionRegistry } from "../admission-registry.js";
 import { AvailabilityService } from "../availability/service.js";
 import { gatewayToken, type GatewayConfig } from "../config.js";
@@ -32,13 +33,15 @@ test("turning a running Qwen provider into a pool applies live, with saved chats
     const rows = ((await (await fetch(base + "/v1/availability?wait=3000", { headers })).json()) as any).providers;
     assert.ok(rows.some((row: any) => /^qwen-[12]$/.test(row.id) && row.lastSuccessAt), "a machine added live records its own outcomes");
     assert.deepEqual([await ask("qwen-1/qwen3.8-flash-next"), await ask("qwen-2/qwen3.8-flash-next")], ["from one", "from two"]);
+    await delay(300); const dialed = router.dialed; const probed = sparks[0].dialed; await delay(600);
+    assert.ok(sparks[0].dialed > probed, "the machines are still probed"); assert.equal(router.dialed, dialed, "nothing dials the address the pool replaced");
     // Rollback: the same file without the field, and what an older release, which ignores the field, would do.
     await write(before); assert.equal(await ask(), "from router"); assert.equal(await ask("qwen-1/qwen3.8-flash-next"), 404);
     const seen = router.chats.length; const older = new ChatCompletionsAPI(wide.providers[0]);
     for await (const _ of older.infer({ model: "qwen3.8-flash-next", input: "x" }, new AbortController().signal)) { /* drained */ }
     assert.equal(router.chats.length, seen + 1);
     await write({ ...wide, providers: [{ ...wide.providers[0], pool: ["qwen-1", "nope"] }, ...wide.providers.slice(1)] }); assert.equal(await ask(), "from router"); assert.equal(live.rejection, "invalid", "a broken pool is refused and the last good configuration serves");
-  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); for (const spark of [...sparks, router]) await spark.stop(); await rm(root, { recursive: true, force: true }); }
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); for (const spark of [...sparks, router]) await spark.stop(); await new ProviderPoolPins(root, "qwen").flush(); await rm(root, { recursive: true, force: true }); }
 });
 
 test("an in-place update keeps conversations and slot counts across handler generations", { timeout: 30000 }, async () => {
@@ -58,7 +61,7 @@ test("an in-place update keeps conversations and slot counts across handler gene
     for (let n = 0; n < 4; n++) assert.notEqual(await ask(`fresh-${n}`), homes.get("t0"), "the new generation counts the slot the old one holds");
     release(); busy.hold = undefined; assert.equal(await running, homes.get("t0"));
     for (const [thread, home] of homes) assert.equal(await ask(thread), home); assert.ok(sparks.every(spark => spark.peak <= 1));
-  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); for (const spark of sparks) await spark.stop(); await rm(root, { recursive: true, force: true }); }
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); for (const spark of sparks) await spark.stop(); await new ProviderPoolPins(root, "qwen").flush(); await rm(root, { recursive: true, force: true }); }
 });
 
 test("a managed route may keep naming the pooled model; its health and slots come from the members", { timeout: 30000 }, async () => {

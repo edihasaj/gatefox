@@ -6,13 +6,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import assert from "node:assert/strict";
 import { AdmissionRegistry } from "../admission-registry.js";
 import { gatewayToken, validateConfig, type GatewayConfig } from "../config.js";
+import { ProviderPoolPins } from "../provider-pool-pins.js";
 import { startGateway, type GatewayServer, type GatewayStartOptions } from "../server.js";
 
 export type Mode = "ok" | "frozen" | "502" | "503" | "500" | "400" | "401" | "429" | "reset" | "head-reset" | "mid-reset" | "empty";
 export interface Seen { session?: string; body: Record<string, unknown>; path: string }
 /** A worker's front door: chat completions, the model list and its capacity, each of which can be made to fail. */
 export class FakeSpark {
-  mode: Mode = "ok"; slots: number | undefined = 10; seen: Seen[] = []; running = 0; peak = 0; frozen = 0; hold?: Promise<void>; port = 0;
+  mode: Mode = "ok"; slots: number | undefined = 10; seen: Seen[] = []; running = 0; peak = 0; frozen = 0; dialed = 0; hold?: Promise<void>; port = 0;
   private server?: Server;
   constructor(readonly name: string) {}
   async start(): Promise<void> {
@@ -23,6 +24,7 @@ export class FakeSpark {
   async stop(): Promise<void> { const server = this.server; this.server = undefined; if (server) await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }); }
   get chats(): Seen[] { return this.seen.filter(entry => entry.path === "/v1/chat/completions"); }
   private async answer(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    this.dialed++;
     if (req.headers.authorization !== "Bearer fixture-key") { res.writeHead(401).end("{}"); return; }
     // A frozen machine: the connection is accepted and nothing ever comes back.
     if (this.mode === "frozen") { if (req.url === "/v1/chat/completions") this.frozen++; return; }
@@ -88,6 +90,8 @@ export async function openPool(options: { sparks?: FakeSpark[]; root?: string; p
   return { root, sparks, server, admissions, base, headers, config, current, ask, close: async () => {
     server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
     for (const spark of sparks) await spark.stop();
+    // A delayed pin write must not land in the folder while it is being removed.
+    await new ProviderPoolPins(root, "qwen").flush();
     await rm(root, { recursive: true, force: true });
   } };
 }
