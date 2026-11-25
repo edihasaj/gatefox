@@ -19,6 +19,18 @@ const unavailableReasons = new Set<AvailabilityReason>(["unhealthy", "authentica
 const limitedReasons = new Set<AvailabilityReason>(["quota_exhausted", "rate_limited", "no_credit"]);
 const iso = (value: number | undefined) => value === undefined ? undefined : new Date(value).toISOString();
 
+/**
+ * Whether a quota reading newer than a refusal clears it. Subscription sharing has its own limit, which the native windows do
+ * not measure: an account refused for sharing can still report plenty of native quota. Such a refusal is cleared only by a
+ * native window that began after it, and otherwise by a success or its age.
+ */
+function clearsRefusal(quota: QuotaFact | undefined, failure: { code: string; at: number }, now: number): boolean {
+  if (!quota || quota.observedAt <= failure.at) return false;
+  const live = liveWindows(quota.windows, now);
+  if (failure.code !== "subscription_sharing_usage_limit_exceeded") return live.length > 0;
+  return live.length > 0 && live.every(entry => entry.resetsAt !== undefined && entry.resetsAt - entry.minutes * 60_000 > failure.at);
+}
+
 /** The gateway's own usage observations for one provider, as a quota fact; Claude rows only count when a window was refused. */
 export function gatewayQuota(provider: ProviderConfig, rows: ObservedProviderUsage[], now: number): QuotaFact | undefined {
   const own = rows.filter(row => row.providerId === provider.id); if (!own.length) return;
@@ -51,7 +63,7 @@ export function reasonsFor(facts: ProviderFacts, now: number): AvailabilityReaso
     const age = now - failure.at;
     if (failure.class === "authentication" && age < 86_400_000) reasons.push("authentication");
     // Only a newer reading with a live window clears a refusal; a reading without one says nothing about the limit.
-    if (failure.class === "quota" && age < 21_600_000 && !(quota && quota.observedAt > failure.at && liveWindows(quota.windows, now).length)) reasons.push("quota_exhausted");
+    if (failure.class === "quota" && age < 21_600_000 && !clearsRefusal(quota, failure, now)) reasons.push("quota_exhausted");
     if (failure.class === "throttle" && (failure.retryAt !== undefined ? failure.retryAt > now : age < 120_000)) reasons.push("rate_limited");
     if (failure.class === "connection" && age < 120_000 && !(healthFresh && health.status !== "unhealthy" && health.observedAt > failure.at)) reasons.push("connection_failed");
   }
