@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.9 — 2026-11-25
+
+- An account refused for ChatGPT subscription sharing no longer reports `available` as soon as Spendwatch reads
+  its native quota. The sharing limit is separate, so managed routes kept starting workers on a refused account
+  that showed quota left. Only a window that began after the refusal, a success or six hours clears it.
+
 ## 2.2.8 — 2026-11-25
 
 - Gemini turns now carry the usage-ledger marker (`resp_gl_`/`msg_gl_`), like Claude and Copilot turns. Spend
