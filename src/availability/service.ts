@@ -4,6 +4,7 @@ import type { ObservedProviderUsage } from "../provider-usage.js";
 import { ProviderOutcomes } from "./outcomes.js";
 import { isLocalProvider, probeLocalProvider, type HealthFact } from "./probe.js";
 import { accountEmail, isOpenRouter, openRouterBalance, parseSpendwatch, runSpendwatch, type BalanceFact, type QuotaFact, type QuotaProvider } from "./quota.js";
+import { pooledHealth, poolMembers } from "../provider-pool.js";
 import { gatewayQuota, newerQuota, providerRow } from "./report.js";
 
 /** Replaceable collectors; production uses the real probe, Spendwatch, login readers and OpenRouter. */
@@ -97,11 +98,13 @@ export class AvailabilityService {
         const email = this.emails.get(provider.id);
         const kind = provider.type === "codex-subscription" ? "codex" : provider.type === "claude-subscription" ? "claude" : undefined;
         const watched = kind && email && spendwatch ? this.quota.get(kind)?.get(email) : undefined;
-        return providerRow({
+        const members = poolMembers(config, provider.id);
+        const row = providerRow({
           provider, local: isLocalProvider(provider), models: Object.keys(provider.models).filter(alias => !hidden.has(alias)), load: load(provider.id),
-          health: this.health.get(provider.id), balance: this.balances.get(provider.id), outcome: this.outcomes.get(provider.id),
+          health: members.length ? pooledHealth(members.map(id => this.health.get(id))) : this.health.get(provider.id), balance: this.balances.get(provider.id), outcome: this.outcomes.get(provider.id),
           quota: newerQuota(watched, gatewayQuota(provider, usage, now)),
         }, now);
+        return members.length ? { ...row, pool: members } : row;
       }),
     };
   }
@@ -123,7 +126,7 @@ export class AvailabilityService {
   private async collect(source: Source, config: GatewayConfig): Promise<void> {
     const generation = this.generation; const current = () => generation === this.generation;
     if (source === "health") {
-      await Promise.all(config.providers.filter(isLocalProvider).map(async provider => {
+      await Promise.all(config.providers.filter(provider => isLocalProvider(provider) && !poolMembers(config, provider.id).length).map(async provider => {
         try { const fact = await (this.deps.probe ?? probeLocalProvider)(provider); if (current()) this.health.set(provider.id, fact); } catch { /* keep the last observation */ }
       }));
     } else if (source === "accounts") {

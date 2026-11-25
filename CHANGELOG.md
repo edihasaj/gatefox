@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- One local model can be served by several self-hosted machines without a separate router: a provider's `pool`
+  names the machines, each of which is also its own picker row. GateFox keeps every conversation on the machine
+  that holds its prompt cache, starts new ones where there is room, moves them away from a drained, unreachable
+  or frozen machine, and never replays a request after output began. See `docs/provider-pool.md`.
 - Gemini turns now carry the usage-ledger marker (`resp_gl_`/`msg_gl_`), like Claude and Copilot turns. Spend
   tools bill a gateway row only when it is marked, so Spendwatch skipped every Gemini turn and showed no Gemini
   spend. Turns recorded before this release stay unmarked and are not billed.
