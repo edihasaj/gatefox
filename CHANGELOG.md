@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Gemini turns now carry the usage-ledger marker (`resp_gl_`/`msg_gl_`), like Claude and Copilot turns. Spend
+  tools bill a gateway row only when it is marked, so Spendwatch skipped every Gemini turn and showed no Gemini
+  spend. Turns recorded before this release stay unmarked and are not billed.
 - Managed worker routes can offer a model's full window. A route may advertise up to 1,048,576 tokens (never
   more than its smallest candidate allows) and accept requests up to 16 MiB, and a configuration may hold 16
   routes. Until now routes stopped at 262,144 tokens, 4 MiB and 8 routes, so a Sonnet, Opus, Sol or Terra

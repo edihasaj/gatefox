@@ -45,7 +45,7 @@ Never stored: prompts, instructions, messages, tool names, arguments or outputs,
 images, thread, session or turn ids, account ids, credentials, error text or
 environment values.
 
-**Marker.** For `copilot-subscription` and `claude-subscription` routes, while the
+**Marker.** For `copilot-subscription`, `claude-subscription` and `gemini-subscription` routes, while the
 ledger is on, the Responses id is `resp_gl_<request id without dashes>` instead of a
 random `resp_<hex>`. Codex records that id in its own rollout, so a spend tool counts
 a gateway request once, from the ledger, and skips the matching Codex record. A

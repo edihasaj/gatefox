@@ -9,7 +9,7 @@ import { startGateway } from "../server.js";
 import { ProviderError, type Provider } from "../providers/provider.js";
 import type { InferenceEvent, UsageAccounting } from "../protocol/types.js";
 import { configureTelemetry, flushTelemetry, readTelemetry, telemetry } from "../telemetry.js";
-import { flushRecords, flushUsageLedger, ledgerFields, readUsageLedger, recordUsage, resetUsageLedger } from "../usage-ledger.js";
+import { flushRecords, flushUsageLedger, ledgerFields, readUsageLedger, recordUsage, resetUsageLedger, usageLedgerMarks } from "../usage-ledger.js";
 
 const usage = { input_tokens: 100, output_tokens: 5, total_tokens: 105, input_tokens_details: { cached_tokens: 80 } };
 const accounting: UsageAccounting = { cacheWriteTokens: 10, reasoningTokens: 3, nanoAiu: 2e9, nanoAiuStatus: "complete" };
@@ -64,6 +64,12 @@ test("billing detail never reaches the client and the response id carries the le
       }
     } finally { await gateway.close(); }
   }
+});
+
+test("Gemini routes carry the ledger marker, so a spend tool bills their rows", () => {
+  // Spendwatch bills a gateway row only when it carries a marked id; without one every Gemini turn went unbilled.
+  for (const type of ["gemini-subscription", "claude-subscription", "copilot-subscription"]) assert.equal(usageLedgerMarks(type), true, type);
+  assert.equal(usageLedgerMarks("codex-subscription"), false);
 });
 
 test("the off switch removes the marker, the directory and every row", async t => {

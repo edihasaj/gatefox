@@ -23,7 +23,8 @@ export interface UsageFields {
 export interface LedgerRow extends UsageFields { v: 1; at: string; host: string; origin: "gateway" | "telemetry"; inputTokens: number; cachedTokens: number; cacheWriteTokens: number; outputTokens: number; reasoningTokens: number; nanoAiu: number | null }
 
 /** Request routes whose usage a spend tool reads from the ledger. Spendwatch mirrors this set. */
-export const LEDGER_COUNTED_TYPES: ReadonlySet<string> = new Set(["copilot-subscription", "claude-subscription"]);
+// Gemini turns run in a disposable CLI home that is deleted with the session, so the ledger is their only record.
+export const LEDGER_COUNTED_TYPES: ReadonlySet<string> = new Set(["copilot-subscription", "claude-subscription", "gemini-subscription"]);
 const keepMonths = 12;
 const statuses = new Set<string>(["completed", "empty", "failed"]);
 const nanoStatuses = new Set<string>(["complete", "partial", "unavailable"]);
