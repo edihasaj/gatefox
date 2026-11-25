@@ -108,6 +108,18 @@ test("new conversations follow room, not order, across unequal Sparks", async ()
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("a waiting request leaves a lost Spark even while the request ahead of it, already answering, keeps its place", { timeout: 10000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "provider-pool-wait-")); const admissions = [new Admission(1), new Admission(1)]; let lost = -1; const pins = new ProviderPoolPins(root, "qwen");
+  try {
+    const pool = new ProviderPool("qwen", admissions.map((admission, index) => ({ id: `qwen-${index + 1}`, adapter: { async *infer() {} }, admission, limit: () => 1, lost: () => lost === index })), pins, { pollMs: 10 });
+    const enter = () => pool.lease({ threadId: "warm" }).acquire(new AbortController().signal);
+    const ahead = await enter(); const home = admissions.findIndex(admission => admission.running === 1);
+    const waiting = enter(); await delay(100); assert.deepEqual([admissions[home].queued, admissions[1 - home].running], [1, 0], "it waits where its cache is");
+    lost = home; const release = await waiting; assert.deepEqual([admissions[home].running, admissions[home].queued, admissions[1 - home].running], [1, 0, 1]);
+    release(); ahead(); assert.deepEqual(admissions.map(admission => admission.running), [0, 0]);
+  } finally { await pins.flush(); await rm(root, { recursive: true, force: true }); }
+});
+
 test("diagnostics count requests per machine and each failover, and say nothing without a pool", async () => {
   const { summarizeTelemetry } = await import("../diagnostics.js"); const base = { at: new Date().toISOString(), host: "h", component: "gateway", pid: 1 };
   assert.deepEqual(summarizeTelemetry([{ ...base, event: "pool_member_selected", pool: "qwen", member: "qwen-1", reason: "pinned" }, { ...base, event: "pool_member_selected", pool: "qwen", member: "qwen-1", reason: "pinned" },
