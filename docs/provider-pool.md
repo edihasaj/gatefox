@@ -54,6 +54,8 @@ removing or changing `pool` applies live and keeps the model name of saved chats
 | Member advertises 0 slots (drained) | Running work finishes. Waiting requests and conversations move to another member. |
 | Connection refused or dropped, or HTTP 502/503, before any output | The request runs on another member. A warm conversation first retries a dropped connection once, after about a second. |
 | Member accepts connections but answers nothing | After three unanswered probes in a row, while another member answers, its conversations and silent requests move (45 to 70 seconds). |
+| Request waiting for a member that stops answering | Moves without entering it, even while the request ahead keeps its place. |
+| A member just refused or dropped a request | It gets no new conversations for 30 seconds, also when it returns sooner. |
 | This Mac loses its network | Nobody is lost; conversations return to their own member. |
 | Failure after output began | Returned to the client, never replayed. Its retry goes to the same member first. |
 | The model server's own answer (400, 401, 429, 500, empty) | Returned unchanged, never moved. |
