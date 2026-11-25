@@ -5,6 +5,9 @@
   names the machines, each of which is also its own picker row. GateFox keeps every conversation on the machine
   that holds its prompt cache, starts new ones where there is room, moves them away from a drained, unreachable
   or frozen machine, and never replays a request after output began. See `docs/provider-pool.md`.
+- A provider on this Mac that resets a connection at the wrong moment can no longer end the whole gateway. Node
+  24's `fetch` throws `setTypeOfService EINVAL` outside the request on macOS in that case; GateFox now ignores it
+  as undici's own fix does, and the request fails with the real network error.
 - Gemini turns now carry the usage-ledger marker (`resp_gl_`/`msg_gl_`), like Claude and Copilot turns. Spend
   tools bill a gateway row only when it is marked, so Spendwatch skipped every Gemini turn and showed no Gemini
   spend. Turns recorded before this release stay unmarked and are not billed.

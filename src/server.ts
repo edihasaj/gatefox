@@ -36,6 +36,7 @@ import { ProviderPool, pooledLoad, poolMembers } from "./provider-pool.js";
 import { PoolReach } from "./provider-pool-reach.js";
 import { isLocalProvider, probeLocalProvider } from "./availability/probe.js";
 import { ProviderPoolPins } from "./provider-pool-pins.js";
+import { tolerateResetSockets } from "./reset-sockets.js";
 import { ProviderUsageStore } from "./provider-usage.js";
 import { ObservedContextWindows } from "./model-refresh.js";
 import { telemetry } from "./telemetry.js";
@@ -239,6 +240,7 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
 }
 
 export async function createGatewayHandler(config: GatewayConfig, factory = createProvider, reload?: () => Promise<GatewayConfig>, options: GatewayStartOptions = {}): Promise<GatewayHandler> {
+  tolerateResetSockets();
   const heartbeatMs = options.heartbeatMs ?? 15000;
   if (!Number.isFinite(heartbeatMs) || heartbeatMs < 1) throw new Error("Heartbeat interval must be positive");
   if (config.clientOnly) throw new Error("This is a remote client configuration; start its SSH tunnel instead of a local inference daemon");
