@@ -39,7 +39,10 @@ test("geminiSessions is validated like grokSessions: mode, bounded limits, absen
   assert.throws(() => validateConfig(waited, "/e"), /geminiSessions toolWaitMinutes must be 1 through 25/);
   const mode = structuredClone(base); (mode.providers[0] as Record<string, unknown>).geminiSessions = { mode: "replay" };
   assert.throws(() => validateConfig(mode, "/e"), /geminiSessions mode must be oneshot or live/);
-  assert.deepEqual(geminiSessionSettings({}), { mode: "live", max: 4, parkMinutes: 30, toolWaitMinutes: 25 });
+  const resume = structuredClone(base); (resume.providers[0] as Record<string, unknown>).geminiSessions = { resume: "always" };
+  assert.throws(() => validateConfig(resume, "/e"), /geminiSessions resume must be replay or refuse/);
+  assert.deepEqual(geminiSessionSettings({}), { mode: "live", max: 4, parkMinutes: 30, toolWaitMinutes: 25, replay: true });
+  assert.equal(geminiSessionSettings({ geminiSessions: { resume: "refuse" } }).replay, false);
 });
 
 test("the managed settings close every way the CLI has of running or reporting on its own", () => {

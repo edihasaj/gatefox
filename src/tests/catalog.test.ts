@@ -306,6 +306,7 @@ test("a picker row drops the account label when the model name already starts wi
   assert.equal(pickerName("Gemini", "Gemini 4 Neon"), "Gemini 4 Neon");
   assert.equal(pickerName("Codex 3", "GPT-6.2-Sol"), "Codex 3 · GPT-6.2-Sol");
   assert.equal(pickerName("Claude", "b"), "Claude · b");
+  assert.equal(pickerName("Claude", "claude-fable-5-1"), "Claude · claude-fable-5-1", "a raw model ID is not a name that repeats the account");
   // Only a whole-word prefix counts: "Gem" is not the start of the word "Gemini".
   assert.equal(pickerName("Gem", "Gemini 4 Neon"), "Gem · Gemini 4 Neon");
 });

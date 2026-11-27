@@ -51,7 +51,7 @@ test("a pool leaves the saved route, its fingerprint and unpooled configurations
 test("the pool and each machine are separate picker rows", () => {
   const rows = modelCatalog(poolConfig("/tmp/provider-pool-config", ports)).models;
   assert.deepEqual(rows.map(row => [row.slug, row.display_name, row.visibility]), [
-    ["qwen/qwen3.8-flash-next", "Qwen · Qwen 3.8 Flash Next", "list"],
+    ["qwen/qwen3.8-flash-next", "Qwen 3.8 Flash Next", "list"],
     ["qwen-1/qwen3.8-flash-next", "Qwen 1 · Qwen 3.8 Flash Next", "list"],
     ["qwen-2/qwen3.8-flash-next", "Qwen 2 · Qwen 3.8 Flash Next", "list"],
   ]);
