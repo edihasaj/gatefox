@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ProviderError } from "../providers/provider.js";
+import { GeminiEndedStore } from "../providers/gemini-ended-store.js";
 import { geminiEndReasons, geminiStopReason, geminiStopReasons, fixedReason as fixedGeminiReason } from "../providers/gemini-reasons.js";
 import { adapter, alive, builtinTools, callIds, grepName, harness, kind, live, lookupName, outputFor, sleep, tools, turn, until, user } from "./gemini-live-harness.js";
 
@@ -159,6 +160,25 @@ test("by default history the session does not hold replaces the session instead 
     const fresh = await turn(provider, [user("other [plain]"), { type: "message", role: "assistant", content: [{ type: "output_text", text: "earlier" }] }, user("go [plain]")], { context: { threadId: "never-seen" } });
     assert.equal(fresh.text, "answer to plain", "history with no session is replayed, not refused as session_missing");
     assert.equal((await h.sessions()).filter(entry => entry.outcome === "spawned").at(-1)?.replayed, "session_missing");
+  } finally { await h.restore(); }
+});
+
+test("a store left in the registry by an earlier release is replaced, so a hot-swapped gateway still replays", { timeout: 40000 }, async () => {
+  const h = await harness();
+  try {
+    const provider = adapter(); const first = [user("hello [plain]")];
+    const a = await turn(provider, first, { context: { threadId: "swap-thread" } });
+    const [session] = live().sessions();
+    await session.close("reaped", "parked");
+    assert.ok(await until(async () => live().sessions().length === 0));
+    // What 2.3.0 left behind after an idle swap: its own store object, which has no `reopen`.
+    const registry = (globalThis as unknown as Record<symbol, { stores: Map<string, unknown> }>)[Symbol.for("harness-gateway/gemini-sessions/v1")];
+    const real = GeminiEndedStore.forHome(h.home);
+    registry.stores.set(h.home, { lookup: (key: string) => real.lookup(key), reserve: (key: string) => real.reserve(key),
+      finish: (key: string, why: string) => real.finish(key, why), release: (key: string) => real.release(key) });
+    const b = await turn(provider, [...first, ...a.output, user("again [plain]")], { context: { threadId: "swap-thread" } });
+    assert.equal(b.text, "answer to plain");
+    assert.ok(!(await h.sessions()).some(entry => entry.missReason === "ended_store_unavailable"));
   } finally { await h.restore(); }
 });
 

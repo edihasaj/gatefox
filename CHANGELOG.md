@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Gemini chat replay works on a Mac that updated without a restart. The running gateway kept the Gemini session
+  registry of the release before, including that release's ended-session store, which lacks the `reopen` that replay
+  calls; every Gemini chat was then refused as `ended_store_unavailable`. A store from an earlier release is now replaced.
 - A Gemini chat no longer stops working after 30 minutes idle, after a gateway restart, or when a chat that began on
   another model switches to Gemini. By default (`geminiSessions.resume: "replay"`) GateFox starts a new Gemini session
   that receives the whole chat once, instead of refusing with an error the app showed as "overloaded". That turn is as
