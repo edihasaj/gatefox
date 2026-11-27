@@ -51,6 +51,33 @@ test("OpenRouter DeepSeek custom calls survive schema, forced choice, writer and
   assert.deepEqual(history[1], { type: "function_call_output", call_id: "call", output: "ok" });
 });
 
+test("OpenRouter DeepSeek returning the readable alias still resolves one declared custom tool and dispatches it once", async t => {
+  fixture(t);
+  const raw = "*** Begin Patch\n*** End Patch\n";
+  for (const returned of ["files.patch", "functions.files.patch"]) {
+    t.mock.method(globalThis, "fetch", async () => {
+      const call = { type: "function_call", id: "fc", call_id: "call", name: returned, arguments: JSON.stringify({ input: raw }), status: "completed" };
+      return stream({ type: "response.output_item.added", item: { ...call, arguments: "", status: "in_progress" } }, { type: "response.output_item.done", item: call }, complete([call]));
+    });
+    const writer = new ResponsesWriter("flash", () => {}); writer.begin();
+    for await (const event of new ResponsesAPI(config).infer(request(), new AbortController().signal)) writer.accept(event);
+    const output = writer.result().output as Record<string, unknown>[];
+    assert.equal(output.length, 1);
+    assert.deepEqual({ type: output[0].type, namespace: output[0].namespace, name: output[0].name, input: output[0].input, call_id: output[0].call_id },
+      { type: "custom_tool_call", namespace: "files", name: "patch", input: raw, call_id: "call" });
+  }
+});
+
+test("OpenRouter still refuses a returned alias that is not declared, with no retry and no dispatch", async t => {
+  fixture(t);
+  let requests = 0, dispatched = 0;
+  t.mock.method(globalThis, "fetch", async () => { requests++; return stream(complete([{ type: "function_call", id: "fc", call_id: "call", name: "files.delete", arguments: JSON.stringify({ input: "x" }), status: "completed" }])); });
+  await assert.rejects(async () => {
+    for await (const event of new ResponsesAPI(config).infer(request(), new AbortController().signal)) if (event.type === "tool") dispatched++;
+  }, error => error instanceof ProviderError && error.code === "tool_identity_failure" && error.upstream?.code === "unknown_wire_tool" && !error.message.includes("files.delete"));
+  assert.equal(requests, 1); assert.equal(dispatched, 0);
+});
+
 test("malformed custom function envelopes fail before dispatch on OpenRouter and generic Responses without retry", async t => {
   fixture(t);
   for (const baseUrl of [config.baseUrl, "https://example.invalid/v1"]) {

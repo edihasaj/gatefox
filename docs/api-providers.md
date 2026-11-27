@@ -117,6 +117,14 @@ The error also retains the actual stream boundary and event counts. It never
 records tool names, namespaces, arguments or request/response content. These
 failures remain final: the rejected tool is not dispatched and inference is not
 automatically replayed. This classification does not change tool matching.
+The bridge sends opaque wire names, but a model may answer with the readable name
+it was shown in the tool description. When the exact wire name is not found, a
+returned name is accepted only if it selects exactly one declared tool: its alias
+(`exec_command`, `files.read`), the alias with a `functions.` prefix, or the wire
+name differing only in ASCII letter case (a look-alike Unicode letter never matches); every one of these spellings is considered together,
+so a name that two tools could claim is refused. An ambiguous or undeclared name, and any
+near miss, still fails as `unknown_wire_tool`; there is no fuzzy matching, and
+arguments are never changed.
 Malformed custom function arguments fail before tool dispatch as
 `invalid_tool_call`, without automatic inference replay. A writer-level custom
 output failure also reports a provider-output error, rather than blaming the
