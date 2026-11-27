@@ -1,6 +1,7 @@
 # Changelog
 
-## Unreleased
+## 2.3.1 — 2026-11-27
+
 - A Gemini chat no longer stops working after 30 minutes idle, after a gateway restart, or when a chat that began on
   another model switches to Gemini. By default (`geminiSessions.resume: "replay"`) GateFox starts a new Gemini session
   that receives the whole chat once, instead of refusing with an error the app showed as "overloaded". That turn is as
