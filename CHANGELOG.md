@@ -1,6 +1,8 @@
 # Changelog
 
-## 2.3.1 — 2026-11-27
+## 2.3.2 — 2026-11-27
+
+2.3.1 was tagged but never published; its changes ship here.
 
 - A Gemini chat no longer stops working after 30 minutes idle, after a gateway restart, or when a chat that began on
   another model switches to Gemini. By default (`geminiSessions.resume: "replay"`) GateFox starts a new Gemini session
@@ -8,7 +10,8 @@
   slow as a first turn. `resume: "refuse"` keeps the old behaviour, now with a message that says to start a new chat.
   Each new Gemini session records `startMs`, how long Antigravity took to start. See `docs/gemini-sessions.md`.
 - A picker row no longer repeats its account: when the model name already starts with the account label, the row shows
-  the model alone ("Gemini 4 Neon", not "Gemini · Gemini 4 Neon").
+  the model alone ("Gemini 4 Neon", not "Gemini · Gemini 4 Neon"; "Qwen 3.8 Flash Next", not "Qwen · Qwen 3.8 Flash
+  Next"). A raw model ID keeps its account ("Claude · claude-fable-5-1").
 
 ## 2.3.0 — 2026-11-25
 
