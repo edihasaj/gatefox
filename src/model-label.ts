@@ -13,6 +13,17 @@ export function modelLabel(label: string): string {
   return vendor && match[2].toLowerCase().startsWith(vendor.toLowerCase()) ? match[2] : label;
 }
 
+/**
+ * The picker row name: `<account label> · <model>`, or the model alone when it already starts with the account label as a
+ * whole word ("Gemini" with "Gemini 4 Neon" is "Gemini 4 Neon", not "Gemini · Gemini 4 Neon"). "Codex 3 · GPT-6.2-Sol" keeps both.
+ */
+export function pickerName(account: string, model: string): string {
+  const prefix = account.trim();
+  const lower = model.toLowerCase();
+  if (prefix && lower.startsWith(prefix.toLowerCase()) && (model.length === prefix.length || /[\s·\-:]/u.test(model[prefix.length]!))) return model;
+  return `${account} · ${model}`;
+}
+
 /** The longest provider description a picker row carries; longer vendor text is dropped, never cut mid-sentence. */
 export const maxModelDescription = 200;
 

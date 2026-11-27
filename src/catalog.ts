@@ -8,7 +8,7 @@ import { upstreamSlugField } from "./codex-native-rows.js";
 import { tokenFamily, tokenizerFamilyField } from "./compaction-switch-guard.js";
 import { pickerHidden, releasedAtMetadata } from "./model-auto-latest/metadata.js";
 import { managedCatalog } from "./managed-routing-catalog.js";
-import { modelDescription, modelLabel } from "./model-label.js";
+import { modelDescription, modelLabel, pickerName } from "./model-label.js";
 
 export { modelLabel };
 
@@ -32,7 +32,7 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
     // Codex 2 rows default to native Codex's truncation and usable window share.
     const codex = provider.type === "codex-subscription"; const truncation = metadata?.truncationPolicy;
     return {
-      slug: alias, display_name: `${provider.label || provider.id} · ${metadata?.displayName ? modelLabel(metadata.displayName) : provider.models[alias]}`,
+      slug: alias, display_name: pickerName(provider.label || provider.id, metadata?.displayName ? modelLabel(metadata.displayName) : provider.models[alias]),
       // The provider's own description when its catalog gave one; otherwise the route it runs on.
       description: metadata?.description ?? `${provider.type}; account route ${provider.id}`, priority: metadata?.priority ?? modelIndex,
       // The desktop adapter copies the native row for this slug; Codex ignores the extra key.

@@ -10,6 +10,7 @@ import { discoverModels, loadDiscoveredModels, modelCatalog, modelLabel } from "
 import type { GatewayConfig, ProviderConfig } from "../config.js";
 import { validateConfig } from "../config.js";
 import { readServiceTierMetadata } from "../model-service-tiers.js";
+import { pickerName } from "../model-label.js";
 
 const native = [
   { value: "default", resolvedModel: "claude-opus-5-5", displayName: "Default" },
@@ -299,4 +300,12 @@ test("Codex 2 discovery copies valid window and truncation fields, never comp_ha
     assert.deepEqual(row.truncation_policy, { mode: "tokens", limit: 10000 }); assert.equal(row.effective_context_window_percent, 95);
     assert.equal(row.auto_compact_token_limit, 400000); assert.equal(row.max_context_window, 872000); assert.equal(Object.hasOwn(row, "comp_hash"), false);
   } finally { globalThis.fetch = original; await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a picker row drops the account label when the model name already starts with it", () => {
+  assert.equal(pickerName("Gemini", "Gemini 4 Neon"), "Gemini 4 Neon");
+  assert.equal(pickerName("Codex 3", "GPT-6.2-Sol"), "Codex 3 · GPT-6.2-Sol");
+  assert.equal(pickerName("Claude", "b"), "Claude · b");
+  // Only a whole-word prefix counts: "Gem" is not the start of the word "Gemini".
+  assert.equal(pickerName("Gem", "Gemini 4 Neon"), "Gem · Gemini 4 Neon");
 });

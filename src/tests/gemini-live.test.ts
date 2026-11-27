@@ -84,10 +84,10 @@ test("a client request the gateway does not serve is answered rather than left w
   } finally { await h.restore(); }
 });
 
-test("history that does not extend the session is refused and the session survives", { timeout: 40000 }, async () => {
+test("with resume: refuse, history that does not extend the session is refused and the session survives", { timeout: 40000 }, async () => {
   const h = await harness();
   try {
-    const provider = adapter(); const first = [user("start [tool]")];
+    const provider = adapter({ mode: "live", resume: "refuse" }); const first = [user("start [tool]")];
     const a = await turn(provider, first);
     const good = [...first, ...a.output, ...outputFor(a.output, "ok")];
     continuityRefusal(await rejected(turn(provider, [user("start [tool] edited"), ...a.output, ...outputFor(a.output, "ok")])));
@@ -102,10 +102,10 @@ test("history that does not extend the session is refused and the session surviv
   } finally { await h.restore(); }
 });
 
-test("a conversation whose session ended is never reopened, so its history is never paid for twice", { timeout: 40000 }, async () => {
+test("with resume: refuse, a conversation whose session ended is never reopened, so its history is never paid for twice", { timeout: 40000 }, async () => {
   const h = await harness();
   try {
-    const provider = adapter(); const first = [user("hello [plain]")];
+    const provider = adapter({ mode: "live", resume: "refuse" }); const first = [user("hello [plain]")];
     const a = await turn(provider, first, { context: { threadId: "ended-thread" } });
     assert.equal(a.text, "answer to plain");
     const [session] = live().sessions();
@@ -117,6 +117,48 @@ test("a conversation whose session ended is never reopened, so its history is ne
     // The record survives a gateway restart: the store file is what a new process would read.
     const stored = JSON.parse(await readFile(join(h.home, "gateway-ended-sessions.json"), "utf8")) as { entries?: Record<string, unknown> };
     assert.ok(Object.keys(stored.entries ?? {}).length === 1, "the ended conversation is recorded in the private home");
+  } finally { await h.restore(); }
+});
+
+test("by default a conversation whose session ended replays its history into a new session and continues there", { timeout: 40000 }, async () => {
+  const h = await harness();
+  try {
+    const provider = adapter(); const first = [user("hello [plain]")];
+    const a = await turn(provider, first, { context: { threadId: "replay-thread" } });
+    const [session] = live().sessions();
+    await session.close("reaped", "parked");
+    assert.ok(await until(async () => live().sessions().length === 0));
+    const second = [...first, ...a.output, user("again [think]")];
+    const b = await turn(provider, second, { context: { threadId: "replay-thread" } });
+    assert.equal(b.text, "answer to think");
+    assert.equal((await h.pids()).length, 2, "the replay started one new process");
+    // The new session holds the whole history, so the next turn continues it without a third process.
+    const c = await turn(provider, [...second, ...b.output, user("more [plain]")], { context: { threadId: "replay-thread" } });
+    assert.equal(c.text, "answer to plain");
+    assert.equal((await h.pids()).length, 2);
+    const entries = await h.sessions();
+    const spawned = entries.filter(entry => entry.outcome === "spawned");
+    assert.equal(spawned.length, 2);
+    assert.equal(spawned[1].replayed, "parked");
+    assert.ok(spawned.every(entry => typeof entry.startMs === "number" && entry.startMs >= 0), "each spawn records how long the CLI took to start");
+    assert.ok(!entries.some(entry => entry.outcome === "refused"));
+  } finally { await h.restore(); }
+});
+
+test("by default history the session does not hold replaces the session instead of being refused", { timeout: 40000 }, async () => {
+  const h = await harness();
+  try {
+    const provider = adapter(); const first = [user("start [plain]")];
+    const a = await turn(provider, first);
+    // A chat that started on another model: Gemini never saw this history, so a new session receives all of it.
+    const b = await turn(provider, [user("edited start [plain]"), ...a.output, user("next [think]")]);
+    assert.equal(b.text, "answer to think");
+    assert.equal((await h.pids()).length, 2);
+    const replaced = (await h.sessions()).filter(entry => entry.outcome === "spawned").at(-1);
+    assert.equal(replaced?.replayed, "prefix_diverged");
+    const fresh = await turn(provider, [user("other [plain]"), { type: "message", role: "assistant", content: [{ type: "output_text", text: "earlier" }] }, user("go [plain]")], { context: { threadId: "never-seen" } });
+    assert.equal(fresh.text, "answer to plain", "history with no session is replayed, not refused as session_missing");
+    assert.equal((await h.sessions()).filter(entry => entry.outcome === "spawned").at(-1)?.replayed, "session_missing");
   } finally { await h.restore(); }
 });
 
