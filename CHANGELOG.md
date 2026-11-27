@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.3 — 2026-11-28
+
+- Gemini chat replay works on a Mac that updated without a restart. The running gateway kept the Gemini session
+  registry of the release before, including that release's ended-session store, which lacks the `reopen` that replay
+  calls; every Gemini chat was then refused as `ended_store_unavailable`. A store from an earlier release is now replaced.
+
 ## 2.3.2 — 2026-11-27
 
 2.3.1 was tagged but never published; its changes ship here.

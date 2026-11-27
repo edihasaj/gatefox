@@ -145,7 +145,11 @@ async function place(driver: AcpLiveDriver, reg: Registry, settings: AcpLiveSett
   const fingerprint = sha([input.system, input.catalog]);
   const { entries, messages } = ledgerEntries(input.request, input.allTools, input.leading);
   let session = reg.sessions.get(key); let plan: Plan | undefined; let reason: string | undefined; let parkedMs: number | undefined;
-  const store = reg.stores.get(input.home) ?? reg.stores.set(input.home, driver.storeFor(input.home)).get(input.home)!;
+  // The registry outlives a code update (an idle hot swap adopts it), so it can hold a store an earlier release built, which
+  // lacks methods this release calls (`reopen` arrived in 2.3.2). Such a store is replaced: every instance reads and writes
+  // the same file under the same cross-process lock, so nothing it recorded is lost.
+  const held = reg.stores.get(input.home);
+  const store = held && typeof held.reopen === "function" ? held : reg.stores.set(input.home, driver.storeFor(input.home)).get(input.home)!;
   const ephemeral = input.ephemeral === true;
   const replay = settings.replay === true && !ephemeral;
   /** Why this request replays its conversation into a new session; undefined when it does not. */
