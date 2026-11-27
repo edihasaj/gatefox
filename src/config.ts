@@ -119,15 +119,17 @@ export function grokSessionSettings(provider: Pick<ProviderConfig, "grokSessions
   return { mode: value.mode === "oneshot" ? "oneshot" : "live", max: value.max ?? 4, parkMinutes: value.parkMinutes ?? 30, toolWaitMinutes: value.toolWaitMinutes ?? 25 };
 }
 /**
- * Live Gemini sessions. Validated exactly like `grokSessions`. `live` is the only transport the Gemini CLI offers
+ * Live Gemini sessions. Validated like `grokSessions`. `live` is the only transport the Gemini CLI offers
  * through the gateway, so `oneshot` is accepted for symmetry with the other providers and refused at request time
- * rather than silently ignored.
+ * rather than silently ignored. `resume` decides what happens to a conversation whose session ended (idle past
+ * `parkMinutes`, a gateway restart) or no longer matches its history: `replay` (the default) starts a new session that
+ * receives the whole history once; `refuse` keeps the conversation closed.
  */
-export interface GeminiSessionConfig { mode?: "oneshot" | "live"; max?: number; parkMinutes?: number; toolWaitMinutes?: number }
-export interface GeminiSessionSettings { mode: "oneshot" | "live"; max: number; parkMinutes: number; toolWaitMinutes: number }
+export interface GeminiSessionConfig { mode?: "oneshot" | "live"; max?: number; parkMinutes?: number; toolWaitMinutes?: number; resume?: "replay" | "refuse" }
+export interface GeminiSessionSettings { mode: "oneshot" | "live"; max: number; parkMinutes: number; toolWaitMinutes: number; replay: boolean }
 export function geminiSessionSettings(provider: Pick<ProviderConfig, "geminiSessions">): GeminiSessionSettings {
   const value = provider.geminiSessions || {};
-  return { mode: value.mode === "oneshot" ? "oneshot" : "live", max: value.max ?? 4, parkMinutes: value.parkMinutes ?? 30, toolWaitMinutes: value.toolWaitMinutes ?? 25 };
+  return { mode: value.mode === "oneshot" ? "oneshot" : "live", max: value.max ?? 4, parkMinutes: value.parkMinutes ?? 30, toolWaitMinutes: value.toolWaitMinutes ?? 25, replay: value.resume !== "refuse" };
 }
 /** Whether a provider bridges the client's `tool_search` instead of dropping it; `off` and any other value stay today's drop. */
 export const bridgesToolSearch = (provider: Pick<ProviderConfig, "type" | "toolSearch">): boolean =>
@@ -379,6 +381,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (gemini.parkMinutes !== undefined && !integerIn(gemini.parkMinutes, 5, 240)) throw new Error(`${provider.id}: geminiSessions parkMinutes must be 5 through 240`);
       // A held tool call is a pending MCP request; the gateway closes the session before any client-side timeout could end it on its own.
       if (gemini.toolWaitMinutes !== undefined && !integerIn(gemini.toolWaitMinutes, 1, 25)) throw new Error(`${provider.id}: geminiSessions toolWaitMinutes must be 1 through 25`);
+      if (gemini.resume !== undefined && !["replay", "refuse"].includes(gemini.resume)) throw new Error(`${provider.id}: geminiSessions resume must be replay or refuse`);
     }
     return { ...provider, models: { ...provider.models }, ...(sessions ? { claudeSessions: { ...sessions } } : {}), ...(copilot ? { copilotSessions: { ...copilot } } : {}), ...(grok ? { grokSessions: { ...grok } } : {}), ...(gemini ? { geminiSessions: { ...gemini } } : {}), ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}),
       ...(provider.type === "grok-subscription" ? { grokHome: resolve(directory, provider.grokHome ?? join(stateDirectory, "grok-home")) } : {}),

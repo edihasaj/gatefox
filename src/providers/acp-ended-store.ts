@@ -225,6 +225,21 @@ export class AcpEndedStore {
     });
   }
 
+  /**
+   * Like `reserve`, but a conversation whose session already ended is taken back: its closed record becomes this process's
+   * `live` reservation. Used only by a provider that deliberately replays a conversation into a new session. A `live` entry
+   * (a session another running process, or this one, still holds) is never taken: it returns `concurrent`.
+   */
+  reopen(key: string): Promise<string | undefined> {
+    return this.run((state, now, me) => {
+      const entry = state.entries.get(key);
+      if (entry?.reason === live) return "concurrent";
+      if (!entry && state.entries.size >= acpEndedLimits.maxEntries) throw full();
+      state.entries.set(key, { at: now, reason: live, seq: ++state.seq, owner: me }); state.changed = true;
+      return undefined;
+    });
+  }
+
   /** The session ended: the conversation is closed with this reason. A write failure is kept and retried; lookups fail closed meanwhile. */
   finish(key: string, reason: string): Promise<void> {
     const fixed = this.reasons(reason);

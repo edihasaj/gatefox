@@ -1,6 +1,13 @@
 # Changelog
 
 ## Unreleased
+- A Gemini chat no longer stops working after 30 minutes idle, after a gateway restart, or when a chat that began on
+  another model switches to Gemini. By default (`geminiSessions.resume: "replay"`) GateFox starts a new Gemini session
+  that receives the whole chat once, instead of refusing with an error the app showed as "overloaded". That turn is as
+  slow as a first turn. `resume: "refuse"` keeps the old behaviour, now with a message that says to start a new chat.
+  Each new Gemini session records `startMs`, how long Antigravity took to start. See `docs/gemini-sessions.md`.
+- A picker row no longer repeats its account: when the model name already starts with the account label, the row shows
+  the model alone ("Gemini 4 Neon", not "Gemini · Gemini 4 Neon").
 - One local model can be served by several self-hosted machines without a separate router: a provider's `pool`
   names the machines, each of which is also its own picker row. GateFox keeps every conversation on the machine
   that holds its prompt cache, starts new ones where there is room, moves them away from a drained, unreachable

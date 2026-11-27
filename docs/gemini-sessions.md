@@ -2,7 +2,7 @@
 summary: 'Google AI Ultra subscription inference through Antigravity CLI (Gemini 4 Neon, Carbon, Argon, Hydrogen) or the official Gemini CLI: one live ACP session per conversation, a private Gemini home, managed settings, tool handoff and the fail-closed checks around each.'
 read_when:
   - Changing the gemini-subscription provider, its live sessions or its Gemini home
-  - Turning geminiSessions on or off, or investigating a refused Gemini conversation
+  - Turning geminiSessions on or off, or investigating a refused or replayed Gemini conversation
   - Signing the gateway in to Google, or investigating a failed Gemini request
   - Adding Gemini 4 models (Neon, Carbon, Argon, Hydrogen) or setting geminiCli to antigravity
 ---
@@ -22,8 +22,9 @@ changed automatically.
 
 The session mechanics are shared with [Grok sessions](grok-sessions.md): one long-lived
 CLI process per conversation, ACP over stdio, caller tools as held calls on a loopback
-MCP endpoint, and refusal rather than replay. This page covers what is specific to the
-Gemini CLI, and the two places where it is stricter than Grok.
+MCP endpoint. Grok refuses a conversation it cannot continue; Gemini replays it by default
+(see `resume` below). This page covers what is specific to the Gemini CLI, and the two places
+where it is stricter than Grok.
 
 ```
 Codex ──request──▶ gateway ──ACP (ndjson over stdio)──▶ gemini --acp -m <model>
@@ -67,7 +68,7 @@ process group ends the CLI and anything it started.
 `geminiSessions` is optional and validated exactly like `grokSessions`:
 
 ```json
-{ "id": "gemini", "type": "gemini-subscription", "geminiSessions": { "mode": "live", "max": 4, "parkMinutes": 30, "toolWaitMinutes": 25 } }
+{ "id": "gemini", "type": "gemini-subscription", "geminiSessions": { "mode": "live", "max": 4, "parkMinutes": 30, "toolWaitMinutes": 25, "resume": "replay" } }
 ```
 
 | Field | Range | Default | Meaning |
@@ -76,6 +77,22 @@ process group ends the CLI and anything it started.
 | `max` | 1–16 | 4 | Live conversations at once. A newcomer past the cap is refused (`capacity`); no session is evicted |
 | `parkMinutes` | 5–240 | 30 | A session idle after a finished turn is closed |
 | `toolWaitMinutes` | 1–25 | 25 | A session waiting for tool outputs is closed (never longer than `parkMinutes`) |
+| `resume` | `replay`, `refuse` | `replay` | What happens to a conversation whose session ended or does not hold its history |
+
+**Resume.** A conversation can lose its session: it sat idle past `parkMinutes`, the gateway
+restarted, it started on another model and switched to Gemini, or its history changed (an
+edit or a compaction). With `replay`, the gateway closes any session that no longer matches,
+reopens the conversation's ended-session record, and starts a new CLI whose first prompt is the
+whole conversation. That turn pays for the full history again and takes as long as a first
+turn; later turns continue the new session normally. Telemetry records the spawn with
+`replayed: <reason>` (`parked`, `session_missing`, `prefix_diverged`, ...). With `refuse`, the
+conversation stays closed and the client gets `session_continuity_unavailable`, whose message
+says to start a new chat. `concurrent` and `capacity` are refused in both modes, and a session
+another gateway process still holds is never taken over.
+
+**Start time.** Every `spawned` record carries `startMs`, the time from launching the CLI to
+its session being ready, so a slow first turn can be split into CLI start-up and the model's
+own time to first output (`firstEventMs` on `request_completed`).
 
 **Process.** `gemini --acp -m <model>`, started in a private 0700 scratch folder which is
 also the `session/new` `cwd` — the CLI creates storage for both its boot `cwd` and the

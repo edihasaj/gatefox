@@ -12,6 +12,8 @@ export class CliContinuityUnavailable extends ProviderError {
       ? "GateFox's local Claude live-session pool is full (capacity). Increase claudeSessions.max or wait for parked sessions to expire. Finishing a turn or starting a fresh chat does not free a parked slot. Gateway stopped without automatically replaying the conversation."
       : provider === "Claude" && reason === "session_dead"
       ? "Claude session continuation is unavailable (session_dead). Gateway stopped without automatically replaying the conversation. Recover this chat with gatefox claude-sessions recover, compact it, or start a fresh chat. The crash hold expires one hour after failure; blocked retries do not extend it."
+      : provider === "Gemini" && ["parked", "reaped", "tool_wait_expired", "closed", "session_missing"].includes(reason)
+      ? `This Gemini chat can no longer continue (${reason}): its Gemini session closed, or the chat started on another model. Start a new chat for Gemini, or set geminiSessions.resume to replay so GateFox sends the chat history to a new session.`
       : `${provider} session continuation is unavailable (${reason}). Gateway stopped without automatically replaying the conversation. Retry after the provider is available, finish the other active turn, or start a fresh chat.`,
       400, { code: "session_continuity_unavailable", event: "gateway.session" });
   }

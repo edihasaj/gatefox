@@ -15,8 +15,10 @@ import { ProviderError } from "./provider.js";
 /**
  * Live ACP sessions, shared by every provider that spends a subscription through a CLI speaking ACP (Grok, Gemini):
  * one long-lived CLI process per conversation. A request continues its conversation's session only when its history is
- * exactly what the session holds plus the new items. Anything else is refused: the gateway never replays a conversation
- * into a new process, because that would pay for the whole history again.
+ * exactly what the session holds plus the new items. Anything else is refused by default, because replaying a conversation
+ * into a new process pays for the whole history again. A provider whose settings opt into `replay` (Gemini's default) trades
+ * that cost for continuity: a conversation whose session ended, is missing, or no longer matches starts a new session that
+ * receives the whole history once.
  */
 export interface AcpLiveInput {
   /** Provider id; a session never crosses it. */
@@ -41,7 +43,11 @@ export interface AcpLiveInput {
   summaryVisible: boolean;
   observe?(usage: { inputTokens?: number; cachedTokens?: number }): void;
 }
-export interface AcpLiveSettings { max: number; parkMinutes: number; toolWaitMinutes: number }
+export interface AcpLiveSettings {
+  max: number; parkMinutes: number; toolWaitMinutes: number;
+  /** Replay a conversation that has no usable session into a new one instead of refusing it. Off unless a provider opts in. */
+  replay?: boolean;
+}
 
 /** The shared session driver plus what the pool needs: its telemetry event, registry names and ended-record store. */
 export interface AcpLiveDriver extends AcpDriver {
@@ -138,9 +144,12 @@ function slotsTaken(reg: Registry, key: string): number {
 async function place(driver: AcpLiveDriver, reg: Registry, settings: AcpLiveSettings, key: string, input: AcpLiveInput, signal: AbortSignal, refuse: (reason: string) => never): Promise<AsyncIterable<InferenceEvent>> {
   const fingerprint = sha([input.system, input.catalog]);
   const { entries, messages } = ledgerEntries(input.request, input.allTools, input.leading);
-  let session = reg.sessions.get(key); let plan: Plan; let reason: string | undefined; let parkedMs: number | undefined;
+  let session = reg.sessions.get(key); let plan: Plan | undefined; let reason: string | undefined; let parkedMs: number | undefined;
   const store = reg.stores.get(input.home) ?? reg.stores.set(input.home, driver.storeFor(input.home)).get(input.home)!;
   const ephemeral = input.ephemeral === true;
+  const replay = settings.replay === true && !ephemeral;
+  /** Why this request replays its conversation into a new session; undefined when it does not. */
+  let replayed: string | undefined;
   if (session?.state === "closed") {
     // It is still ending; it no longer holds the conversation, and how it ended is why this request has no session.
     reg.sessions.delete(key); reason = endReason(session); await session.finished; session = undefined;
@@ -148,53 +157,70 @@ async function place(driver: AcpLiveDriver, reg: Registry, settings: AcpLiveSett
   if (session) {
     if (session.state === "generating") return refuse("concurrent");
     parkedMs = Date.now() - session.lastUse;
-    if (session.fingerprint !== fingerprint) return refuse("fingerprint_changed");
-    const phase = session.state as LedgerPhase;
-    let decision = decide(session.ledger, entries, messages, phase, session.pending);
-    // The client may have replayed the turn's reasoning summary as assistant text; either form of the turn continues it.
-    if (decision.kind === "reseed" && session.altLedger) { const alt = decide(session.altLedger, entries, messages, phase, session.pending); if (alt.kind !== "reseed" || (decision.kind === "reseed" && alt.divergedAt > decision.divergedAt)) decision = alt; }
-    // A refused request never touches the session: it stays usable for the history it does hold.
-    if (decision.kind === "reseed") return refuse(decision.reason);
-    if (decision.kind === "continue_user") {
-      if (messages !== input.conversation.length) return refuse("unexpected_tail");
-      plan = { kind: "prompt", from: decision.from };
-    } else {
-      if (decision.outputs.some(entry => input.conversation[entry.first]?.role !== "tool" || input.conversation[entry.first]?.tool_call_id !== entry.callId)) return refuse("unexpected_tail");
-      // A tool result cannot carry the choice line, so a forced, required or disabled choice cannot continue it.
-      if (input.choice !== undefined && input.choice !== "auto") return refuse("forced_choice");
-      plan = { kind: "outputs", outputs: new Map(decision.outputs.map(entry => [entry.callId!, String(input.conversation[entry.first].content ?? "")])) };
-    }
-  } else {
+    const verdict = continuation(session, input, entries, messages, fingerprint);
+    if (typeof verdict === "string") {
+      // A refused request never touches the session: it stays usable for the history it does hold.
+      if (!replay) return refuse(verdict);
+      // Replay: the session cannot continue this history, so it is closed and the whole conversation goes to a new one.
+      replayed = fixedAcpReason(verdict);
+      reg.sessions.delete(key); await session.close("closed", "replaced"); await session.finished; session = undefined;
+    } else plan = verdict;
+  }
+  if (!session) {
     // A conversation whose session ended is final, whatever it sends: the original request again would pay for the whole
     // conversation in a second process. A conversation with history and no session cannot be continued for the same reason.
     // The persisted record also covers a gateway that restarted since. A store that cannot answer refuses a new conversation (it
-    // cannot tell whether it was already served) and says `session_missing` for one that carries history.
+    // cannot tell whether it was already served) and says `session_missing` for one that carries history. With `replay`, an
+    // ended or missing session is not final: the conversation is reopened and its whole history is sent once.
     let gone = reason; let storeFault: string | undefined;
-    if (!gone && !ephemeral) { try { gone = await store.lookup(key); } catch (error) { storeFault = error instanceof AcpEndedStoreError ? error.code : "ended_store_unavailable"; } }
-    if (gone) return refuse(gone);
-    if (entries.some(entry => entry.kind !== "m" || entry.assistant)) return refuse("session_missing");
+    if (!gone && !ephemeral && !replayed) { try { gone = await store.lookup(key); } catch (error) { storeFault = error instanceof AcpEndedStoreError ? error.code : "ended_store_unavailable"; } }
+    if (gone) { if (!replay) return refuse(gone); replayed ??= fixedAcpReason(gone); }
+    if (entries.some(entry => entry.kind !== "m" || entry.assistant)) { if (!replay) return refuse("session_missing"); replayed ??= "session_missing"; }
     if (storeFault) return refuse(storeFault);
     for (let closing = [...reg.sessions.values()].find(other => other.state === "closed"); closing; closing = [...reg.sessions.values()].find(other => other.state === "closed")) await closing.finished;
     // Nothing is evicted for a newcomer: closing a parked conversation would lose its history, which cannot be replayed.
     if (slotsTaken(reg, key) >= settings.max) return refuse("capacity");
     // The conversation is recorded before its CLI starts, so no way of losing the process can reopen it. The reservation is
     // atomic across processes: when another request or process recorded the key since the lookup, its record refuses this one.
+    // A replay takes back the conversation's closed record instead; a session another process still holds is never taken.
     let recorded: string | undefined;
     if (!ephemeral) {
-      try { recorded = await store.reserve(key); } catch (error) { return refuse(error instanceof AcpEndedStoreError ? error.code : "ended_store_unavailable"); }
+      try { recorded = await (replay ? store.reopen(key) : store.reserve(key)); } catch (error) { return refuse(error instanceof AcpEndedStoreError ? error.code : "ended_store_unavailable"); }
       if (recorded) return refuse(recorded);
     }
+    const startedAt = Date.now();
     try {
       session = await AcpLiveSession.start({ key, fingerprint, providerId: input.scope, model: input.model, effort: input.effort, command: input.command, system: input.system,
         builtinTools: input.builtinTools, ephemeral, tools: input.tools, catalog: input.catalog, env: input.env, provision: input.provision,
         onClose: (closed, outcome, why) => ended(driver, reg, store, closed, outcome, why) }, driver, signal);
     } catch (error) { if (!ephemeral) await store.release(key).catch(() => {}); throw error; }
+    const startMs = Date.now() - startedAt;
     reg.sessions.set(key, session);
-    plan = { kind: "prompt", from: 0 }; parkedMs = undefined;
+    if (signal.aborted) { await session.close("closed", "interrupted"); throw cancelled(); }
+    return start(driver, reg, settings, session, input, entries.map(entry => entry.digest), { kind: "prompt", from: 0 }, signal, true,
+      { outcome: "spawned", threadKey: key.slice(0, 8), startMs, ...(replayed ? { replayed } : {}) });
   }
-  const fresh = session.ledger.items.length === 0;
   if (signal.aborted) { await session.close("closed", "interrupted"); throw cancelled(); }
-  return start(driver, reg, settings, session, input, entries.map(entry => entry.digest), plan, signal, fresh, { outcome: fresh ? "spawned" : "continued", parkedMs, threadKey: key.slice(0, 8) });
+  const fresh = session.ledger.items.length === 0;
+  return start(driver, reg, settings, session, input, entries.map(entry => entry.digest), plan!, signal, fresh, { outcome: fresh ? "spawned" : "continued", parkedMs, threadKey: key.slice(0, 8) });
+}
+
+/** How a live session continues this request, or the fixed reason it cannot. Never touches the session. */
+function continuation(session: AcpLiveSession, input: AcpLiveInput, entries: ReturnType<typeof ledgerEntries>["entries"], messages: number, fingerprint: string): Plan | string {
+  if (session.fingerprint !== fingerprint) return "fingerprint_changed";
+  const phase = session.state as LedgerPhase;
+  let decision = decide(session.ledger, entries, messages, phase, session.pending);
+  // The client may have replayed the turn's reasoning summary as assistant text; either form of the turn continues it.
+  if (decision.kind === "reseed" && session.altLedger) { const alt = decide(session.altLedger, entries, messages, phase, session.pending); if (alt.kind !== "reseed" || (decision.kind === "reseed" && alt.divergedAt > decision.divergedAt)) decision = alt; }
+  if (decision.kind === "reseed") return decision.reason;
+  if (decision.kind === "continue_user") {
+    if (messages !== input.conversation.length) return "unexpected_tail";
+    return { kind: "prompt", from: decision.from };
+  }
+  if (decision.outputs.some(entry => input.conversation[entry.first]?.role !== "tool" || input.conversation[entry.first]?.tool_call_id !== entry.callId)) return "unexpected_tail";
+  // A tool result cannot carry the choice line, so a forced, required or disabled choice cannot continue it.
+  if (input.choice !== undefined && input.choice !== "auto") return "forced_choice";
+  return { kind: "outputs", outputs: new Map(decision.outputs.map(entry => [entry.callId!, String(input.conversation[entry.first].content ?? "")])) };
 }
 
 function start(driver: AcpLiveDriver, reg: Registry, settings: AcpLiveSettings, session: AcpLiveSession, input: AcpLiveInput, prefix: string[], plan: Plan, signal: AbortSignal, fresh: boolean, decision: Record<string, unknown>): AsyncIterable<InferenceEvent> {
