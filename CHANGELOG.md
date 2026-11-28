@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.3.4 — 2026-11-28
+
+- Treat a caller cancelling shared-executor discovery during adapter startup as an expected stop.
+- Report a direct app-server exit once while preserving the failure returned to pending requests.
+
 ## 2.3.3 — 2026-11-28
 
 - Gemini chat replay works on a Mac that updated without a restart. The running gateway kept the Gemini session
