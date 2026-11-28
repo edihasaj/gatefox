@@ -77,6 +77,8 @@ test("a corrupt spool file is discarded without crashing the starting process", 
 
 test("adapter start failures from a restarting or busy host are not reported as exceptions", async () => {
   const { operationalStartFailure } = await import("../shim-session.js");
-  for (const message of ["Shared executor host is unavailable; check gateway service status", "ENOENT: no such file or directory, lstat '/x/host.sock'", "Execution host is quiescing for an idle restart", "Native execution startup settings differ while a chat is running; retry after it finishes"]) assert.equal(operationalStartFailure(new Error(message)), true, message);
+  for (const message of ["Shared executor host is unavailable; check gateway service status", "Shared executor discovery was cancelled", "ENOENT: no such file or directory, lstat '/x/host.sock'", "Execution host is quiescing for an idle restart", "Native execution startup settings differ while a chat is running; retry after it finishes"]) assert.equal(operationalStartFailure(new Error(message)), true, message);
+  // Only the shared discovery cancellation is expected: any other text naming a cancellation is still an exception.
+  for (const message of ["The host reconnect was cancelled or ran out of time", "Codex request was cancelled by the user"]) assert.equal(operationalStartFailure(new Error(message)), false, message);
   assert.equal(operationalStartFailure(new TypeError("Cannot read properties of undefined (reading 'models')")), false);
 });

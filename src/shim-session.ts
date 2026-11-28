@@ -3,7 +3,7 @@ import type { GatewayConfig } from "./config.js";
 import { AppServerRouter, AppServerRoutingError, inheritsParentSettings } from "./app-server-router.js";
 import { AppServerBackends } from "./app-server-backends.js";
 import { DesktopCatalog } from "./desktop-catalog.js";
-import { isId, jsonLines, object, type Message } from "./app-server-connection.js";
+import { AppServerExitedError, isId, jsonLines, object, type Message } from "./app-server-connection.js";
 import { NativeControl } from "./native-control.js";
 import { readNativePickerPreferences } from "./native-picker-preferences.js";
 import { TurnTelemetry, errorClass } from "./turn-telemetry.js";
@@ -17,11 +17,17 @@ import { nativeThreadAbsent } from "./native-thread-absence.js";
 import { rpcRejection } from "./rpc-rejection.js";
 import { applyCodexHookCorrections, hasLegacyCodexHookConfig, normalizeCodexFeatureRequest, rewrittenCodexHookScopes, scopedCodexFeatureBase } from "./codex-feature-compat.js";
 import { CompletionReplay, completionReplayStorage } from "./completion-replay.js";
+import { SharedDiscoveryCancelledError } from "./execution-host-client.js";
 
 /** One transport owns its RPC clients, approvals, and cancellation routing. */
 export function operationalStartFailure(error: unknown): boolean {
+  // A discovery the session itself cancelled (stop, abandoned wait) is an expected end, not a host failure.
+  // Matched at the emitting type, with the exact shared message as a fallback for a re-wrapped error; any
+  // other text naming a cancellation stays reportable.
+  if (error instanceof SharedDiscoveryCancelledError) return true;
   const message = error instanceof Error ? error.message : "";
-  return /unavailable|ownership|quiescing|startup settings differ|retry after|is closing|ENOENT|ECONNREFUSED|ECONNRESET/i.test(message);
+  return message === "Shared executor discovery was cancelled"
+    || /unavailable|ownership|quiescing|startup settings differ|retry after|is closing|ENOENT|ECONNREFUSED|ECONNRESET/i.test(message);
 }
 
 /**
@@ -158,7 +164,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
           const failure = error as Error & { code?: number; data?: unknown };
           // Routing errors carry fixed gateway text; other failures are classified only.
           const routing = error instanceof AppServerRoutingError;
-          if (failure.code === undefined && !routing) reportException(failure, `rpc:${message.method}`);
+          if (failure.code === undefined && !routing && !(error instanceof AppServerExitedError)) reportException(failure, `rpc:${message.method}`);
           telemetry("rpc_error", { method: message.method, code: failure.code || -32603, ...(routing ? { reason: failure.message } : { errorClass: errorClass(failure.message) }),
             rejection: rpcRejection(String(message.method), failure, routing) });
           return answer({ id: message.id, error: { code: failure.code || -32603, message: failure.message, ...(failure.data === undefined ? {} : { data: failure.data }) } });
