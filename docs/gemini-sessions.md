@@ -384,7 +384,14 @@ it needs a terminal, so its Reconnect button is hidden for this backend.
 
 **Models.** An Ultra account lists `gemini-4-neon`, `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-hydrogen`, the
 orchestrators `gemini-pro-orchestrator`, `gemini-pro-orchestrator-neon` and `gemini-pro-orchestrator-argon`, and
-`gemini-3.8-flash`. `agy acp` has no model flag. After `session/new`, the session sets `model`, `mode` (`default`)
+`gemini-3.8-flash`. It also lists the partner models the plan includes: `claude-opus-5-5` and
+`claude-sonnet-5-5` (1,000,000-token context, 128,000 output, text and images, `thought_level` `low`, `medium` or
+`high`) and `gpt-oss-120b-medium` (131,072-token context, no thought level). They share one five-hour quota pool,
+separate from the Gemini models' pool, and need no code change: add them to the provider's `models` and
+`modelMetadata` like the Gemini ones, for example `"gemini/claude-opus-5-5": "claude-opus-5-5"` with
+`reasoningEfforts` `["low", "medium", "high"]`. The picker shows them as `Gemini · Claude Opus 5.5`. Studio and
+macbook-server serve all three since 28 November 2026; answers and tool calls were checked through
+`/v1/responses`. `agy acp` has no model flag. After `session/new`, the session sets `model`, `mode` (`default`)
 and, when the caller chose a supported effort, `thought_level` (`low`, `medium`, `high`, `xhigh`) with
 `session/set_config_option`. The session refuses to start when the CLI does not report the requested value as
 current, so an unavailable model is never swapped for another one. The gateway's instructions travel as
